@@ -4,13 +4,11 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { useDispatch } from 'react-redux';
 import { addAsset } from '@/store/assetsSlice';
-import { Tv, Film, Sparkles, Car, Scissors, BookOpen, Flame, Megaphone, Clapperboard, Eye, Languages, ArrowRight, ArrowLeft } from 'lucide-react';
+import { Tv, Film, Sparkles, Car, Scissors, BookOpen, Flame, Megaphone, Clapperboard, Eye, Languages, ArrowRight, ArrowLeft, Upload, Loader2 } from 'lucide-react';
 import { FaTiktok, FaInstagram, FaYoutube } from "react-icons/fa";
 import { SiYoutubeshorts } from "react-icons/si";
 import { cn } from '@/lib/utils';
-
-// Mock installation of checkbox and radio-group if I forgot them
-// But I will use standard buttons as selection cards for better UI as per design
+import { getUploadUrl, uploadToS3 } from '@/services/api';
 
 interface UploadWizardProps {
   open: boolean;
@@ -18,17 +16,20 @@ interface UploadWizardProps {
 }
 
 const STEPS = [
-  { id: 1, title: 'Asset Type', description: 'What kind of content do you want to edit?' },
-  { id: 2, title: 'Target Platform', description: 'Select your target platform' },
-  { id: 3, title: 'Output Format', description: 'Choose content format' },
-  { id: 4, title: 'Target Audience', description: 'Define your intended audience' },
-  { id: 5, title: 'Business Driver', description: "What's the purpose of this content?" },
-  { id: 6, title: 'Output Language', description: "What's the purpose of this content?" },
+  { id: 1, title: 'Upload Video', description: 'Select a video file to upload' },
+  { id: 2, title: 'Asset Type', description: 'What kind of content do you want to edit?' },
+  { id: 3, title: 'Target Platform', description: 'Select your target platform' },
+  { id: 4, title: 'Output Format', description: 'Choose content format' },
+  { id: 5, title: 'Target Audience', description: 'Define your intended audience' },
+  { id: 6, title: 'Business Driver', description: "What's the purpose of this content?" },
+  { id: 7, title: 'Output Language', description: "Select the language" },
 ];
 
 export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
   const [step, setStep] = useState(1);
   const dispatch = useDispatch();
+  const [file, setFile] = useState<File | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
   const [selections, setSelections] = useState<Record<string, any>>({
       type: '',
       platform: '',
@@ -38,25 +39,46 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
       language: 'english'
   });
 
-  const handleNext = () => {
+  const handleNext = async () => {
+    if (step === 1 && !file) return; // Require file for step 1
+
     if (step < STEPS.length) {
       setStep(step + 1);
     } else {
-      // Finish
+      // Finish & Upload
+      await handleUpload();
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!file) return;
+    setIsUploading(true);
+    try {
+      // 1. Get Signed URL
+      const { uploadUrl, assetId, key } = await getUploadUrl(file.type);
+      
+      // 2. Upload to S3
+      await uploadToS3(uploadUrl, file);
+
+      // 3. Add to Store (Optimistic update or based on success)
       const newAsset = {
-        id: Math.random().toString(36).substring(7),
-        title: `New Upload - ${selections.type}`,
-        thumbnail: 'https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?w=800&auto=format&fit=crop&q=60',
-        status: 'processing' as const,
-        format: '1080p',
-        size: '0 MB',
+        id: assetId,
+        title: file.name, // Use file name as title initially
+        thumbnail: 'https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?w=800&auto=format&fit=crop&q=60', // Placeholder
+        status: 'processing' as const, // The Lambda will update this to 'indexing' -> 'ready'
+        format: '1080p', // Placeholder or detect
+        size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
         segmentCount: 0,
         views: 0,
         createdAt: new Date().toISOString()
       };
+
       dispatch(addAsset(newAsset));
+      
+      // Reset & Close
       onOpenChange(false);
       setStep(1);
+      setFile(null);
       setSelections({
           type: '',
           platform: '',
@@ -65,6 +87,11 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
           driver: '',
           language: 'english'
       });
+    } catch (error) {
+      console.error('Upload failed:', error);
+      alert('Upload failed. Please try again.'); // Simple error handling
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -72,9 +99,41 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
     if (step > 1) setStep(step - 1);
   };
 
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setFile(e.target.files[0]);
+    }
+  };
+
   const renderStepContent = () => {
     switch (step) {
-      case 1: // Asset Type
+      case 1: // Upload Video
+        return (
+            <div className="flex flex-col items-center justify-center h-full border-2 border-dashed rounded-xl p-10 mt-4 bg-muted/20 hover:bg-muted/40 transition-colors">
+                <input 
+                    type="file" 
+                    id="video-upload" 
+                    className="hidden" 
+                    accept="video/mp4,video/quicktime,video/webm"
+                    onChange={handleFileChange}
+                />
+                <Label htmlFor="video-upload" className="cursor-pointer flex flex-col items-center gap-4">
+                    <div className="p-4 bg-background rounded-full shadow-sm">
+                        <Upload className="w-8 h-8 text-primary" />
+                    </div>
+                    <div className="text-center">
+                        <h3 className="text-lg font-semibold">
+                            {file ? file.name : 'Select Video File'}
+                        </h3>
+                        <p className="text-sm text-muted-foreground mt-1">
+                            {file ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : 'MP4, MOV or WebM'}
+                        </p>
+                    </div>
+                    {!file && <Button variant="secondary" className="mt-2">Choose File</Button>}
+                </Label>
+            </div>
+        );
+      case 2: // Asset Type
         return (
           <div className="grid grid-cols-3 gap-4 mt-4">
              <SelectionCard 
@@ -97,7 +156,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
              />
           </div>
         );
-      case 2: // Platform
+      case 3: // Platform
         return (
           <div className="grid grid-cols-3 gap-4 mt-4">
              <SelectionCard 
@@ -138,7 +197,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
              />
           </div>
         );
-      case 3: // Format
+      case 4: // Format
         return (
            <div className="grid grid-cols-3 gap-4 mt-4">
              <SelectionCard 
@@ -161,7 +220,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
              />
           </div>
         );
-      case 4: // Audience
+      case 5: // Audience
         return (
             <div className="space-y-6 mt-4">
                 <div className="space-y-3">
@@ -216,7 +275,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
                 </div>
             </div>
         );
-      case 5: // Driver
+      case 6: // Driver
         return (
             <div className="grid grid-cols-3 gap-4 mt-4">
              <SelectionCard 
@@ -239,7 +298,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
              />
           </div>
         );
-      case 6: // Language
+      case 7: // Language
          return (
             <div className="grid grid-cols-3 gap-4 mt-4">
              <SelectionCard 
@@ -269,7 +328,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(val) => !isUploading && onOpenChange(val)}>
       <DialogContent className="sm:max-w-[600px]">
         <DialogHeader>
           <DialogTitle className="flex items-center justify-between">
@@ -285,11 +344,15 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
         </div>
 
         <DialogFooter className="flex justify-between sm:justify-between">
-          <Button variant="ghost" onClick={handleBack} disabled={step === 1}>
+          <Button variant="ghost" onClick={handleBack} disabled={step === 1 || isUploading}>
              <ArrowLeft className="w-4 h-4 mr-2" /> Back
           </Button>
-          <Button onClick={handleNext}>
-             {step === STEPS.length ? 'Finish' : 'Next'} <ArrowRight className="w-4 h-4 ml-2" />
+          <Button onClick={handleNext} disabled={(step === 1 && !file) || isUploading}>
+             {isUploading ? (
+               <>Uploading <Loader2 className="w-4 h-4 ml-2 animate-spin" /></>
+             ) : (
+               step === STEPS.length ? <>Finish <ArrowRight className="w-4 h-4 ml-2" /></> : <>Next <ArrowRight className="w-4 h-4 ml-2" /></>
+             )}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -325,4 +388,3 @@ function SelectionCard({ icon: Icon, label, selected, onClick, className }: Sele
         </div>
     )
 }
-
