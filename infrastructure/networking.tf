@@ -3,7 +3,7 @@ resource "aws_apigatewayv2_api" "main" {
   protocol_type = "HTTP"
   cors_configuration {
     allow_origins = ["*"]
-    allow_methods = ["GET", "POST", "OPTIONS", "PATCH"]
+    allow_methods = ["GET", "POST", "OPTIONS", "PATCH", "DELETE"]
     allow_headers = ["*"]
   }
 }
@@ -144,6 +144,28 @@ resource "aws_lambda_permission" "api_gw_create_project" {
   function_name = aws_lambda_function.create_project.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/projects"
+}
+
+# Delete Asset
+resource "aws_apigatewayv2_integration" "delete_asset" {
+  api_id           = aws_apigatewayv2_api.main.id
+  integration_type = "AWS_PROXY"
+  integration_uri  = aws_lambda_function.delete_asset.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "delete_asset" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "DELETE /assets/{assetId}"
+  target    = "integrations/${aws_apigatewayv2_integration.delete_asset.id}"
+}
+
+resource "aws_lambda_permission" "api_gw_delete_asset" {
+  statement_id  = "AllowExecutionFromAPIGatewayDeleteAsset"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.delete_asset.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/assets/*"
 }
 
 output "api_url" {

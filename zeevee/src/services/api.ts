@@ -96,3 +96,10 @@ export const createProject = async (assetId: string, metadata: any) => {
   );
   return response.data;
 };
+
+export const deleteAsset = async (assetId: string) => {
+  const response = await axios.delete(`${API_URL}/assets/${assetId}`, {
+    headers: getAuthHeaders(),
+  });
+  return response.data;
+};

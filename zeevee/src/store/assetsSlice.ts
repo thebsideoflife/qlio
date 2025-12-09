@@ -79,6 +79,9 @@ export const assetsSlice = createSlice({
         asset.status = action.payload.status;
       }
     },
+    removeAsset: (state, action: PayloadAction<string>) => {
+      state.items = state.items.filter((item) => item.id !== action.payload);
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -99,5 +102,6 @@ export const assetsSlice = createSlice({
   },
 });
 
-export const { addAsset, updateAssetStatus, setAssets } = assetsSlice.actions;
+export const { addAsset, updateAssetStatus, setAssets, removeAsset } =
+  assetsSlice.actions;
 export default assetsSlice.reducer;

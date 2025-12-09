@@ -23,7 +23,8 @@ data "aws_iam_policy_document" "lambda_policy" {
     actions = [
       "s3:PutObject",
       "s3:GetObject",
-      "s3:ListBucket"
+      "s3:ListBucket",
+      "s3:DeleteObject"
     ]
     resources = [
       aws_s3_bucket.media.arn,
@@ -35,6 +36,7 @@ data "aws_iam_policy_document" "lambda_policy" {
       "dynamodb:PutItem",
       "dynamodb:GetItem",
       "dynamodb:UpdateItem",
+      "dynamodb:DeleteItem",
       "dynamodb:Scan",
       "dynamodb:Query"
     ]
@@ -191,6 +193,25 @@ resource "aws_lambda_function" "create_project" {
     variables = {
       PROJECTS_TABLE = aws_dynamodb_table.projects.name
       ASSETS_TABLE   = aws_dynamodb_table.assets.name
+      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
+    }
+  }
+}
+
+resource "aws_lambda_function" "delete_asset" {
+  filename         = data.archive_file.lambda_zip.output_path
+  function_name    = "${var.project_name}-delete-asset"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "deleteAsset.handler"
+  runtime          = "nodejs20.x"
+  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  timeout          = 30
+
+  environment {
+    variables = {
+      PROJECTS_TABLE = aws_dynamodb_table.projects.name
+      ASSETS_TABLE   = aws_dynamodb_table.assets.name
+      SECRET_ARN     = aws_secretsmanager_secret.twelve_labs_key.arn
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
     }
   }

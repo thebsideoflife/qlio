@@ -6,7 +6,8 @@ import { AssetCard } from "@/components/dashboard/AssetCard";
 import { UploadWizard } from "@/components/upload/UploadWizard";
 import { CreateProjectModal } from "@/components/dashboard/CreateProjectModal";
 import { useDispatch, useSelector } from "react-redux";
-import { fetchAssets } from "@/store/assetsSlice";
+import { fetchAssets, removeAsset } from "@/store/assetsSlice";
+import { deleteAsset } from "@/services/api";
 import type { RootState, AppDispatch } from "@/store/store";
 
 export default function Dashboard() {
@@ -28,6 +29,16 @@ export default function Dashboard() {
   const handleCreateProject = (assetId: string) => {
     setSelectedAssetId(assetId);
     setCreateProjectOpen(true);
+  };
+
+  const handleDeleteAsset = async (assetId: string) => {
+    try {
+      await deleteAsset(assetId);
+      dispatch(removeAsset(assetId));
+    } catch (error) {
+      console.error("Failed to delete asset:", error);
+      // Optionally show a toast error here
+    }
   };
 
   const processingCount = assets.filter(
@@ -107,6 +118,7 @@ export default function Dashboard() {
               key={asset.id}
               asset={asset}
               onCreateProject={handleCreateProject}
+              onDelete={handleDeleteAsset}
             />
           ))}
         </div>
