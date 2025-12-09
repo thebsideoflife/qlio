@@ -1,27 +1,32 @@
-import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
+import {
+  createSlice,
+  createAsyncThunk,
+  type PayloadAction,
+} from "@reduxjs/toolkit";
+import type { Segment } from "./editorSlice";
+import { listAssets } from "@/services/api";
 
 export interface Asset {
   id: string;
   title: string;
-  thumbnail: string;
-  status: "processing" | "completed" | "failed";
+  thumbnail?: string;
+  status:
+    | "processing"
+    | "uploading"
+    | "indexing"
+    | "completed"
+    | "failed"
+    | "READY";
   format: string;
   size: string;
   segmentCount: number;
-  views: number;
   createdAt: string;
-  // Processing details (optional, for processing items)
+  videoUrl?: string;
+  segments?: Segment[];
+  metadata?: any;
   processing?: {
-    stage:
-      | "upload"
-      | "transcription"
-      | "clip_selection"
-      | "reframing"
-      | "captions"
-      | "delivery";
-    progress: number; // 0-100
-    startedAt: string;
-    eta: string;
+    stage: string;
+    progress: number;
     stages: {
       upload: number;
       transcription: number;
@@ -30,98 +35,35 @@ export interface Asset {
       captions: number;
       delivery: number;
     };
+    eta: string;
   };
 }
 
 interface AssetsState {
   items: Asset[];
+  loading: boolean;
+  error: string | null;
 }
 
 const initialState: AssetsState = {
-  items: [
-    {
-      id: "1",
-      title: "Star Trek: The Next Generation S07E25",
-      thumbnail:
-        "https://images.unsplash.com/photo-1534447677768-be436bb09401?w=800&auto=format&fit=crop&q=60",
-      status: "completed",
-      format: "4K H.264",
-      size: "2.4 GB",
-      segmentCount: 8,
-      views: 12500,
-      createdAt: "2023-10-26T10:00:00Z",
-    },
-    {
-      id: "2",
-      title: 'The X-Files S03E08 "Oubliette"',
-      thumbnail:
-        "https://images.unsplash.com/photo-1618331835717-801e976710b2?w=800&auto=format&fit=crop&q=60",
-      status: "processing",
-      format: "1080p H.265",
-      size: "1.8 GB",
-      segmentCount: 6,
-      views: 0,
-      createdAt: "2023-11-15T14:30:00Z",
-      processing: {
-        stage: "clip_selection",
-        progress: 65,
-        startedAt: "2023-11-15T14:30:00Z",
-        eta: "2023-11-15T15:15:00Z",
-        stages: {
-          upload: 100,
-          transcription: 100,
-          clip_selection: 65,
-          reframing: 0,
-          captions: 0,
-          delivery: 0,
-        },
-      },
-    },
-    {
-      id: "3",
-      title: 'Breaking Bad S05E14 "Ozymandias"',
-      thumbnail:
-        "https://images.unsplash.com/photo-1509316785289-025f5b846b35?w=800&auto=format&fit=crop&q=60",
-      status: "completed",
-      format: "4K H.265",
-      size: "3.1 GB",
-      segmentCount: 12,
-      views: 45200,
-      createdAt: "2023-11-10T09:20:00Z",
-    },
-    {
-      id: "4",
-      title: 'The Sopranos S06E21 "Made in America"',
-      thumbnail:
-        "https://images.unsplash.com/photo-1485846234645-a62644f84728?w=800&auto=format&fit=crop&q=60",
-      status: "processing",
-      format: "1080p H.264",
-      size: "2.0 GB",
-      segmentCount: 0,
-      views: 0,
-      createdAt: "2023-11-20T11:45:00Z",
-      processing: {
-        stage: "transcription",
-        progress: 35,
-        startedAt: "2023-11-20T11:45:00Z",
-        eta: "2023-11-20T12:30:00Z",
-        stages: {
-          upload: 100,
-          transcription: 35,
-          clip_selection: 0,
-          reframing: 0,
-          captions: 0,
-          delivery: 0,
-        },
-      },
-    },
-  ],
+  items: [],
+  loading: false,
+  error: null,
 };
+
+export const fetchAssets = createAsyncThunk("assets/fetchAssets", async () => {
+  const data = await listAssets();
+  // Transform or validate if necessary
+  return data; // Assuming data is Asset[]
+});
 
 export const assetsSlice = createSlice({
   name: "assets",
   initialState,
   reducers: {
+    setAssets: (state, action: PayloadAction<Asset[]>) => {
+      state.items = action.payload;
+    },
     addAsset: (state, action: PayloadAction<Asset>) => {
       state.items.unshift(action.payload);
     },
@@ -129,7 +71,7 @@ export const assetsSlice = createSlice({
       state,
       action: PayloadAction<{
         id: string;
-        status: "processing" | "completed" | "failed";
+        status: Asset["status"];
       }>
     ) => {
       const asset = state.items.find((a) => a.id === action.payload.id);
@@ -138,7 +80,24 @@ export const assetsSlice = createSlice({
       }
     },
   },
+  extraReducers: (builder) => {
+    builder
+      .addCase(fetchAssets.pending, (state) => {
+        state.loading = true;
+      })
+      .addCase(fetchAssets.fulfilled, (state, action) => {
+        state.loading = false;
+        // Merge with existing items to preserve local optimistic updates if possible,
+        // or just replace. Since we're polling, replacing is safer but might cause jitter.
+        // Let's replace for now.
+        state.items = action.payload;
+      })
+      .addCase(fetchAssets.rejected, (state, action) => {
+        state.loading = false;
+        state.error = action.error.message || "Failed to fetch assets";
+      });
+  },
 });
 
-export const { addAsset, updateAssetStatus } = assetsSlice.actions;
+export const { addAsset, updateAssetStatus, setAssets } = assetsSlice.actions;
 export default assetsSlice.reducer;

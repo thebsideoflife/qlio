@@ -116,23 +116,6 @@ export function SegmentDetailSidebar() {
             </div>
             <Progress value={segment.confidence * 100} className="h-2" />
           </div>
-
-          <div className="space-y-2">
-            <h4 className="text-sm font-medium">Metadata</h4>
-            <div className="grid grid-cols-2 gap-y-2 text-sm">
-              <div className="text-muted-foreground">Platform:</div>
-              <div className="text-right font-medium">YouTube Shorts</div>
-
-              <div className="text-muted-foreground">Content Type:</div>
-              <div className="text-right font-medium">Clips</div>
-
-              <div className="text-muted-foreground">Target Audience:</div>
-              <div className="text-right font-medium">M/F, 18-34</div>
-
-              <div className="text-muted-foreground">Purpose:</div>
-              <div className="text-right font-medium">Marketing</div>
-            </div>
-          </div>
         </div>
       </div>
 

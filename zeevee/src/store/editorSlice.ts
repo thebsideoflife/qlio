@@ -16,48 +16,16 @@ interface EditorState {
   segments: Segment[];
   selectedSegmentId: string | null;
   currentTime: number;
+  duration: number;
 }
 
-const initialSegments: Segment[] = [
-  {
-    id: 'seg-1',
-    startTime: 0,
-    endTime: 300, // 5 mins
-    title: 'Intro / Teaser',
-    description: 'Opening scene setting the mood.',
-    characters: ['Picard', 'Riker'],
-    sceneTags: ['intro', 'tense'],
-    keyDialogue: 'Space, the final frontier...',
-    confidence: 0.95,
-  },
-  {
-    id: 'seg-2',
-    startTime: 300,
-    endTime: 900, // 15 mins (10 min duration)
-    title: 'Ten Forward Meeting',
-    description: 'Crew gathers to discuss the anomaly.',
-    characters: ['Troi', 'Data', 'Guinan'],
-    sceneTags: ['dialogue', 'plot'],
-    keyDialogue: 'I sense a disturbance.',
-    confidence: 0.88,
-  },
-  {
-    id: 'seg-3',
-    startTime: 2040, // 34:00
-    endTime: 2115, // 35:15 (1:15 duration)
-    title: 'Central Perk Finale',
-    description: 'The friends gather at Central Perk for what might be their last coffee together.',
-    characters: ['All Six Friends'],
-    sceneTags: ['friendship', 'nostalgia', 'finale', 'emotional'],
-    keyDialogue: '"So this is it. Ten years of coffee, ten years of friendship. I guess some things really do last forever, even when everything else changes."',
-    confidence: 0.88,
-  },
-];
+const initialSegments: Segment[] = [];
 
 const initialState: EditorState = {
   segments: initialSegments,
   selectedSegmentId: null,
   currentTime: 0,
+  duration: 0,
 };
 
 export const editorSlice = createSlice({
@@ -92,10 +60,12 @@ export const editorSlice = createSlice({
     },
     setCurrentTime: (state, action: PayloadAction<number>) => {
         state.currentTime = action.payload;
+    },
+    setDuration: (state, action: PayloadAction<number>) => {
+        state.duration = action.payload;
     }
   },
 });
 
-export const { setSegments, selectSegment, updateSegmentTime, splitSegment, setCurrentTime } = editorSlice.actions;
+export const { setSegments, selectSegment, updateSegmentTime, splitSegment, setCurrentTime, setDuration } = editorSlice.actions;
 export default editorSlice.reducer;
-
