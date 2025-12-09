@@ -47,6 +47,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
           status: "UPLOADING",
           key,
           contentType,
+          format: extension.toUpperCase(), // Store format (MP4, MOV, etc.)
           originalName: filename || "Untitled",
           // Removed metadata field containing questionnaire answers
           createdAt: new Date().toISOString(),

@@ -9,6 +9,7 @@ import { listAssets } from "@/services/api";
 export interface Asset {
   id: string;
   title: string;
+  originalName?: string;
   thumbnail?: string;
   status:
     | "processing"

@@ -39,7 +39,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       new UpdateCommand({
         TableName: TABLE_NAME,
         Key: { assetId },
-        UpdateExpression: "set metadata = :m",
+        UpdateExpression: "set #meta = :m",
+        ExpressionAttributeNames: {
+          "#meta": "metadata",
+        },
         ExpressionAttributeValues: {
           ":m": body,
         },

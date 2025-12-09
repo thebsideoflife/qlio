@@ -1,9 +1,14 @@
 import axios from "axios";
 
-const API_URL = import.meta.env.VITE_API_URL || "API_GATEWAY_URL";
+const API_URL = import.meta.env.VITE_API_URL;
+const AUTH_KEY = "api_password";
+
+if (!API_URL) {
+  console.warn("VITE_API_URL is not defined");
+}
 
 const getAuthHeaders = () => {
-  const password = localStorage.getItem("api_password");
+  const password = localStorage.getItem(AUTH_KEY);
   return password ? { "x-api-password": password } : {};
 };
 
@@ -90,6 +95,49 @@ export const createProject = async (assetId: string, metadata: any) => {
       assetId,
       metadata,
     },
+    {
+      headers: getAuthHeaders(),
+    }
+  );
+  return response.data;
+};
+
+export const getProject = async (projectId: string) => {
+  const response = await axios.get(`${API_URL}/projects/${projectId}`, {
+    headers: getAuthHeaders(),
+  });
+  return response.data;
+};
+
+export const updateProject = async (
+  projectId: string,
+  data: { title?: string }
+) => {
+  const response = await axios.patch(`${API_URL}/projects/${projectId}`, data, {
+    headers: getAuthHeaders(),
+  });
+  return response.data;
+};
+
+export const deleteProject = async (projectId: string) => {
+  const response = await axios.delete(`${API_URL}/projects/${projectId}`, {
+    headers: getAuthHeaders(),
+  });
+  return response.data;
+};
+
+export const listProjects = async (assetId?: string) => {
+  const response = await axios.get(`${API_URL}/projects`, {
+    params: assetId ? { assetId } : {},
+    headers: getAuthHeaders(),
+  });
+  return response.data;
+};
+
+export const generateSegments = async (projectId: string, metadata: any) => {
+  const response = await axios.post(
+    `${API_URL}/projects/${projectId}/generate`,
+    { metadata },
     {
       headers: getAuthHeaders(),
     }

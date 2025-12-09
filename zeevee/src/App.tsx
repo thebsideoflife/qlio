@@ -24,7 +24,7 @@ function App() {
             }
           />
           <Route
-            path="/editor/:assetId"
+            path="/editor/:projectId"
             element={
               <RequireAuth>
                 <MainLayout>

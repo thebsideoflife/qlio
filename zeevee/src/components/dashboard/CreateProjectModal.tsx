@@ -47,21 +47,24 @@ const STEPS = [
     title: "Target Platform",
     description: "Select your target platform",
   },
-  { id: 3, title: "Output Format", description: "Choose content format" },
   {
-    id: 4,
+    id: 3,
     title: "Target Audience",
     description: "Define your intended audience",
   },
   {
-    id: 5,
+    id: 4,
     title: "Business Driver",
     description: "What's the purpose of this content?",
   },
-  { id: 6, title: "Output Language", description: "Select the language" },
+  { id: 5, title: "Output Language", description: "Select the language" },
 ];
 
-export function CreateProjectModal({ open, onOpenChange, assetId }: CreateProjectModalProps) {
+export function CreateProjectModal({
+  open,
+  onOpenChange,
+  assetId,
+}: CreateProjectModalProps) {
   const [step, setStep] = useState(1);
   const [isCreating, setIsCreating] = useState(false);
   const navigate = useNavigate();
@@ -99,7 +102,12 @@ export function CreateProjectModal({ open, onOpenChange, assetId }: CreateProjec
       // But refactoring the Editor is out of scope unless necessary.
       // I'll stick to navigating to editor for now.
       // TODO: Update Editor to work with Project ID or load project data.
-      navigate(`/editor/${assetId}`); 
+      if (result && result.projectId) {
+        navigate(`/editor/${result.projectId}`);
+      } else {
+        console.error("Project ID missing in response", result);
+        // Fallback or alert?
+      }
     } catch (error) {
       console.error("Failed to create project:", error);
       alert("Failed to create project. Please try again.");
@@ -183,32 +191,7 @@ export function CreateProjectModal({ open, onOpenChange, assetId }: CreateProjec
             />
           </div>
         );
-      case 3: // Format
-        return (
-          <div className="grid grid-cols-3 gap-4 mt-4">
-            <SelectionCard
-              icon={Scissors}
-              label="Short Single"
-              selected={selections.format === "short"}
-              onClick={() => setSelections({ ...selections, format: "short" })}
-            />
-            <SelectionCard
-              icon={BookOpen}
-              label="Full Story"
-              selected={selections.format === "full"}
-              onClick={() => setSelections({ ...selections, format: "full" })}
-            />
-            <SelectionCard
-              icon={Flame}
-              label="Highlight"
-              selected={selections.format === "highlight"}
-              onClick={() =>
-                setSelections({ ...selections, format: "highlight" })
-              }
-            />
-          </div>
-        );
-      case 4: // Audience
+      case 3: // Audience
         return (
           <div className="space-y-6 mt-4">
             <div className="space-y-3">
@@ -280,7 +263,7 @@ export function CreateProjectModal({ open, onOpenChange, assetId }: CreateProjec
             </div>
           </div>
         );
-      case 5: // Driver
+      case 4: // Driver
         return (
           <div className="grid grid-cols-3 gap-4 mt-4">
             <SelectionCard
@@ -307,7 +290,7 @@ export function CreateProjectModal({ open, onOpenChange, assetId }: CreateProjec
             />
           </div>
         );
-      case 6: // Language
+      case 5: // Language
         return (
           <div className="grid grid-cols-3 gap-4 mt-4">
             <SelectionCard
@@ -367,10 +350,7 @@ export function CreateProjectModal({ open, onOpenChange, assetId }: CreateProjec
           >
             <ArrowLeft className="w-4 h-4 mr-2" /> Back
           </Button>
-          <Button
-            onClick={handleNext}
-            disabled={isCreating}
-          >
+          <Button onClick={handleNext} disabled={isCreating}>
             {isCreating ? (
               <>
                 Creating Project{" "}
@@ -428,4 +408,3 @@ function SelectionCard({
     </div>
   );
 }
-

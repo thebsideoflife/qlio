@@ -46,7 +46,11 @@ export const handler: Handler<S3Event> = async (event) => {
       
       const task = await client.tasks.create({
         indexId: TWELVE_LABS_INDEX_ID,
-        videoUrl: signedUrl
+        videoUrl: signedUrl,
+        // Ensure index is created with these engines enabled: "visual", "audio", "conversation", "text_in_video"
+        // If the index already exists, these options here might be for the task if applicable, 
+        // but typically engines are set at Index creation level.
+        // Assuming the Index ID provided in env var points to an index with "conversation" enabled.
       });
 
       const taskId = task.id;

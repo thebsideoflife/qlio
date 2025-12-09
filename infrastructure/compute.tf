@@ -82,8 +82,8 @@ resource "aws_lambda_function" "generate_upload_url" {
 
   environment {
     variables = {
-      BUCKET_NAME = aws_s3_bucket.media.id
-      TABLE_NAME  = aws_dynamodb_table.assets.name
+      BUCKET_NAME             = aws_s3_bucket.media.id
+      TABLE_NAME              = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
     }
   }
@@ -100,9 +100,9 @@ resource "aws_lambda_function" "start_indexing" {
 
   environment {
     variables = {
-      TABLE_NAME     = aws_dynamodb_table.assets.name
-      SECRET_ARN     = aws_secretsmanager_secret.twelve_labs_key.arn
-      TWELVE_LABS_INDEX_ID = var.twelve_labs_index_id
+      TABLE_NAME              = aws_dynamodb_table.assets.name
+      SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
+      TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
     }
   }
@@ -119,12 +119,12 @@ resource "aws_lambda_function" "process_webhook" {
 
   environment {
     variables = {
-      TABLE_NAME  = aws_dynamodb_table.assets.name
-      BUCKET_NAME = aws_s3_bucket.media.id
-      SECRET_ARN     = aws_secretsmanager_secret.twelve_labs_key.arn
-      TWELVE_LABS_INDEX_ID = var.twelve_labs_index_id
+      TABLE_NAME              = aws_dynamodb_table.assets.name
+      BUCKET_NAME             = aws_s3_bucket.media.id
+      SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
+      TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-      SIGNING_SECRET_ARN = aws_secretsmanager_secret.twelve_labs_signing_secret.arn
+      SIGNING_SECRET_ARN      = aws_secretsmanager_secret.twelve_labs_signing_secret.arn
     }
   }
 }
@@ -140,7 +140,7 @@ resource "aws_lambda_function" "list_assets" {
 
   environment {
     variables = {
-      TABLE_NAME = aws_dynamodb_table.assets.name
+      TABLE_NAME              = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
     }
   }
@@ -157,7 +157,7 @@ resource "aws_lambda_function" "get_asset" {
 
   environment {
     variables = {
-      TABLE_NAME = aws_dynamodb_table.assets.name
+      TABLE_NAME              = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
     }
   }
@@ -174,7 +174,7 @@ resource "aws_lambda_function" "update_asset" {
 
   environment {
     variables = {
-      TABLE_NAME = aws_dynamodb_table.assets.name
+      TABLE_NAME              = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
     }
   }
@@ -187,12 +187,32 @@ resource "aws_lambda_function" "create_project" {
   handler          = "createProject.handler"
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  timeout          = 60
+
+  environment {
+    variables = {
+      PROJECTS_TABLE       = aws_dynamodb_table.projects.name
+      ASSETS_TABLE         = aws_dynamodb_table.assets.name
+      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
+      SECRET_ARN           = aws_secretsmanager_secret.twelve_labs_key.arn
+      TWELVE_LABS_INDEX_ID = var.twelve_labs_index_id
+    }
+  }
+}
+
+resource "aws_lambda_function" "project_ops" {
+  filename         = data.archive_file.lambda_zip.output_path
+  function_name    = "${var.project_name}-project-ops"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "projectOps.handler"
+  runtime          = "nodejs20.x"
+  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
   timeout          = 10
 
   environment {
     variables = {
-      PROJECTS_TABLE = aws_dynamodb_table.projects.name
-      ASSETS_TABLE   = aws_dynamodb_table.assets.name
+      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
+      ASSETS_TABLE            = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
     }
   }
@@ -209,10 +229,47 @@ resource "aws_lambda_function" "delete_asset" {
 
   environment {
     variables = {
-      PROJECTS_TABLE = aws_dynamodb_table.projects.name
-      ASSETS_TABLE   = aws_dynamodb_table.assets.name
-      SECRET_ARN     = aws_secretsmanager_secret.twelve_labs_key.arn
+      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
+      ASSETS_TABLE            = aws_dynamodb_table.assets.name
+      SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
+    }
+  }
+}
+
+resource "aws_lambda_function" "list_projects" {
+  filename         = data.archive_file.lambda_zip.output_path
+  function_name    = "${var.project_name}-list-projects"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "listProjects.handler"
+  runtime          = "nodejs20.x"
+  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  timeout          = 10
+
+  environment {
+    variables = {
+      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
+      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
+    }
+  }
+}
+
+resource "aws_lambda_function" "generate_segments" {
+  filename         = data.archive_file.lambda_zip.output_path
+  function_name    = "${var.project_name}-generate-segments"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "generateSegments.handler"
+  runtime          = "nodejs20.x"
+  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  timeout          = 60
+
+  environment {
+    variables = {
+      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
+      ASSETS_TABLE            = aws_dynamodb_table.assets.name
+      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
+      SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
+      TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
     }
   }
 }

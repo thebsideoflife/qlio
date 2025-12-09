@@ -146,6 +146,56 @@ resource "aws_lambda_permission" "api_gw_create_project" {
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/projects"
 }
 
+# Project Ops (Get/Delete)
+resource "aws_apigatewayv2_integration" "project_ops" {
+  api_id             = aws_apigatewayv2_api.main.id
+  integration_type   = "AWS_PROXY"
+  integration_uri    = aws_lambda_function.project_ops.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "get_project" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "GET /projects/{projectId}"
+  target    = "integrations/${aws_apigatewayv2_integration.project_ops.id}"
+}
+
+resource "aws_apigatewayv2_route" "delete_project" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "DELETE /projects/{projectId}"
+  target    = "integrations/${aws_apigatewayv2_integration.project_ops.id}"
+}
+
+resource "aws_lambda_permission" "api_gw_project_ops" {
+  statement_id  = "AllowExecutionFromAPIGatewayProjectOps"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.project_ops.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/projects/*"
+}
+
+# List Projects
+resource "aws_apigatewayv2_integration" "list_projects" {
+  api_id             = aws_apigatewayv2_api.main.id
+  integration_type   = "AWS_PROXY"
+  integration_uri    = aws_lambda_function.list_projects.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "list_projects" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "GET /projects"
+  target    = "integrations/${aws_apigatewayv2_integration.list_projects.id}"
+}
+
+resource "aws_lambda_permission" "api_gw_list_projects" {
+  statement_id  = "AllowExecutionFromAPIGatewayListProjects"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.list_projects.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/projects"
+}
+
 # Delete Asset
 resource "aws_apigatewayv2_integration" "delete_asset" {
   api_id           = aws_apigatewayv2_api.main.id
@@ -166,6 +216,28 @@ resource "aws_lambda_permission" "api_gw_delete_asset" {
   function_name = aws_lambda_function.delete_asset.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/assets/*"
+}
+
+# Generate Segments
+resource "aws_apigatewayv2_integration" "generate_segments" {
+  api_id           = aws_apigatewayv2_api.main.id
+  integration_type = "AWS_PROXY"
+  integration_uri  = aws_lambda_function.generate_segments.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "generate_segments" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "POST /projects/{projectId}/generate"
+  target    = "integrations/${aws_apigatewayv2_integration.generate_segments.id}"
+}
+
+resource "aws_lambda_permission" "api_gw_generate_segments" {
+  statement_id  = "AllowExecutionFromAPIGatewayGenerateSegments"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.generate_segments.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/projects/*/generate"
 }
 
 output "api_url" {

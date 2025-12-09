@@ -27,14 +27,14 @@ export function Timeline() {
   };
 
   const formatTime = (seconds: number) => {
-      const m = Math.floor(seconds / 60);
-      const s = Math.floor(seconds % 60);
-      return `${m}:${s.toString().padStart(2, '0')}`;
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
   return (
-    <div className="w-full h-32 bg-background border rounded-lg flex flex-col p-4 select-none">
-      <div className="flex justify-between text-xs text-muted-foreground mb-2 px-1">
+    <div className="w-full h-full bg-background border rounded-lg flex flex-col p-2 select-none relative">
+      <div className="flex justify-between text-[10px] text-muted-foreground mb-1 px-1">
         <span>0:00</span>
         <span>{formatTime(totalDuration * 0.25)}</span>
         <span>{formatTime(totalDuration * 0.5)}</span>
@@ -67,7 +67,10 @@ export function Timeline() {
             )}
             style={{
               left: `${getLeftPercent(segment.startTime)}%`,
-              width: `${Math.max(getWidthPercent(segment.startTime, segment.endTime), 0.5)}%`, // Min width
+              width: `${Math.max(
+                getWidthPercent(segment.startTime, segment.endTime),
+                0.5
+              )}%`, // Min width
             }}
             onMouseDown={(e) => handleMouseDown(e, segment.id)}
             title={segment.title}

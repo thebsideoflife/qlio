@@ -34,7 +34,8 @@ export const checkAuth = async (event: APIGatewayProxyEvent): Promise<APIGateway
   // Webhook Bypass: Check if it's the webhook path
   // NOTE: This assumes the Lambda is triggered via API Gateway with this specific resource path.
   // Ideally, use API Gateway resource policies or a separate authorizer for webhooks.
-  if (event.resource === '/webhook') {
+  // API Gateway V2 (HTTP API) uses rawPath or routeKey, V1 (REST API) uses resource.
+  if (event.resource === '/webhook' || (event as any).rawPath === '/webhook' || (event as any).routeKey === 'POST /webhook') {
       return null; 
   }
 

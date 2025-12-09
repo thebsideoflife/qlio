@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandler } from "aws-lambda";
-import { S3Client } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
@@ -12,7 +12,9 @@ import {
 } from "@aws-sdk/client-secrets-manager";
 import { TwelveLabs } from "twelvelabs-js";
 import { randomUUID, createHmac } from "crypto";
+import axios from "axios";
 
+const s3Client = new S3Client({});
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient, {
   marshallOptions: {
@@ -25,6 +27,7 @@ const TABLE_NAME = process.env.TABLE_NAME!;
 const SECRET_ARN = process.env.SECRET_ARN!;
 const SIGNING_SECRET_ARN = process.env.SIGNING_SECRET_ARN!;
 const TWELVE_LABS_INDEX_ID = process.env.TWELVE_LABS_INDEX_ID!;
+const BUCKET_NAME = process.env.BUCKET_NAME!;
 
 export const handler: APIGatewayProxyHandler = async (event) => {
   try {
@@ -82,7 +85,6 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         };
       }
     } else if (signingSecret) {
-      // If we have a secret configured but no signature header, reject
       console.error(
         "Missing webhook signature header. Received headers:",
         event.headers
@@ -151,8 +153,110 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     const assetId = asset.assetId;
     let videoId = body.data?.video_id || asset.twelveLabsVideoId;
 
-    // NOTE: Automatic clip generation removed. We wait for user to create a project with specific metadata.
-    // The webhook now only updates the status to READY.
+    // Fetch 12 Labs API Key to get thumbnail AND transcription
+    const secretVal12Labs = await secretsClient.send(
+      new GetSecretValueCommand({ SecretId: SECRET_ARN })
+    );
+    const apiKey = secretVal12Labs.SecretString;
+    let thumbnailUrl = null;
+    let transcriptionUrl = null;
+    let videoDuration = 0;
+
+    if (apiKey && videoId && videoId !== "unknown") {
+      const client = new TwelveLabs({ apiKey });
+
+      // A. Get Thumbnail (Use correct method client.indexes.videos.retrieve)
+      try {
+        const video = await client.indexes.videos.retrieve(
+          TWELVE_LABS_INDEX_ID,
+          videoId
+        );
+
+        // Safely access duration without 'as any' if possible, or use a typed helper
+        // The type definition in the library seems to be `Video` which has `metadata`.
+        // If the linter/compiler complains, we can perform a safe check.
+        if ("metadata" in video && (video as any).metadata?.duration) {
+          videoDuration = (video as any).metadata.duration;
+        }
+
+        console.log("12Labs video response:", JSON.stringify(video, null, 2));
+
+        // Try multiple possible paths for thumbnail
+        // Based on log analysis, structure is hls.thumbnailUrls (array)
+        const externalThumbnailUrl =
+          (video as any).thumbnailUrl ||
+          (video as any).thumbnail_url ||
+          (video as any).hls?.thumbnailUrls?.[0] ||
+          (video as any).hls?.thumbnail_urls?.[0] ||
+          (video as any).metadata?.thumbnail_url;
+
+        // Persist thumbnail to S3
+        if (externalThumbnailUrl) {
+          console.log(`Downloading thumbnail from ${externalThumbnailUrl}...`);
+          const thumbResponse = await axios.get(externalThumbnailUrl, {
+            responseType: "arraybuffer",
+          });
+          const thumbKey = `thumbnails/${assetId}.jpg`;
+
+          await s3Client.send(
+            new PutObjectCommand({
+              Bucket: BUCKET_NAME,
+              Key: thumbKey,
+              Body: thumbResponse.data,
+              ContentType: "image/jpeg",
+            })
+          );
+
+          // Store as S3 URI, not public URL
+          thumbnailUrl = `s3://${BUCKET_NAME}/${thumbKey}`;
+          console.log(`Thumbnail stored at ${thumbnailUrl}`);
+        } else {
+          console.warn("No thumbnail URL found in 12Labs response");
+        }
+      } catch (err) {
+        console.error("Failed to fetch/store thumbnail from 12 Labs", err);
+      }
+
+      // B. Get Transcription & Store in S3
+      try {
+        console.log(`Fetching transcription for video ${videoId}...`);
+
+        const url = `https://api.twelvelabs.io/v1.3/indexes/${TWELVE_LABS_INDEX_ID}/videos/${videoId}`;
+        const response = await axios.get(url, {
+          headers: {
+            "x-api-key": apiKey,
+          },
+          params: {
+            transcription: true,
+          },
+        });
+
+        const data = response.data;
+        // The transcription is in data.transcription
+        const transcriptionData = data.transcription;
+
+        if (transcriptionData && Array.isArray(transcriptionData)) {
+          // Store in S3
+          const key = `transcriptions/${assetId}.json`;
+          await s3Client.send(
+            new PutObjectCommand({
+              Bucket: BUCKET_NAME,
+              Key: key,
+              Body: JSON.stringify(transcriptionData),
+              ContentType: "application/json",
+            })
+          );
+
+          // Store as S3 URI, not public URL
+          transcriptionUrl = `s3://${BUCKET_NAME}/${key}`;
+          console.log("Transcription stored at", transcriptionUrl);
+        } else {
+          console.warn("No transcription data found in response", data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch/store transcription", err);
+      }
+    }
 
     // 3. Update DynamoDB
     await docClient.send(
@@ -160,13 +264,16 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         TableName: TABLE_NAME,
         Key: { assetId },
         UpdateExpression:
-          "set #s = :status, twelveLabsVideoId = :vid, updatedAt = :ua",
+          "set #s = :status, twelveLabsVideoId = :vid, thumbnailUrl = :thumb, transcriptionUrl = :trans, duration = :dur, updatedAt = :ua",
         ExpressionAttributeNames: {
           "#s": "status",
         },
         ExpressionAttributeValues: {
           ":status": "READY",
           ":vid": videoId || "unknown",
+          ":thumb": thumbnailUrl,
+          ":trans": transcriptionUrl,
+          ":dur": videoDuration,
           ":ua": new Date().toISOString(),
         },
       })

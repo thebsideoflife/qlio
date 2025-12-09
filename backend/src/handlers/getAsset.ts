@@ -1,13 +1,11 @@
 import { APIGatewayProxyHandler } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { checkAuth } from '../utils/auth';
+import { presignS3Uri } from '../utils/s3';
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
-const s3Client = new S3Client({});
 
 const TABLE_NAME = process.env.TABLE_NAME!;
 
@@ -29,6 +27,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     const result = await docClient.send(new GetCommand({
       TableName: TABLE_NAME,
       Key: { assetId },
+      ConsistentRead: true,
     }));
 
     if (!result.Item) {
@@ -44,18 +43,21 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     asset.id = asset.assetId;
 
     // Generate Presigned URL for video playback
-    if (asset.s3VideoUrl && asset.s3VideoUrl.startsWith('s3://')) {
-        const s3Uri = asset.s3VideoUrl;
-        const bucket = s3Uri.split('/')[2];
-        const key = s3Uri.split('/').slice(3).join('/');
-        
-        try {
-            const command = new GetObjectCommand({ Bucket: bucket, Key: key });
-            const presignedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
-            asset.videoUrl = presignedUrl; 
-        } catch (e) {
-            console.error('Error signing URL for asset:', assetId, e);
+    if (asset.s3VideoUrl) {
+        const presignedUrl = await presignS3Uri(asset.s3VideoUrl);
+        if (presignedUrl) asset.videoUrl = presignedUrl;
         }
+
+    // Generate Presigned URL for Thumbnail
+    if (asset.thumbnailUrl) {
+        const presignedUrl = await presignS3Uri(asset.thumbnailUrl);
+        if (presignedUrl) asset.thumbnailUrl = presignedUrl;
+    }
+
+    // Generate Presigned URL for Transcription
+    if (asset.transcriptionUrl) {
+        const presignedUrl = await presignS3Uri(asset.transcriptionUrl);
+        if (presignedUrl) asset.transcriptionUrl = presignedUrl;
     }
 
     return {
