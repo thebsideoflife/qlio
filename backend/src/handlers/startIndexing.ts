@@ -1,7 +1,7 @@
 import { S3Event, Handler } from 'aws-lambda';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { TwelveLabs } from 'twelvelabs-js';
@@ -13,9 +13,6 @@ const secretsClient = new SecretsManagerClient({});
 
 const TABLE_NAME = process.env.TABLE_NAME!;
 const SECRET_ARN = process.env.SECRET_ARN!;
-// We need an INDEX_ID. Assuming it's passed or we pick a default. 
-// For now, let's assume it's in env or we fail. 
-// I'll add it to env var in compute.tf later.
 const TWELVE_LABS_INDEX_ID = process.env.TWELVE_LABS_INDEX_ID!; 
 
 export const handler: Handler<S3Event> = async (event) => {
@@ -54,16 +51,20 @@ export const handler: Handler<S3Event> = async (event) => {
 
       const taskId = task.id;
 
-      // 4. Update DynamoDB
-      await docClient.send(new PutCommand({
+      // 4. Update DynamoDB (using UpdateCommand to preserve metadata)
+      await docClient.send(new UpdateCommand({
         TableName: TABLE_NAME,
-        Item: {
-          assetId,
-          status: 'INDEXING',
-          s3VideoUrl: `s3://${bucket}/${key}`,
-          twelveLabsIndexId: TWELVE_LABS_INDEX_ID, // Storing index ID used
-          twelveLabsTaskId: taskId,
-          createdAt: new Date().toISOString(),
+        Key: { assetId },
+        UpdateExpression: 'set #status = :status, s3VideoUrl = :url, twelveLabsIndexId = :iid, twelveLabsTaskId = :tid, updatedAt = :updatedAt',
+        ExpressionAttributeNames: {
+          '#status': 'status'
+        },
+        ExpressionAttributeValues: {
+          ':status': 'INDEXING',
+          ':url': `s3://${bucket}/${key}`,
+          ':iid': TWELVE_LABS_INDEX_ID,
+          ':tid': taskId,
+          ':updatedAt': new Date().toISOString()
         }
       }));
 
@@ -74,4 +75,3 @@ export const handler: Handler<S3Event> = async (event) => {
     throw error;
   }
 };
-

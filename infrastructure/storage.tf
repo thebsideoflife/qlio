@@ -39,3 +39,24 @@ resource "aws_dynamodb_table" "assets" {
   }
 }
 
+resource "aws_dynamodb_table" "projects" {
+  name           = "${var.project_name}-projects"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "projectId"
+
+  attribute {
+    name = "projectId"
+    type = "S"
+  }
+
+  attribute {
+    name = "assetId"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name               = "AssetIdIndex"
+    hash_key           = "assetId"
+    projection_type    = "ALL"
+  }
+}
