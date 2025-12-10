@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandlerV2 } from "aws-lambda";
+import { APIGatewayProxyHandler } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { checkAuth } from "../utils/auth";
@@ -10,7 +10,7 @@ const docClient = DynamoDBDocumentClient.from(dynamoClient);
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
 
-export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+export const handler: APIGatewayProxyHandler = async (event) => {
   // 1. Auth Check
   const authResult = await checkAuth(event);
   if (authResult) return authResult;
@@ -21,11 +21,15 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     if (!projectId) {
       return {
         statusCode: 400,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
         body: JSON.stringify({ error: "Missing projectId" }),
       };
     }
 
-    const method = event.requestContext.http.method;
+    const method = event.httpMethod;
 
     if (method === "DELETE") {
       await docClient.send(
@@ -58,6 +62,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     if (!projectRes.Item) {
       return {
         statusCode: 404,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
         body: JSON.stringify({ error: "Project not found" }),
       };
     }

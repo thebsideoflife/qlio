@@ -21,6 +21,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     if (!projectId) {
       return {
         statusCode: 400,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
         body: JSON.stringify({ error: "Missing projectId" }),
       };
     }
@@ -37,6 +41,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     if (!projectRes.Item) {
       return {
         statusCode: 404,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
         body: JSON.stringify({ error: "Project not found" }),
       };
     }
@@ -97,4 +105,3 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     };
   }
 };
-

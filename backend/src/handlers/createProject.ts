@@ -46,6 +46,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     if (!assetId) {
       return {
         statusCode: 400,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
         body: JSON.stringify({ error: "Missing assetId" }),
       };
     }
@@ -61,6 +65,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     if (!assetRes.Item) {
       return {
         statusCode: 404,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
         body: JSON.stringify({ error: "Asset not found" }),
       };
     }
@@ -71,6 +79,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     if (!videoId || videoId === "unknown") {
       return {
         statusCode: 400,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
         body: JSON.stringify({
           error: "Asset has not been indexed by 12 Labs yet.",
         }),
@@ -87,10 +99,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     // 3. (Optional) Generate Initial Microdrama Segments
     // This logic is now primarily handled in the Editor via 'generateSegments' API,
     // but we can keep a lightweight version here for initial project creation or initialize empty.
-    
+
     // For now, initializing with empty segments so the user can generate them in the editor.
     const generatedSegments: Segment[] = [];
-    
+
     const projectId = randomUUID();
     const createdAt = new Date().toISOString();
 

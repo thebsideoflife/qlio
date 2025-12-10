@@ -36,10 +36,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
             if (presignedUrl) result.videoUrl = presignedUrl;
         }
         
-        // Presign thumbnail URL and map to 'thumbnail' field for frontend
+        // Presign thumbnail URL
         if (item.thumbnailUrl) {
             const presignedUrl = await presignS3Uri(item.thumbnailUrl);
-            if (presignedUrl) result.thumbnail = presignedUrl;
+            if (presignedUrl) result.thumbnailUrl = presignedUrl;
         }
         
         return result;

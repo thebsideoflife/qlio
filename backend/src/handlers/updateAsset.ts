@@ -18,6 +18,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     if (!assetId) {
       return {
         statusCode: 400,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
         body: JSON.stringify({ error: "Missing assetId" }),
       };
     }
