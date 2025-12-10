@@ -18,9 +18,9 @@ resource "aws_s3_bucket_cors_configuration" "media" {
 # Will define it in compute.tf or use aws_s3_bucket_notification resource after lambda is defined.
 
 resource "aws_dynamodb_table" "assets" {
-  name           = "${var.project_name}-assets"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "assetId"
+  name         = "${var.project_name}-assets"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "assetId"
 
   attribute {
     name = "assetId"
@@ -33,16 +33,16 @@ resource "aws_dynamodb_table" "assets" {
   }
 
   global_secondary_index {
-    name               = "TaskIdIndex"
-    hash_key           = "twelveLabsTaskId"
-    projection_type    = "ALL"
+    name            = "TaskIdIndex"
+    hash_key        = "twelveLabsTaskId"
+    projection_type = "ALL"
   }
 }
 
 resource "aws_dynamodb_table" "projects" {
-  name           = "${var.project_name}-projects"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "projectId"
+  name         = "${var.project_name}-projects"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "projectId"
 
   attribute {
     name = "projectId"
@@ -55,8 +55,8 @@ resource "aws_dynamodb_table" "projects" {
   }
 
   global_secondary_index {
-    name               = "AssetIdIndex"
-    hash_key           = "assetId"
-    projection_type    = "ALL"
+    name            = "AssetIdIndex"
+    hash_key        = "assetId"
+    projection_type = "ALL"
   }
 }

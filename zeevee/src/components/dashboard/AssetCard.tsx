@@ -32,7 +32,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { listProjects, deleteProject } from "@/services/api";
+import { listProjects, deleteProject, createProject } from "@/services/api";
 
 interface AssetCardProps {
   asset: Asset;
@@ -56,11 +56,7 @@ const stageLabels: Record<string, string> = {
   delivery: "Delivery",
 };
 
-export function AssetCard({
-  asset,
-  onCreateProject,
-  onDelete,
-}: AssetCardProps) {
+export function AssetCard({ asset, onDelete }: AssetCardProps) {
   const navigate = useNavigate();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
@@ -243,9 +239,29 @@ export function AssetCard({
                 variant="default"
                 size="sm"
                 className="flex-1"
-                onClick={(e) => {
+                onClick={async (e) => {
                   e.stopPropagation();
-                  onCreateProject(asset.id);
+                  // Directly create project with defaults instead of opening modal
+                  try {
+                    const defaultSelections = {
+                      type: "tv",
+                      platform: "tiktok",
+                      audience: { gender: "all", age: ["18-24"] },
+                      driver: "viewership",
+                      language: "english",
+                      intent: "Viral Teaser",
+                      style: "Engaging",
+                    };
+                    const result = await createProject(
+                      asset.id,
+                      defaultSelections
+                    );
+                    if (result && result.projectId) {
+                      window.location.href = `/editor/${result.projectId}`;
+                    }
+                  } catch (err) {
+                    console.error("Failed to quick-create project", err);
+                  }
                 }}
               >
                 <PlusCircle className="h-4 w-4 mr-2" />

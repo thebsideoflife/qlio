@@ -26,5 +26,5 @@ variable "stage" {
 variable "twelve_labs_index_id" {
   description = "The Index ID from Twelve Labs"
   type        = string
-  default     = "6934df867a1ec630b5fb65bd" 
+  default     = "6934df867a1ec630b5fb65bd"
 }

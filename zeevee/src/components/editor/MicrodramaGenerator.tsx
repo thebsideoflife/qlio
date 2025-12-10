@@ -26,11 +26,13 @@ export function MicrodramaGenerator({
   isGenerating,
 }: MicrodramaGeneratorProps) {
   const [selections, setSelections] = useState<Record<string, any>>({
-    type: "",
-    platform: "",
+    type: "tv",
+    platform: "tiktok",
     audience: { gender: "all", age: ["18-24"] },
-    driver: "",
+    driver: "viewership",
     language: "english",
+    intent: "Viral Teaser",
+    style: "Engaging",
   });
 
   const handleGenerate = () => {

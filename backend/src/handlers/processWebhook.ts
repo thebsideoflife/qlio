@@ -264,9 +264,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         TableName: TABLE_NAME,
         Key: { assetId },
         UpdateExpression:
-          "set #s = :status, twelveLabsVideoId = :vid, thumbnailUrl = :thumb, transcriptionUrl = :trans, duration = :dur, updatedAt = :ua",
+          "set #s = :status, twelveLabsVideoId = :vid, thumbnailUrl = :thumb, transcriptionUrl = :trans, #dur = :dur, updatedAt = :ua",
         ExpressionAttributeNames: {
           "#s": "status",
+          "#dur": "duration",
         },
         ExpressionAttributeValues: {
           ":status": "READY",

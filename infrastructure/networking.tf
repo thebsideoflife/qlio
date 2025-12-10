@@ -9,16 +9,16 @@ resource "aws_apigatewayv2_api" "main" {
 }
 
 resource "aws_apigatewayv2_stage" "default" {
-  api_id = aws_apigatewayv2_api.main.id
-  name   = "$default"
+  api_id      = aws_apigatewayv2_api.main.id
+  name        = "$default"
   auto_deploy = true
 }
 
 # Generate Upload URL (Changed from GET to POST to accept metadata)
 resource "aws_apigatewayv2_integration" "generate_upload_url" {
-  api_id           = aws_apigatewayv2_api.main.id
-  integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.generate_upload_url.invoke_arn
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.generate_upload_url.invoke_arn
   payload_format_version = "2.0"
 }
 
@@ -38,9 +38,9 @@ resource "aws_lambda_permission" "api_gw_upload" {
 
 # Process Webhook
 resource "aws_apigatewayv2_integration" "process_webhook" {
-  api_id           = aws_apigatewayv2_api.main.id
-  integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.process_webhook.invoke_arn
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.process_webhook.invoke_arn
   payload_format_version = "2.0"
 }
 
@@ -60,9 +60,9 @@ resource "aws_lambda_permission" "api_gw_webhook" {
 
 # List Assets
 resource "aws_apigatewayv2_integration" "list_assets" {
-  api_id           = aws_apigatewayv2_api.main.id
-  integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.list_assets.invoke_arn
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.list_assets.invoke_arn
   payload_format_version = "2.0"
 }
 
@@ -82,9 +82,9 @@ resource "aws_lambda_permission" "api_gw_list" {
 
 # Get Asset
 resource "aws_apigatewayv2_integration" "get_asset" {
-  api_id           = aws_apigatewayv2_api.main.id
-  integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.get_asset.invoke_arn
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.get_asset.invoke_arn
   payload_format_version = "2.0"
 }
 
@@ -104,9 +104,9 @@ resource "aws_lambda_permission" "api_gw_get_asset" {
 
 # Update Asset
 resource "aws_apigatewayv2_integration" "update_asset" {
-  api_id           = aws_apigatewayv2_api.main.id
-  integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.update_asset.invoke_arn
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.update_asset.invoke_arn
   payload_format_version = "2.0"
 }
 
@@ -126,9 +126,9 @@ resource "aws_lambda_permission" "api_gw_update_asset" {
 
 # Create Project
 resource "aws_apigatewayv2_integration" "create_project" {
-  api_id           = aws_apigatewayv2_api.main.id
-  integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.create_project.invoke_arn
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.create_project.invoke_arn
   payload_format_version = "2.0"
 }
 
@@ -148,9 +148,9 @@ resource "aws_lambda_permission" "api_gw_create_project" {
 
 # Project Ops (Get/Delete)
 resource "aws_apigatewayv2_integration" "project_ops" {
-  api_id             = aws_apigatewayv2_api.main.id
-  integration_type   = "AWS_PROXY"
-  integration_uri    = aws_lambda_function.project_ops.invoke_arn
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.project_ops.invoke_arn
   payload_format_version = "2.0"
 }
 
@@ -176,9 +176,9 @@ resource "aws_lambda_permission" "api_gw_project_ops" {
 
 # List Projects
 resource "aws_apigatewayv2_integration" "list_projects" {
-  api_id             = aws_apigatewayv2_api.main.id
-  integration_type   = "AWS_PROXY"
-  integration_uri    = aws_lambda_function.list_projects.invoke_arn
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.list_projects.invoke_arn
   payload_format_version = "2.0"
 }
 
@@ -198,9 +198,9 @@ resource "aws_lambda_permission" "api_gw_list_projects" {
 
 # Delete Asset
 resource "aws_apigatewayv2_integration" "delete_asset" {
-  api_id           = aws_apigatewayv2_api.main.id
-  integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.delete_asset.invoke_arn
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.delete_asset.invoke_arn
   payload_format_version = "2.0"
 }
 
@@ -220,9 +220,9 @@ resource "aws_lambda_permission" "api_gw_delete_asset" {
 
 # Generate Segments
 resource "aws_apigatewayv2_integration" "generate_segments" {
-  api_id           = aws_apigatewayv2_api.main.id
-  integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.generate_segments.invoke_arn
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.generate_segments.invoke_arn
   payload_format_version = "2.0"
 }
 

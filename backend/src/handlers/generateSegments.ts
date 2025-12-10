@@ -12,6 +12,7 @@ import {
 import { TwelveLabs } from "twelvelabs-js";
 import { randomUUID } from "crypto";
 import { checkAuth } from "../utils/auth";
+import { DirectorAgent, VideoContext, UserGoals } from "../services/director";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -105,141 +106,202 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
     const client = new TwelveLabs({ apiKey });
 
-    // Fetch Duration for fallback logic
-    let videoDuration = asset.duration || 600;
+    // --- DIRECTOR AGENT WORKFLOW ---
 
-    // Only fetch from 12Labs if not present in asset
-    if (!asset.duration) {
-      try {
-        const videoInfo = await client.indexes.videos.retrieve(
-          TWELVE_LABS_INDEX_ID,
-          videoId
-        );
-        // Explicitly cast to any because the official type definition might be missing 'metadata'
-        // even though the API returns it.
-        const anyVideoInfo = videoInfo as any;
+    // Step 1: Ingest (Perceive & Ground)
+    console.log("Step 1: Ingesting video context...");
 
-        if (anyVideoInfo.metadata && anyVideoInfo.metadata.duration) {
-          videoDuration = anyVideoInfo.metadata.duration;
-        }
-      } catch (err) {
-        console.warn("Failed to fetch video duration from 12Labs:", err);
+    let videoDuration = asset.duration || 0;
+    let videoSummary = "";
+    let videoTags: string[] = [];
+    let videoTranscript = "";
+    let availableScenes = "";
+
+    // A. Fetch Duration from 12Labs (Official Source)
+    try {
+      const videoInfo = await client.indexes.videos.retrieve(
+        TWELVE_LABS_INDEX_ID,
+        videoId
+      );
+      const anyVideoInfo = videoInfo as any;
+      if (
+        anyVideoInfo.metadata &&
+        typeof anyVideoInfo.metadata.duration === "number"
+      ) {
+        videoDuration = anyVideoInfo.metadata.duration;
+        console.log(`Updated video duration from 12Labs: ${videoDuration}s`);
       }
+    } catch (err) {
+      console.warn("Failed to fetch video duration from 12Labs:", err);
     }
 
-    // 5. Generate Segments
+    // A2. Fetch Transcript (Grounding Source 2)
+    // We try to fetch the transcription if it exists, to provide at least some text context
+    try {
+      // Note: The SDK might not expose a direct 'transcription' getter on the video object easily
+      // We can try to use the search or retrieve endpoint, or just check if we stored it in the asset.
+      // But 'asset.transcriptionUrl' is an S3 path. We can't read S3 easily here without more code.
+      // Let's rely on 12Labs 'analyze' first.
+    } catch (e) {}
+
+    // B. Fetch Summary/Tags (Gist) & "Available Scenes" List using correct SDK methods
+    try {
+      // Fetch standard summary using client.gist() - the correct method per 12Labs docs
+      console.log("Fetching Gist (title, topics)...");
+      const gist = await (client as any).gist({
+        videoId: videoId,
+        types: ["title", "topic"],
+      });
+      if (gist) {
+        videoSummary = gist.title || "";
+        videoTags = gist.topics || [];
+        console.log("Gist fetched successfully:", {
+          title: videoSummary,
+          topics: videoTags,
+        });
+      }
+    } catch (e) {
+      console.warn("Failed to fetch gist:", e);
+    }
+
+    try {
+      // Fetch Detailed Scene List (Grounding) using client.analyze() - the correct method per 12Labs docs
+      const groundingPrompt =
+        "Provide a chronological list of every distinct scene in the video. " +
+        "For each scene, strictly provide the Start Time (in seconds), End Time (in seconds), and a detailed visual description. " +
+        "Format each scene as: [StartSeconds-EndSeconds] Description";
+
+      console.log("Fetching Available Scenes (analyze)...");
+      const sceneResponse = await (client as any).analyze({
+        videoId: videoId,
+        prompt: groundingPrompt,
+      });
+      console.log("Scene Response:", JSON.stringify(sceneResponse, null, 2));
+
+      if (sceneResponse && sceneResponse.data) {
+        availableScenes = sceneResponse.data;
+        console.log("Grounding: Retrieved Available Scenes list.");
+      } else if (sceneResponse && typeof sceneResponse === "string") {
+        availableScenes = sceneResponse;
+        console.log("Grounding: Retrieved Available Scenes (string response).");
+      } else {
+        console.warn(
+          "Grounding: Scene response was empty or unexpected format."
+        );
+        // Fallback: provide basic context
+        availableScenes = `Whole Video [0-${videoDuration.toFixed(
+          0
+        )}]: Video about ${videoTags.join(", ") || "general content"}`;
+      }
+    } catch (e) {
+      console.warn("Failed to analyze for scenes:", e);
+      // Fallback: If analyze fails, construct a simple "Whole Video" context
+      availableScenes = `Whole Video [0-${videoDuration.toFixed(
+        0
+      )}]: Video duration ${videoDuration}s, topics: ${
+        videoTags.join(", ") || "unknown"
+      }`;
+    }
+
+    // Step 2: Ideate (Reason)
+    console.log("Step 2: Ideating with Director Agent...");
+
+    const context: VideoContext = {
+      duration: videoDuration,
+      summary:
+        videoSummary ||
+        "Video content about " + (metadata?.topic || "general topics"),
+      transcript: videoTranscript,
+      tags: videoTags,
+      availableScenes: availableScenes, // Pass the ground truth
+    };
+
+    const goals: UserGoals = {
+      platform: metadata?.platform || "TikTok",
+      intent: metadata?.intent || "Viral Teaser",
+      targetAudience: metadata?.audience || "General",
+      style: metadata?.style || "High Energy",
+    };
+
     let generatedSegments: Segment[] = [];
 
-    // For very short videos (<15 seconds), suggest using the entire video as one segment
-    if (videoDuration < 15) {
-      console.log(
-        `Video is very short (${videoDuration}s). Using entire video as single segment.`
-      );
-      generatedSegments = [
-        {
-          id: randomUUID(),
-          startTime: 0,
-          endTime: videoDuration,
-          title: "Full Video",
-          description: "Short-form content - entire video selected",
-          confidence: 1.0,
-          sceneTags: ["full-video", "short-form"],
-          keyDialogue: "",
-          characters: [],
-        },
-      ];
-    } else {
-      // Construct search query based on user preferences
-      const terms = ["engaging scene", "highlight"];
-      if (metadata?.platform) terms.push(metadata.platform);
-      if (metadata?.driver) terms.push(metadata.driver);
-      if (metadata?.audience?.age?.includes("13-17")) terms.push("viral");
-      if (metadata?.type) terms.push(metadata.type);
+    try {
+      // Call the Director Agent (LLM)
+      const directorOutput = await DirectorAgent.ideate(context, goals);
+      console.log("Director Plan:", JSON.stringify(directorOutput, null, 2));
 
-      const searchQuery = terms.join(" ");
-      console.log("Generating segments with query:", searchQuery);
+      // Step 3: Retrieve (Act)
+      console.log("Step 3: Processing Director's grounded plan...");
 
-      try {
-        const searchResults = await client.search.query({
-          indexId: TWELVE_LABS_INDEX_ID,
-          queryText: searchQuery,
-          searchOptions: ["visual", "transcription"],
-        });
+      const plan = directorOutput.plan || [];
 
-        // Filter by confidence score (only keep good matches)
-        const filteredResults = searchResults.data.filter(
-          (match: any) => match.score > 0.6
-        );
+      for (const planItem of plan) {
+        // Since we are now using grounded selection, we expect precise timestamps
+        // But we validate them
 
-        if (filteredResults.length > 0) {
-          generatedSegments = filteredResults
-            .slice(0, 4)
-            .map((match: any) => ({
-              id: randomUUID(),
-              startTime: match.start,
-              endTime: match.end,
-              title: "Highlight Segment",
-              description: `Confidence: ${match.score.toFixed(2)}`,
-              confidence: match.score,
-              sceneTags: ["highlight", "auto-generated"],
-              keyDialogue: "",
-              characters: [],
-            }))
-            .sort((a, b) => a.startTime - b.startTime);
+        let start = planItem.startTime;
+        let end = planItem.endTime;
+
+        // Basic Validation
+        if (typeof start !== "number" || typeof end !== "number") {
+          console.warn(
+            "Skipping invalid segment (non-number times):",
+            planItem
+          );
+          continue;
         }
-      } catch (err) {
-        console.error("Search step failed:", err);
-      }
-    }
 
-    // 6. Fallback if still empty (smarter fallback for longer videos)
-    if (generatedSegments.length === 0 && videoDuration >= 15) {
-      console.log(
-        "No high-quality segments found. Using intelligent fallback."
-      );
+        // Ensure within bounds
+        start = Math.max(0, start);
+        end = Math.min(videoDuration > 0 ? videoDuration : end, end); // Cap at video duration if known
 
-      // For short-medium videos (15-60s), use 1-2 segments
-      if (videoDuration < 60) {
-        generatedSegments = [
-          {
-            id: randomUUID(),
-            startTime: 0,
-            endTime: videoDuration,
-            title: "Full Clip",
-            description: "Short content - full duration recommended",
-            confidence: 0.7,
-            sceneTags: ["full-clip"],
-            keyDialogue: "",
-            characters: [],
-          },
-        ];
-      } else {
-        // For longer videos, create evenly distributed segments
-        const numSegments = Math.min(3, Math.floor(videoDuration / 30)); // One segment per 30 seconds, max 3
-        const segmentLength = Math.min(20, videoDuration / numSegments);
+        // Ensure min duration (5 seconds)
+        if (end - start < 5) {
+          console.warn(
+            `Segment too short (${end - start}s), skipping:`,
+            planItem.title
+          );
+          continue;
+        }
 
-        generatedSegments = Array.from({ length: numSegments }, (_, i) => {
-          const start =
-            (videoDuration / (numSegments + 1)) * (i + 1) - segmentLength / 2;
-          const clampedStart = Math.max(0, start);
-          const end = Math.min(clampedStart + segmentLength, videoDuration);
-
-          return {
-            id: randomUUID(),
-            startTime: clampedStart,
-            endTime: end,
-            title: `Segment ${i + 1}`,
-            description: "Auto-generated segment",
-            confidence: 0.5,
-            sceneTags: ["auto-generated"],
-            keyDialogue: "",
-            characters: [],
-          };
+        generatedSegments.push({
+          id: randomUUID(),
+          startTime: start,
+          endTime: end,
+          title: planItem.title || "Selected Scene",
+          description: planItem.reasoning,
+          confidence: 1.0, // High confidence because it came from the grounded list
+          // Clean metadata
+          sceneTags: [],
+          keyDialogue: planItem.expectedContent,
+          characters: [],
         });
       }
+    } catch (err) {
+      console.error("Director Agent flow encountered an error:", err);
     }
 
-    // 7. Update Project
+    // Step 4: Strict Failure Mode (No Fallback)
+    if (generatedSegments.length === 0) {
+      console.error("Director Agent failed to find any valid segments.");
+      return {
+        statusCode: 422, // Unprocessable Entity
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+        body: JSON.stringify({
+          error: "AI could not find suitable clips meeting the criteria.",
+          details:
+            "No segments found in Director plan or segments were too short.",
+        }),
+      };
+    }
+
+    // Sort segments chronologically
+    generatedSegments.sort((a, b) => a.startTime - b.startTime);
+
+    // 5. Update Project
     await docClient.send(
       new UpdateCommand({
         TableName: PROJECTS_TABLE,

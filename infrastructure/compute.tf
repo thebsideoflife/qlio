@@ -55,6 +55,15 @@ data "aws_iam_policy_document" "lambda_policy" {
       aws_secretsmanager_secret.twelve_labs_signing_secret.arn
     ]
   }
+  statement {
+    actions = [
+      "bedrock:InvokeModel",
+      "aws-marketplace:ViewSubscriptions",
+      "aws-marketplace:Subscribe",
+      "aws-marketplace:Unsubscribe"
+    ]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_role_policy" "lambda_policy" {
@@ -191,11 +200,11 @@ resource "aws_lambda_function" "create_project" {
 
   environment {
     variables = {
-      PROJECTS_TABLE       = aws_dynamodb_table.projects.name
-      ASSETS_TABLE         = aws_dynamodb_table.assets.name
+      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
+      ASSETS_TABLE            = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-      SECRET_ARN           = aws_secretsmanager_secret.twelve_labs_key.arn
-      TWELVE_LABS_INDEX_ID = var.twelve_labs_index_id
+      SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
+      TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
     }
   }
 }
