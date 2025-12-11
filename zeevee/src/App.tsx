@@ -4,17 +4,36 @@ import { store } from "./store/store";
 import { MainLayout } from "./components/layout/MainLayout";
 import Dashboard from "./pages/Dashboard";
 import Editor from "./pages/Editor";
+import SignIn from "./pages/SignIn";
+import { RequireAuth } from "./components/RequireAuth";
 
 function App() {
   return (
     <Provider store={store}>
       <BrowserRouter>
-        <MainLayout>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/editor" element={<Editor />} />
-          </Routes>
-        </MainLayout>
+        <Routes>
+          <Route path="/signin" element={<SignIn />} />
+          <Route
+            path="/"
+            element={
+              <RequireAuth>
+                <MainLayout>
+                  <Dashboard />
+                </MainLayout>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/editor/:projectId"
+            element={
+              <RequireAuth>
+                <MainLayout>
+                  <Editor />
+                </MainLayout>
+              </RequireAuth>
+            }
+          />
+        </Routes>
       </BrowserRouter>
     </Provider>
   );

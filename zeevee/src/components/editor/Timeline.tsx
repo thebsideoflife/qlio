@@ -10,9 +10,10 @@ export function Timeline() {
   const selectedId = useSelector(
     (state: RootState) => state.editor.selectedSegmentId
   );
+  const duration = useSelector((state: RootState) => state.editor.duration);
 
-  // Mock total duration of 40 minutes (2400 seconds) for the demo
-  const totalDuration = 2400;
+  // Use real duration, or fallback to 10 mins (600s) if 0 to avoid division by zero
+  const totalDuration = duration > 0 ? duration : 600;
 
   const trackRef = useRef<HTMLDivElement>(null);
 
@@ -25,14 +26,20 @@ export function Timeline() {
     dispatch(selectSegment(id));
   };
 
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
   return (
-    <div className="w-full h-32 bg-background border rounded-lg flex flex-col p-4 select-none">
-      <div className="flex justify-between text-xs text-muted-foreground mb-2 px-1">
+    <div className="w-full h-full bg-background border rounded-lg flex flex-col p-2 select-none relative">
+      <div className="flex justify-between text-[10px] text-muted-foreground mb-1 px-1">
         <span>0:00</span>
-        <span>10:00</span>
-        <span>20:00</span>
-        <span>30:00</span>
-        <span>40:00</span>
+        <span>{formatTime(totalDuration * 0.25)}</span>
+        <span>{formatTime(totalDuration * 0.5)}</span>
+        <span>{formatTime(totalDuration * 0.75)}</span>
+        <span>{formatTime(totalDuration)}</span>
       </div>
 
       <div
@@ -60,9 +67,13 @@ export function Timeline() {
             )}
             style={{
               left: `${getLeftPercent(segment.startTime)}%`,
-              width: `${getWidthPercent(segment.startTime, segment.endTime)}%`,
+              width: `${Math.max(
+                getWidthPercent(segment.startTime, segment.endTime),
+                0.5
+              )}%`, // Min width
             }}
             onMouseDown={(e) => handleMouseDown(e, segment.id)}
+            title={segment.title}
           >
             {/* Drag Handles (Visual only for MVP) */}
             <div className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize bg-white/20 hover:bg-white/50" />
@@ -74,9 +85,6 @@ export function Timeline() {
           </div>
         ))}
       </div>
-
-      {/* Playhead (Visual) */}
-      {/* <div className="absolute top-0 bottom-0 w-0.5 bg-red-500 left-[50%] pointer-events-none" /> */}
     </div>
   );
 }

@@ -1,0 +1,32 @@
+{
+  "name": "zeevee-backend",
+  "version": "1.0.0",
+  "description": "Serverless backend for ZeeVee",
+  "main": "index.js",
+  "scripts": {
+    "build": "esbuild src/handlers/*.ts --bundle --platform=node --target=node18 --outdir=dist",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.947.0",
+    "@aws-sdk/client-dynamodb": "^3.400.0",
+    "@aws-sdk/client-s3": "^3.948.0",
+    "@aws-sdk/client-secrets-manager": "^3.400.0",
+    "@aws-sdk/client-sts": "^3.948.0",
+    "@aws-sdk/lib-dynamodb": "^3.400.0",
+    "@aws-sdk/lib-storage": "^3.948.0",
+    "@aws-sdk/s3-request-presigner": "^3.400.0",
+    "axios": "^1.6.0",
+    "twelvelabs-js": "^1.1.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.0",
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.19.0",
+    "typescript": "^5.0.0"
+  }
+}
