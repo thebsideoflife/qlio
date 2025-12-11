@@ -19,25 +19,39 @@ interface EditorState {
   duration: number;
   projectTitle: string;
   assetName: string;
+  // Sync tracking
+  projectId: string | null;
+  isDirty: boolean;
+  isSyncing: boolean;
 }
 
-const initialSegments: Segment[] = [];
-
 const initialState: EditorState = {
-  segments: initialSegments,
+  segments: [],
   selectedSegmentId: null,
   currentTime: 0,
   duration: 0,
   projectTitle: "",
   assetName: "",
+  // Sync tracking
+  projectId: null,
+  isDirty: false,
+  isSyncing: false,
 };
 
 export const editorSlice = createSlice({
   name: "editor",
   initialState,
   reducers: {
+    // Project management
+    setProjectId: (state, action: PayloadAction<string | null>) => {
+      state.projectId = action.payload;
+      // Reset dirty state when loading a new project
+      state.isDirty = false;
+      state.isSyncing = false;
+    },
     setSegments: (state, action: PayloadAction<Segment[]>) => {
       state.segments = action.payload;
+      // Note: setSegments from API load should NOT set dirty
     },
     setProjectMetadata: (
       state,
@@ -52,6 +66,8 @@ export const editorSlice = createSlice({
     selectSegment: (state, action: PayloadAction<string | null>) => {
       state.selectedSegmentId = action.payload;
     },
+
+    // Segment editing (all set isDirty)
     updateSegmentTime: (
       state,
       action: PayloadAction<{ id: string; start: number; end: number }>
@@ -60,49 +76,114 @@ export const editorSlice = createSlice({
       if (segment) {
         segment.startTime = action.payload.start;
         segment.endTime = action.payload.end;
+        state.isDirty = true;
       }
     },
-    splitSegment: (state, action: PayloadAction<string>) => {
-      const index = state.segments.findIndex((s) => s.id === action.payload);
+    splitSegment: (
+      state,
+      action: PayloadAction<{ id: string; atTime?: number }>
+    ) => {
+      const { id, atTime } = action.payload;
+      const index = state.segments.findIndex((s) => s.id === id);
       if (index !== -1) {
         const segment = state.segments[index];
-        const midPoint =
-          segment.startTime + (segment.endTime - segment.startTime) / 2;
+        // Use provided time or default to midpoint
+        const splitPoint =
+          atTime !== undefined
+            ? atTime
+            : segment.startTime + (segment.endTime - segment.startTime) / 2;
 
-        const newSegment1 = {
+        // Ensure split point is within segment bounds
+        if (splitPoint <= segment.startTime || splitPoint >= segment.endTime) {
+          return;
+        }
+
+        const newSegment1: Segment = {
           ...segment,
-          endTime: midPoint,
-          id: segment.id + "-a",
-          title: segment.title + " (Part 1)",
+          endTime: splitPoint,
+          id: `${segment.id}-a`,
+          title: `${segment.title} (Part 1)`,
         };
-        const newSegment2 = {
+        const newSegment2: Segment = {
           ...segment,
-          startTime: midPoint,
-          id: segment.id + "-b",
-          title: segment.title + " (Part 2)",
+          startTime: splitPoint,
+          id: `${segment.id}-b`,
+          title: `${segment.title} (Part 2)`,
         };
 
-        // Replace original with two new parts
         state.segments.splice(index, 1, newSegment1, newSegment2);
+        state.isDirty = true;
       }
     },
+    addSegment: (state, action: PayloadAction<{ atTime: number }>) => {
+      const { atTime } = action.payload;
+      const defaultDuration = 3;
+      const endTime = Math.min(atTime + defaultDuration, state.duration);
+
+      // Don't add if it would be zero-length
+      if (endTime <= atTime) return;
+
+      const newSegment: Segment = {
+        id: `seg-${Date.now()}`,
+        startTime: atTime,
+        endTime,
+        title: "New Segment",
+        description: "",
+        characters: [],
+        sceneTags: [],
+        keyDialogue: "",
+        confidence: 1,
+      };
+
+      state.segments.push(newSegment);
+      state.segments.sort((a, b) => a.startTime - b.startTime);
+      state.selectedSegmentId = newSegment.id;
+      state.isDirty = true;
+    },
+    deleteSegment: (state, action: PayloadAction<string>) => {
+      const id = action.payload;
+      state.segments = state.segments.filter((s) => s.id !== id);
+      if (state.selectedSegmentId === id) {
+        state.selectedSegmentId = null;
+      }
+      state.isDirty = true;
+    },
+
+    // Sync state management
+    setSyncing: (state, action: PayloadAction<boolean>) => {
+      state.isSyncing = action.payload;
+    },
+    markSynced: (state) => {
+      state.isDirty = false;
+    },
+
+    // Playback state
     setCurrentTime: (state, action: PayloadAction<number>) => {
       state.currentTime = action.payload;
     },
     setDuration: (state, action: PayloadAction<number>) => {
       state.duration = action.payload;
     },
+
+    // Reset state when leaving editor
+    resetEditor: () => initialState,
   },
 });
 
 export const {
+  setProjectId,
   setSegments,
   setProjectMetadata,
   updateProjectTitle,
   selectSegment,
   updateSegmentTime,
   splitSegment,
+  addSegment,
+  deleteSegment,
+  setSyncing,
+  markSynced,
   setCurrentTime,
   setDuration,
+  resetEditor,
 } = editorSlice.actions;
 export default editorSlice.reducer;

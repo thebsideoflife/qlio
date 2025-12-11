@@ -1,5 +1,6 @@
 import { Timeline } from "@/components/editor/Timeline";
 import { MicrodramaGenerator } from "@/components/editor/MicrodramaGenerator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
 import {
@@ -7,12 +8,14 @@ import {
   setCurrentTime,
   setDuration,
   setSegments,
+  setProjectId,
+  resetEditor,
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
 import { useRef, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useProjectData } from "@/hooks/useProjectData";
-import { useSeamlessPlayback } from "@/hooks/useSeamlessPlayback";
+// import { useSeamlessPlayback } from "@/hooks/useSeamlessPlayback";
 import { generateSegments } from "@/services/api";
 import { FileText, Wand2 } from "lucide-react";
 
@@ -24,7 +27,7 @@ export default function Editor() {
   const selectedSegmentId = useSelector(
     (state: RootState) => state.editor.selectedSegmentId
   );
-  const segments = useSelector((state: RootState) => state.editor.segments);
+  // const segments = useSelector((state: RootState) => state.editor.segments);
   const currentTime = useSelector(
     (state: RootState) => state.editor.currentTime
   );
@@ -37,19 +40,29 @@ export default function Editor() {
 
   // Custom Hooks
   const { videoUrl, transcription, loading } = useProjectData(projectId);
-  // Always active (seamless playback)
-  useSeamlessPlayback(videoRef, segments);
+  // Seamless playback disabled - let video play normally
+  // useSeamlessPlayback(videoRef, segments);
 
-  // Sync selection to video player
+  // Set projectId in Redux for sync middleware
   useEffect(() => {
-    if (selectedSegmentId && videoRef.current) {
-      const seg = segments.find((s) => s.id === selectedSegmentId);
-      if (seg) {
-        videoRef.current.currentTime = seg.startTime;
-        videoRef.current.play();
-      }
+    if (projectId) {
+      dispatch(setProjectId(projectId));
     }
-  }, [selectedSegmentId, segments]);
+    return () => {
+      dispatch(resetEditor());
+    };
+  }, [projectId, dispatch]);
+
+  // Don't auto-seek when selecting segments - timeline handles seeking now
+  // useEffect(() => {
+  //   if (selectedSegmentId && videoRef.current) {
+  //     const seg = segments.find((s) => s.id === selectedSegmentId);
+  //     if (seg) {
+  //       videoRef.current.currentTime = seg.startTime;
+  //       videoRef.current.play();
+  //     }
+  //   }
+  // }, [selectedSegmentId, segments]);
 
   const handleBackgroundClick = () => {
     if (selectedSegmentId) {
@@ -131,8 +144,24 @@ export default function Editor() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen text-muted-foreground">
-        Loading project...
+      <div className="flex h-[calc(100vh-4rem)]">
+        {/* Left: Video & Timeline skeleton */}
+        <div className="flex-1 flex flex-col min-w-0 bg-background border-r">
+          <div className="flex-1 bg-black flex items-center justify-center">
+            <Skeleton className="w-[80%] aspect-video bg-muted/20" />
+          </div>
+          <div className="h-32 border-t bg-card p-2">
+            <Skeleton className="w-full h-full" />
+          </div>
+        </div>
+        {/* Right: Sidebar skeleton */}
+        <div className="w-80 flex flex-col bg-card border-l p-4 space-y-4">
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-32 w-full" />
+          <Skeleton className="h-8 w-3/4" />
+          <Skeleton className="h-8 w-1/2" />
+          <Skeleton className="h-24 w-full" />
+        </div>
       </div>
     );
   }
@@ -163,8 +192,8 @@ export default function Editor() {
         </div>
 
         {/* Timeline */}
-        <div className="h-32 border-t bg-card p-2">
-          <Timeline />
+        <div className="h-36 border-t bg-card p-2">
+          <Timeline videoRef={videoRef} />
         </div>
       </div>
 
