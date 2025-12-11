@@ -1,4 +1,6 @@
 import axios from "axios";
+import { S3Client } from "@aws-sdk/client-s3";
+import { Upload } from "@aws-sdk/lib-storage";
 
 const API_URL = import.meta.env.VITE_API_URL;
 const AUTH_KEY = "api_password";
@@ -24,20 +26,26 @@ axios.interceptors.response.use(
   }
 );
 
-export interface UploadUrlResponse {
-  uploadUrl: string;
+export interface UploadCredentialsResponse {
   assetId: string;
   key: string;
+  bucket: string;
+  region: string;
+  credentials: {
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken: string;
+    expiration: string;
+  };
 }
 
-export const getUploadUrl = async (
+export const getUploadCredentials = async (
   fileType: string,
   metadata: any
-): Promise<UploadUrlResponse> => {
+): Promise<UploadCredentialsResponse> => {
   let extension = fileType.split("/")[1] || "mp4";
   if (extension === "quicktime") extension = "mov";
 
-  // Changed to POST to support metadata body
   const response = await axios.post(
     `${API_URL}/upload`,
     {
@@ -52,19 +60,60 @@ export const getUploadUrl = async (
   return response.data;
 };
 
-export const uploadToS3 = async (uploadUrl: string, file: File) => {
-  try {
-    console.log(`Uploading ${file.name} (${file.type}) to S3...`);
-    await axios.put(uploadUrl, file, {
-      headers: {
-        "Content-Type": file.type,
-      },
-    });
-    console.log("Upload successful!");
-  } catch (error: any) {
-    console.error("S3 Upload Failed:", error);
-    throw error;
-  }
+export interface UploadProgress {
+  loaded: number;
+  total: number;
+  percentage: number;
+}
+
+export const uploadToS3 = async (
+  uploadInfo: UploadCredentialsResponse,
+  file: File,
+  onProgress?: (progress: UploadProgress) => void
+): Promise<void> => {
+  const { bucket, key, region, credentials } = uploadInfo;
+
+  const s3Client = new S3Client({
+    region,
+    credentials: {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+      sessionToken: credentials.sessionToken,
+    },
+    useAccelerateEndpoint: true, // Enable S3 Transfer Acceleration
+    // Disable checksums to prevent "InvalidRequest: The upload was created using a crc32 checksum..." errors
+    // S3 will still use standard ETag verification.
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    responseChecksumValidation: "WHEN_REQUIRED",
+  });
+
+  const upload = new Upload({
+    client: s3Client,
+    params: {
+      Bucket: bucket,
+      Key: key,
+      Body: file,
+      ContentType: file.type,
+    },
+    // Multipart upload settings
+    queueSize: 8, // Increase concurrency (browsers support more via HTTP/2)
+    partSize: 64 * 1024 * 1024, // 64MB chunks (Better throughput for large files)
+    leavePartsOnError: false, // Clean up on failure
+  });
+
+  upload.on("httpUploadProgress", (progress) => {
+    if (onProgress && progress.loaded && progress.total) {
+      onProgress({
+        loaded: progress.loaded,
+        total: progress.total,
+        percentage: Math.round((progress.loaded / progress.total) * 100),
+      });
+    }
+  });
+
+  console.log(`Starting multipart upload for ${file.name} (${file.type})...`);
+  await upload.done();
+  console.log("Upload successful!");
 };
 
 export const listAssets = async () => {

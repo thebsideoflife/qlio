@@ -53,7 +53,7 @@ ${
     : "No transcript available."
 }
 
-AVAILABLE SCENES (You MUST strictly select from this list):
+AVAILABLE SCENES:
 ${context.availableScenes || "No scene list available."}
 
 User Goals:
@@ -71,10 +71,14 @@ For each segment, provide:
 4. "expectedContent" (what happens in this segment).
 
 Constraints:
-- Do NOT invent scenes. Use the provided list.
+- If "AVAILABLE SCENES" contains a detailed list, you MUST strictly select start/end times from it.
+- If "AVAILABLE SCENES" indicates "SCENE_LIST_UNAVAILABLE" or is empty, you must ESTIMATE segments based on the transcript and summary. 
+  - In this estimation case, ensure start/end times are within the video duration (0-${
+    context.duration
+  }).
 - Ensure segments are at least 5 seconds long.
 - Do NOT overlap segments.
-- If no scenes match the narrative, pick the most visually interesting ones from the list.
+- If no scenes match the narrative, pick the most visually interesting ones.
 
 Output strict JSON only. No markdown formatting.
 Schema:

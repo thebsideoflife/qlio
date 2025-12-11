@@ -120,35 +120,69 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     const apiKey = secretVal.SecretString;
     if (!apiKey) throw new Error("12Labs API Key not found");
 
-    const client = new TwelveLabs({ apiKey });
+    const client = new TwelveLabs({
+      apiKey,
+    });
+    // Manually override axios default timeout if exposed, or rely on Lambda timeout
+    // The SDK uses axios under the hood. If we can't set it via constructor,
+    // we can try to rely on the environment or accept the default.
+    // Given the TypeScript error, we'll revert to default constructor and rely on our new robust fallback logic.
 
     // --- DIRECTOR AGENT WORKFLOW ---
 
+    // 129
     // Step 1: Ingest (Perceive & Ground)
     console.log("Step 1: Ingesting video context...");
 
-    let videoDuration = asset.duration || 0;
+    // Determine duration priority:
+    // 1. Client provided (most reliable fix for broken assets)
+    // 2. Stored in Asset (from upload)
+    // 3. 12Labs Metadata (slow/sometimes missing)
+    let videoDuration = 0;
+    if (metadata?.duration && typeof metadata.duration === "number") {
+      videoDuration = metadata.duration;
+      console.log(`Using client-provided duration: ${videoDuration}s`);
+    } else if (asset.duration && typeof asset.duration === "number") {
+      videoDuration = asset.duration;
+      console.log(`Using stored asset duration: ${videoDuration}s`);
+    }
+
     let videoSummary = "";
     let videoTags: string[] = [];
     let videoTranscript = "";
     let availableScenes = "";
 
-    // A. Fetch Duration from 12Labs (Official Source)
+    // A. Fetch Duration from 12Labs (Official Source) - Only if we still don't have it
     try {
-      const videoInfo = await client.indexes.videos.retrieve(
-        TWELVE_LABS_INDEX_ID,
-        videoId
-      );
-      const anyVideoInfo = videoInfo as any;
-      if (
-        anyVideoInfo.metadata &&
-        typeof anyVideoInfo.metadata.duration === "number"
-      ) {
-        videoDuration = anyVideoInfo.metadata.duration;
-        console.log(`Updated video duration from 12Labs: ${videoDuration}s`);
+      if (videoDuration === 0) {
+        const videoInfo = await client.indexes.videos.retrieve(
+          TWELVE_LABS_INDEX_ID,
+          videoId
+        );
+        const anyVideoInfo = videoInfo as any;
+        if (
+          anyVideoInfo.metadata &&
+          typeof anyVideoInfo.metadata.duration === "number"
+        ) {
+          videoDuration = anyVideoInfo.metadata.duration;
+          console.log(`Updated video duration from 12Labs: ${videoDuration}s`);
+        } else {
+          console.log(
+            "12Labs metadata did not contain duration:",
+            anyVideoInfo.metadata
+          );
+        }
       }
     } catch (err) {
       console.warn("Failed to fetch video duration from 12Labs:", err);
+    }
+
+    // Safety fallback for duration if everything fails
+    if (videoDuration === 0) {
+      console.warn(
+        "Duration is still 0. Defaulting to 60s to allow heuristic fallback."
+      );
+      videoDuration = 60;
     }
 
     // A2. Fetch Transcript (Grounding Source 2)
@@ -212,11 +246,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     } catch (e) {
       console.warn("Failed to analyze for scenes:", e);
       // Fallback: If analyze fails, construct a simple "Whole Video" context
-      availableScenes = `Whole Video [0-${videoDuration.toFixed(
-        0
-      )}]: Video duration ${videoDuration}s, topics: ${
-        videoTags.join(", ") || "unknown"
-      }`;
+      availableScenes = `SCENE_LIST_UNAVAILABLE. 
+      Whole Video [0-${videoDuration.toFixed(0)}]: 
+      Summary: ${videoSummary}. 
+      Topics: ${videoTags.join(", ") || "unknown"}`;
     }
 
     // Step 2: Ideate (Reason)
@@ -297,21 +330,81 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       console.error("Director Agent flow encountered an error:", err);
     }
 
-    // Step 4: Strict Failure Mode (No Fallback)
+    // Step 4: Fallback / Failure Mode
     if (generatedSegments.length === 0) {
-      console.error("Director Agent failed to find any valid segments.");
-      return {
-        statusCode: 422, // Unprocessable Entity
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        },
-        body: JSON.stringify({
-          error: "AI could not find suitable clips meeting the criteria.",
-          details:
-            "No segments found in Director plan or segments were too short.",
-        }),
-      };
+      console.warn(
+        "Director Agent failed to find valid segments. Attempting heuristic fallback."
+      );
+
+      // Heuristic Fallback: Generate 3 evenly spaced segments
+      // 1. Intro (Start)
+      // 2. Climax (Middle)
+      // 3. Conclusion (End)
+
+      const safeDuration = videoDuration > 0 ? videoDuration : 60;
+      const segmentDuration = Math.min(15, Math.max(5, safeDuration / 10)); // Between 5s and 15s
+
+      // Segment 1: Start
+      generatedSegments.push({
+        id: randomUUID(),
+        startTime: 0,
+        endTime: segmentDuration,
+        title: "Opening Scene",
+        description: "Auto-generated fallback: Opening of the video.",
+        confidence: 0.5,
+        sceneTags: ["fallback"],
+        keyDialogue: "",
+        characters: [],
+      });
+
+      // Segment 2: Middle (if video is long enough)
+      if (safeDuration > segmentDuration * 3) {
+        const midStart = safeDuration / 2 - segmentDuration / 2;
+        generatedSegments.push({
+          id: randomUUID(),
+          startTime: midStart,
+          endTime: midStart + segmentDuration,
+          title: "Key Moment",
+          description: "Auto-generated fallback: Middle of the video.",
+          confidence: 0.5,
+          sceneTags: ["fallback"],
+          keyDialogue: "",
+          characters: [],
+        });
+      }
+
+      // Segment 3: End (if video is long enough)
+      if (safeDuration > segmentDuration * 2) {
+        generatedSegments.push({
+          id: randomUUID(),
+          startTime: safeDuration - segmentDuration,
+          endTime: safeDuration,
+          title: "Conclusion",
+          description: "Auto-generated fallback: End of the video.",
+          confidence: 0.5,
+          sceneTags: ["fallback"],
+          keyDialogue: "",
+          characters: [],
+        });
+      }
+
+      if (generatedSegments.length === 0) {
+        console.error("Heuristic fallback also failed (video too short?).");
+        return {
+          statusCode: 422,
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          },
+          body: JSON.stringify({
+            error:
+              "AI could not find suitable clips, and fallback generation failed.",
+            details: "Video might be too short or metadata is invalid.",
+          }),
+        };
+      }
+
+      console.log("Generated fallback segments:", generatedSegments);
     }
 
     // Sort segments chronologically

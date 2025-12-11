@@ -2,14 +2,19 @@ resource "aws_s3_bucket" "media" {
   bucket = "${var.project_name}-media-${var.stage}"
 }
 
+resource "aws_s3_bucket_accelerate_configuration" "media" {
+  bucket = aws_s3_bucket.media.id
+  status = "Enabled"
+}
+
 resource "aws_s3_bucket_cors_configuration" "media" {
   bucket = aws_s3_bucket.media.id
 
   cors_rule {
     allowed_headers = ["*"]
-    allowed_methods = ["PUT", "GET", "HEAD"]
+    allowed_methods = ["PUT", "POST", "GET", "HEAD", "DELETE"]
     allowed_origins = ["*"] # In prod, restrict to domain
-    expose_headers  = ["ETag"]
+    expose_headers  = ["ETag", "x-amz-server-side-encryption", "x-amz-request-id", "x-amz-id-2"]
     max_age_seconds = 3000
   }
 }

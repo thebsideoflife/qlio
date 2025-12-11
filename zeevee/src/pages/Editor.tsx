@@ -74,17 +74,58 @@ export default function Editor() {
   const handleGenerateSegments = async (selections: any) => {
     if (!projectId) return;
     setIsGenerating(true);
+
+    // Pass current video duration if available
+    const currentDuration = videoRef.current
+      ? videoRef.current.duration
+      : duration;
+    const metadata = { ...selections, duration: currentDuration };
+
     try {
-      const result = await generateSegments(projectId, selections);
+      const result = await generateSegments(projectId, metadata);
       if (result.segments) {
         dispatch(setSegments(result.segments));
-        // Switch to transcript tab to see results alongside video? Or stay?
-        // Staying allows them to tweak.
       }
-    } catch (error) {
+      setIsGenerating(false);
+    } catch (error: any) {
       console.error("Failed to generate segments:", error);
+
+      // If status is 503/504, it might be a gateway timeout while Lambda continues.
+      if (error.response?.status === 503 || error.response?.status === 504) {
+        console.log("Gateway timeout detected. Polling for results...");
+
+        let attempts = 0;
+        const maxAttempts = 60; // 5 minutes (5s interval)
+
+        const pollInterval = setInterval(async () => {
+          attempts++;
+          try {
+            // Import getProject dynamically or use the hook's data if we can force refresh
+            // Better to use direct API call here
+            const { getProject } = await import("@/services/api");
+            const projectData = await getProject(projectId);
+
+            if (projectData.segments && projectData.segments.length > 0) {
+              dispatch(setSegments(projectData.segments));
+              clearInterval(pollInterval);
+              setIsGenerating(false);
+              // Maybe switch tab?
+              // setActiveTab("transcript");
+            } else if (attempts >= maxAttempts) {
+              clearInterval(pollInterval);
+              setIsGenerating(false);
+              alert("Generation timed out. Please try again.");
+            }
+          } catch (e) {
+            console.warn("Polling error:", e);
+          }
+        }, 5000);
+
+        // Return early to keep isGenerating true until polling finishes
+        return;
+      }
+
       alert("Failed to generate segments. Please try again.");
-    } finally {
       setIsGenerating(false);
     }
   };
@@ -166,14 +207,14 @@ export default function Editor() {
             />
           ) : (
             <div className="p-4 space-y-1 text-sm leading-relaxed h-full">
-               <div className="flex justify-between items-center mb-4 text-xs text-muted-foreground">
-                 <span>Full Transcript</span>
-                 <span>
+              <div className="flex justify-between items-center mb-4 text-xs text-muted-foreground">
+                <span>Full Transcript</span>
+                <span>
                   {Math.floor(duration / 60)}:
                   {(duration % 60).toFixed(0).padStart(2, "0")}
                 </span>
-               </div>
-              
+              </div>
+
               {transcription.length > 0 ? (
                 <p>
                   {transcription.map((word, idx) => {
@@ -195,7 +236,9 @@ export default function Editor() {
                 </p>
               ) : (
                 <div className="text-muted-foreground text-center mt-10">
-                  {loading ? "Loading transcript..." : "No transcript available."}
+                  {loading
+                    ? "Loading transcript..."
+                    : "No transcript available."}
                 </div>
               )}
             </div>

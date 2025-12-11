@@ -11,6 +11,7 @@ export interface Asset {
   title: string;
   originalName?: string;
   thumbnail?: string;
+  thumbnailUrl?: string;
   status:
     | "processing"
     | "uploading"
@@ -25,6 +26,7 @@ export interface Asset {
   videoUrl?: string;
   segments?: Segment[];
   metadata?: any;
+  uploadProgress?: number;
   processing?: {
     stage: string;
     progress: number;
@@ -73,11 +75,15 @@ export const assetsSlice = createSlice({
       action: PayloadAction<{
         id: string;
         status: Asset["status"];
+        progress?: number;
       }>
     ) => {
       const asset = state.items.find((a) => a.id === action.payload.id);
       if (asset) {
         asset.status = action.payload.status;
+        if (typeof action.payload.progress === "number") {
+          asset.uploadProgress = action.payload.progress;
+        }
       }
     },
     removeAsset: (state, action: PayloadAction<string>) => {

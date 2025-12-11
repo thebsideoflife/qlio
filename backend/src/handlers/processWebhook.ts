@@ -165,37 +165,62 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     if (apiKey && videoId && videoId !== "unknown") {
       const client = new TwelveLabs({ apiKey });
 
-      // A. Get Thumbnail (Use correct method client.indexes.videos.retrieve)
+      // A. Get Thumbnail
       try {
         const video = await client.indexes.videos.retrieve(
           TWELVE_LABS_INDEX_ID,
           videoId
         );
 
-        // Safely access duration without 'as any' if possible, or use a typed helper
-        // The type definition in the library seems to be `Video` which has `metadata`.
-        // If the linter/compiler complains, we can perform a safe check.
+        // Safely access duration
         if ("metadata" in video && (video as any).metadata?.duration) {
           videoDuration = (video as any).metadata.duration;
         }
 
         console.log("12Labs video response:", JSON.stringify(video, null, 2));
 
-        // Try multiple possible paths for thumbnail
-        // Based on log analysis, structure is hls.thumbnailUrls (array)
-        const externalThumbnailUrl =
-          (video as any).thumbnailUrl ||
-          (video as any).thumbnail_url ||
-          (video as any).hls?.thumbnailUrls?.[0] ||
-          (video as any).hls?.thumbnail_urls?.[0] ||
-          (video as any).metadata?.thumbnail_url;
+        // Determine timestamp for thumbnail (avoid black start frame)
+        let thumbTime = 0;
+        if (videoDuration > 10) {
+          thumbTime = 5;
+        } else if (videoDuration > 0) {
+          thumbTime = videoDuration / 2;
+        }
 
-        // Persist thumbnail to S3
-        if (externalThumbnailUrl) {
-          console.log(`Downloading thumbnail from ${externalThumbnailUrl}...`);
-          const thumbResponse = await axios.get(externalThumbnailUrl, {
+        // Fetch thumbnail directly from API to control timestamp
+        console.log(`Fetching thumbnail at ${thumbTime}s...`);
+        // Use the same base URL version as other calls if possible, but search said v1.2
+        // We'll try to construct the URL manually.
+        // Note: The SDK might not expose this easily, so we use axios.
+        const thumbUrl = `https://api.twelvelabs.io/v1.2/indexes/${TWELVE_LABS_INDEX_ID}/videos/${videoId}/thumbnail`;
+
+        let thumbResponse;
+        try {
+          thumbResponse = await axios.get(thumbUrl, {
+            headers: { "x-api-key": apiKey },
+            params: { time: thumbTime },
             responseType: "arraybuffer",
           });
+        } catch (e) {
+          console.warn(
+            "Failed to fetch custom thumbnail, falling back to default URL"
+          );
+          // Fallback to existing logic if custom fetch fails
+          const externalThumbnailUrl =
+            (video as any).thumbnailUrl ||
+            (video as any).thumbnail_url ||
+            (video as any).hls?.thumbnailUrls?.[0] ||
+            (video as any).hls?.thumbnail_urls?.[0] ||
+            (video as any).metadata?.thumbnail_url;
+
+          if (externalThumbnailUrl) {
+            thumbResponse = await axios.get(externalThumbnailUrl, {
+              responseType: "arraybuffer",
+            });
+          }
+        }
+
+        if (thumbResponse && thumbResponse.data) {
           const thumbKey = `thumbnails/${assetId}.jpg`;
 
           await s3Client.send(
@@ -207,11 +232,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
             })
           );
 
-          // Store as S3 URI, not public URL
           thumbnailUrl = `s3://${BUCKET_NAME}/${thumbKey}`;
           console.log(`Thumbnail stored at ${thumbnailUrl}`);
         } else {
-          console.warn("No thumbnail URL found in 12Labs response");
+          console.warn("No thumbnail could be retrieved.");
         }
       } catch (err) {
         console.error("Failed to fetch/store thumbnail from 12 Labs", err);

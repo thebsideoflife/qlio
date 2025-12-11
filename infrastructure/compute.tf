@@ -8,6 +8,44 @@ data "aws_iam_policy_document" "lambda_assume_role" {
   }
 }
 
+# ===== Upload Role (for browser-based multipart uploads) =====
+# This role is assumed by the Lambda and passed to the browser with scoped-down permissions
+
+data "aws_caller_identity" "current" {}
+
+data "aws_iam_policy_document" "upload_role_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "AWS"
+      identifiers = [aws_iam_role.lambda_role.arn]
+    }
+  }
+}
+
+resource "aws_iam_role" "upload_role" {
+  name               = "${var.project_name}-upload-role"
+  assume_role_policy = data.aws_iam_policy_document.upload_role_assume.json
+}
+
+data "aws_iam_policy_document" "upload_role_policy" {
+  statement {
+    actions = [
+      "s3:PutObject",
+      "s3:AbortMultipartUpload"
+    ]
+    resources = [
+      "${aws_s3_bucket.media.arn}/raw/*"
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "upload_role_policy" {
+  name   = "${var.project_name}-upload-role-policy"
+  role   = aws_iam_role.upload_role.id
+  policy = data.aws_iam_policy_document.upload_role_policy.json
+}
+
 resource "aws_iam_role" "lambda_role" {
   name               = "${var.project_name}-lambda-role"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
@@ -64,6 +102,10 @@ data "aws_iam_policy_document" "lambda_policy" {
     ]
     resources = ["*"]
   }
+  statement {
+    actions   = ["sts:AssumeRole"]
+    resources = [aws_iam_role.upload_role.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "lambda_policy" {
@@ -80,11 +122,11 @@ data "archive_file" "lambda_zip" {
 }
 
 # Lambdas
-resource "aws_lambda_function" "generate_upload_url" {
+resource "aws_lambda_function" "generate_upload_credentials" {
   filename         = data.archive_file.lambda_zip.output_path
-  function_name    = "${var.project_name}-generate-upload-url"
+  function_name    = "${var.project_name}-generate-upload-credentials"
   role             = aws_iam_role.lambda_role.arn
-  handler          = "generateUploadUrl.handler"
+  handler          = "generateUploadCredentials.handler"
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
   timeout          = 10
@@ -94,6 +136,7 @@ resource "aws_lambda_function" "generate_upload_url" {
       BUCKET_NAME             = aws_s3_bucket.media.id
       TABLE_NAME              = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
+      UPLOAD_ROLE_ARN         = aws_iam_role.upload_role.arn
     }
   }
 }
@@ -270,7 +313,7 @@ resource "aws_lambda_function" "generate_segments" {
   handler          = "generateSegments.handler"
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
-  timeout          = 60
+  timeout          = 300
 
   environment {
     variables = {
@@ -307,6 +350,13 @@ resource "aws_s3_bucket_notification" "bucket_notification" {
     events              = ["s3:ObjectCreated:*"]
     filter_prefix       = "raw/"
     filter_suffix       = ".mov"
+  }
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.start_indexing.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "raw/"
+    filter_suffix       = ".m4v"
   }
 
   depends_on = [aws_lambda_permission.allow_bucket]

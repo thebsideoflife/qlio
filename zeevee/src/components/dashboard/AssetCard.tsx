@@ -9,6 +9,7 @@ import {
   PlusCircle,
   Trash2,
   Film,
+  Loader2,
 } from "lucide-react";
 import type { Asset } from "@/store/assetsSlice";
 import { useNavigate } from "react-router-dom";
@@ -112,6 +113,7 @@ export function AssetCard({ asset, onDelete }: AssetCardProps) {
         <div className="relative aspect-video w-full bg-muted overflow-hidden">
           <img
             src={
+              asset.thumbnailUrl ||
               asset.thumbnail ||
               "https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?w=800&auto=format&fit=crop&q=60"
             }
@@ -119,18 +121,27 @@ export function AssetCard({ asset, onDelete }: AssetCardProps) {
             className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
           />
           <div className="absolute top-2 left-2 z-10">
-            {(asset.status === "processing" ||
-              asset.status === "uploading" ||
-              asset.status === "indexing") &&
-            asset.processing ? (
+            {asset.status === "uploading" ||
+            ((asset.status === "processing" || asset.status === "indexing") &&
+              asset.processing) ? (
               <Popover>
                 <PopoverTrigger asChild onClick={(e) => e.stopPropagation()}>
                   <Badge
                     variant="secondary"
                     className="bg-blue-500 hover:bg-blue-600 text-white cursor-pointer transition-all flex items-center gap-1.5"
                   >
-                    <Activity className="h-3 w-3 animate-pulse" />
-                    {currentStageLabel || asset.status}
+                    {asset.status === "uploading" ? (
+                      <>
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Uploading{" "}
+                        {asset.uploadProgress ? `${asset.uploadProgress}%` : ""}
+                      </>
+                    ) : (
+                      <>
+                        <Activity className="h-3 w-3 animate-pulse" />
+                        {currentStageLabel || asset.status}
+                      </>
+                    )}
                     <ChevronDown className="h-3 w-3" />
                   </Badge>
                 </PopoverTrigger>

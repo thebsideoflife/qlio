@@ -14,24 +14,24 @@ resource "aws_apigatewayv2_stage" "default" {
   auto_deploy = true
 }
 
-# Generate Upload URL (Changed from GET to POST to accept metadata)
-resource "aws_apigatewayv2_integration" "generate_upload_url" {
+# Generate Upload Credentials (for multipart uploads)
+resource "aws_apigatewayv2_integration" "generate_upload_credentials" {
   api_id                 = aws_apigatewayv2_api.main.id
   integration_type       = "AWS_PROXY"
-  integration_uri        = aws_lambda_function.generate_upload_url.invoke_arn
+  integration_uri        = aws_lambda_function.generate_upload_credentials.invoke_arn
   payload_format_version = "2.0"
 }
 
-resource "aws_apigatewayv2_route" "generate_upload_url" {
+resource "aws_apigatewayv2_route" "generate_upload_credentials" {
   api_id    = aws_apigatewayv2_api.main.id
   route_key = "POST /upload"
-  target    = "integrations/${aws_apigatewayv2_integration.generate_upload_url.id}"
+  target    = "integrations/${aws_apigatewayv2_integration.generate_upload_credentials.id}"
 }
 
 resource "aws_lambda_permission" "api_gw_upload" {
   statement_id  = "AllowExecutionFromAPIGatewayUpload"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.generate_upload_url.function_name
+  function_name = aws_lambda_function.generate_upload_credentials.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/upload"
 }

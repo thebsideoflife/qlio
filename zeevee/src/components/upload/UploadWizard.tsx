@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -11,7 +11,11 @@ import { Label } from "@/components/ui/label";
 import { useDispatch } from "react-redux";
 import { addAsset, updateAssetStatus } from "@/store/assetsSlice";
 import { ArrowRight, Upload, Loader2 } from "lucide-react";
-import { getUploadUrl, uploadToS3 } from "@/services/api";
+import {
+  getUploadCredentials,
+  uploadToS3,
+  type UploadCredentialsResponse,
+} from "@/services/api";
 import { cn } from "@/lib/utils";
 import type { AppDispatch } from "@/store/store";
 
@@ -21,22 +25,24 @@ interface UploadWizardProps {
 }
 
 export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
-  // We only have 1 step now, but keeping structure for simplicity if we add more upload-specific steps
   const [step, setStep] = useState(1);
   const dispatch = useDispatch<AppDispatch>();
   const [file, setFile] = useState<File | null>(null);
 
   // Track asset creation and upload status
   const [assetId, setAssetId] = useState<string | null>(null);
-  const [isCreatingAsset, setIsCreatingAsset] = useState(false); // Creating DB record
+  const [isCreatingAsset, setIsCreatingAsset] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<
     "idle" | "uploading" | "done" | "error"
   >("idle");
+  const [uploadPercentage, setUploadPercentage] = useState(0);
+
+  // Store upload info for background upload
+  const uploadInfoRef = useRef<UploadCredentialsResponse | null>(null);
 
   const handleNext = async () => {
     if (step === 1) {
       if (!file) return;
-      // Start upload process if not already started
       if (!assetId && !isCreatingAsset) {
         await startUploadProcess();
       }
@@ -49,27 +55,52 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
     if (!file) return;
     setIsCreatingAsset(true);
     setUploadProgress("uploading");
+    setUploadPercentage(0);
+
+    // 1. Get Duration on Client Side
+    let duration = 0;
+    try {
+      duration = await new Promise<number>((resolve, reject) => {
+        const video = document.createElement("video");
+        video.preload = "metadata";
+        video.onloadedmetadata = () => {
+          window.URL.revokeObjectURL(video.src);
+          resolve(video.duration);
+        };
+        video.onerror = () => {
+          console.warn("Failed to load video metadata");
+          resolve(0); // non-fatal
+        };
+        video.src = window.URL.createObjectURL(file);
+      });
+      console.log("Client-side video duration:", duration);
+    } catch (err) {
+      console.warn("Error getting video duration:", err);
+    }
 
     try {
-      // 1. Get Signed URL (Basic metadata for file)
-      const { uploadUrl, assetId: newAssetId } = await getUploadUrl(file.type, {
+      // 2. Get temporary credentials for multipart upload
+      const uploadInfo = await getUploadCredentials(file.type, {
         filename: file.name,
+        duration,
       });
 
-      setAssetId(newAssetId);
+      uploadInfoRef.current = uploadInfo;
+      setAssetId(uploadInfo.assetId);
       setIsCreatingAsset(false);
 
-      // 2. Add to Store (Optimistic update)
+      // 3. Add to Store (Optimistic update)
       const newAsset = {
-        id: newAssetId,
+        id: uploadInfo.assetId,
         title: file.name,
         thumbnail:
-          "https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?w=800&auto=format&fit=crop&q=60", // Placeholder
+          "https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?w=800&auto=format&fit=crop&q=60",
         status: "uploading" as const,
         format: "1080p",
         size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
         segmentCount: 0,
         createdAt: new Date().toISOString(),
+        uploadProgress: 0,
       };
       // @ts-ignore
       dispatch(addAsset(newAsset));
@@ -77,27 +108,33 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
       // Close wizard immediately to let upload run in background
       closeWizard();
 
-      // 3. Start Upload to S3 in background (don't await here for UI block, but we want to catch errors)
-      // We'll let it run and update status on completion/fail.
-      uploadToS3(uploadUrl, file)
+      // 4. Start multipart upload in background with progress tracking
+      uploadToS3(uploadInfo, file, (progress) => {
+        setUploadPercentage(progress.percentage);
+        console.log(`Upload progress: ${progress.percentage}%`);
+        dispatch(
+          updateAssetStatus({
+            id: uploadInfo.assetId,
+            status: "uploading",
+            progress: progress.percentage,
+          })
+        );
+      })
         .then(() => {
           setUploadProgress("done");
-          console.log("Background upload finished");
-          // Optimistically update status to indexing
+          console.log("Multipart upload finished successfully");
           dispatch(
             updateAssetStatus({
-              id: newAssetId,
+              id: uploadInfo.assetId,
               status: "indexing",
             })
           );
-          // Wizard already closed
         })
         .catch((err) => {
-          console.error("Background upload failed", err);
-          // Update status to failed
+          console.error("Multipart upload failed", err);
           dispatch(
             updateAssetStatus({
-              id: newAssetId,
+              id: uploadInfo.assetId,
               status: "failed",
             })
           );
@@ -135,7 +172,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
           type="file"
           id="video-upload"
           className="hidden"
-          accept="video/mp4,video/quicktime,video/webm"
+          accept="video/mp4,video/quicktime,video/webm,video/x-m4v"
           onChange={handleFileChange}
           disabled={isCreatingAsset || uploadProgress === "uploading"}
         />
@@ -205,7 +242,8 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
           >
             {isCreatingAsset || uploadProgress === "uploading" ? (
               <>
-                Uploading <Loader2 className="w-4 h-4 ml-2 animate-spin" />
+                Uploading {uploadPercentage > 0 && `(${uploadPercentage}%)`}{" "}
+                <Loader2 className="w-4 h-4 ml-2 animate-spin" />
               </>
             ) : uploadProgress === "done" ? (
               "Done"
