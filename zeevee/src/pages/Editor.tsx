@@ -1,5 +1,4 @@
 import { Timeline } from "@/components/editor/Timeline";
-import { SegmentDetailSidebar } from "@/components/editor/SegmentDetailSidebar";
 import { MicrodramaGenerator } from "@/components/editor/MicrodramaGenerator";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
@@ -244,13 +243,6 @@ export default function Editor() {
             </div>
           )}
         </div>
-
-        {/* Sidebar for Segment Details (if selected) */}
-        {selectedSegmentId && (
-          <div className="h-1/3 border-t bg-background shrink-0">
-            <SegmentDetailSidebar />
-          </div>
-        )}
       </div>
     </div>
   );

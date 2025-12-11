@@ -60,7 +60,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
     // 1. Get Duration on Client Side
     let duration = 0;
     try {
-      duration = await new Promise<number>((resolve, reject) => {
+      duration = await new Promise<number>((resolve) => {
         const video = document.createElement("video");
         video.preload = "metadata";
         video.onloadedmetadata = () => {
