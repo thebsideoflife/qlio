@@ -27,9 +27,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     }
 
     const body = JSON.parse(event.body || "{}");
+    const { title, segments } = body;
 
-    // We only support updating the title for now
-    if (!body.title) {
+    // Check if any updateable fields are provided
+    if (!title && !segments) {
       return {
         statusCode: 400,
         headers: {
@@ -40,15 +41,36 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       };
     }
 
+    // Build dynamic update expression
+    // Note: 'segments' is a DynamoDB reserved keyword, so we must use ExpressionAttributeNames
+    const updateParts: string[] = ["#updatedAt = :u"];
+    const exprNames: Record<string, string> = {
+      "#updatedAt": "updatedAt",
+    };
+    const exprValues: Record<string, any> = {
+      ":u": new Date().toISOString(),
+    };
+
+    if (title) {
+      updateParts.push("#title = :t");
+      exprNames["#title"] = "title";
+      exprValues[":t"] = title;
+    }
+
+    if (segments) {
+      updateParts.push("#segments = :s");
+      exprNames["#segments"] = "segments";
+      exprValues[":s"] = segments;
+    }
+
     await docClient.send(
       new UpdateCommand({
         TableName: PROJECTS_TABLE,
         Key: { projectId },
-        UpdateExpression: "set title = :t, updatedAt = :u",
-        ExpressionAttributeValues: {
-          ":t": body.title,
-          ":u": new Date().toISOString(),
-        },
+        UpdateExpression: `SET ${updateParts.join(", ")}`,
+        ExpressionAttributeNames: exprNames,
+        ExpressionAttributeValues: exprValues,
+        ReturnValues: "ALL_NEW",
       })
     );
 
@@ -58,7 +80,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
       },
-      body: JSON.stringify({ success: true, title: body.title }),
+      body: JSON.stringify({ success: true, title, segments }),
     };
   } catch (error) {
     console.error("Error updating project:", error);

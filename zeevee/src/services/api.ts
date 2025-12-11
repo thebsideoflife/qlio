@@ -158,9 +158,21 @@ export const getProject = async (projectId: string) => {
   return response.data;
 };
 
+export interface Segment {
+  id: string;
+  startTime: number;
+  endTime: number;
+  title: string;
+  description: string;
+  characters: string[];
+  sceneTags: string[];
+  keyDialogue: string;
+  confidence: number;
+}
+
 export const updateProject = async (
   projectId: string,
-  data: { title?: string }
+  data: { title?: string; segments?: Segment[] }
 ) => {
   const response = await axios.patch(`${API_URL}/projects/${projectId}`, data, {
     headers: getAuthHeaders(),
