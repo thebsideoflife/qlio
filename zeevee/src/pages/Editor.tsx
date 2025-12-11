@@ -15,7 +15,7 @@ import { useParams } from "react-router-dom";
 import { useRef, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useProjectData } from "@/hooks/useProjectData";
-// import { useSeamlessPlayback } from "@/hooks/useSeamlessPlayback";
+import { useSeamlessPlayback } from "@/hooks/useSeamlessPlayback";
 import { generateSegments } from "@/services/api";
 import { FileText, Wand2 } from "lucide-react";
 
@@ -27,7 +27,7 @@ export default function Editor() {
   const selectedSegmentId = useSelector(
     (state: RootState) => state.editor.selectedSegmentId
   );
-  // const segments = useSelector((state: RootState) => state.editor.segments);
+  const segments = useSelector((state: RootState) => state.editor.segments);
   const currentTime = useSelector(
     (state: RootState) => state.editor.currentTime
   );
@@ -37,11 +37,12 @@ export default function Editor() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [activeTab, setActiveTab] = useState<"transcript" | "ai">("ai");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [previewMode, setPreviewMode] = useState(false);
 
   // Custom Hooks
   const { videoUrl, transcription, loading } = useProjectData(projectId);
-  // Seamless playback disabled - let video play normally
-  // useSeamlessPlayback(videoRef, segments);
+  // Seamless playback only in preview mode
+  useSeamlessPlayback(videoRef, previewMode ? segments : []);
 
   // Set projectId in Redux for sync middleware
   useEffect(() => {
@@ -193,7 +194,11 @@ export default function Editor() {
 
         {/* Timeline */}
         <div className="h-36 border-t bg-card p-2">
-          <Timeline videoRef={videoRef} />
+          <Timeline
+            videoRef={videoRef}
+            previewMode={previewMode}
+            onPreviewModeChange={setPreviewMode}
+          />
         </div>
       </div>
 

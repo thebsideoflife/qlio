@@ -38,6 +38,44 @@ const initialState: EditorState = {
   isSyncing: false,
 };
 
+// Helper to merge overlapping segments - uses outermost coordinates (min start, max end)
+// Only merges when segments actually overlap (endTime > startTime), not when they just touch
+const mergeOverlappingSegments = (segments: Segment[]): Segment[] => {
+  if (segments.length <= 1) return segments;
+
+  // Sort by start time
+  const sorted = [...segments].sort((a, b) => a.startTime - b.startTime);
+  const result: Segment[] = [{ ...sorted[0] }];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const current = sorted[i];
+    const last = result[result.length - 1];
+
+    // Only merge if segments actually overlap (not just touching)
+    if (last.endTime > current.startTime) {
+      // Merge: use outermost coordinates (min start, max end)
+      last.startTime = Math.min(last.startTime, current.startTime);
+      last.endTime = Math.max(last.endTime, current.endTime);
+      // Combine titles if different
+      if (last.title !== current.title && !last.title.includes(current.title)) {
+        last.title = `${last.title} + ${current.title}`;
+      }
+      // Merge other metadata
+      last.description = last.description || current.description;
+      last.characters = [
+        ...new Set([...last.characters, ...current.characters]),
+      ];
+      last.sceneTags = [...new Set([...last.sceneTags, ...current.sceneTags])];
+      last.keyDialogue = last.keyDialogue || current.keyDialogue;
+      last.confidence = Math.min(last.confidence, current.confidence);
+    } else {
+      result.push({ ...current });
+    }
+  }
+
+  return result;
+};
+
 export const editorSlice = createSlice({
   name: "editor",
   initialState,
@@ -77,7 +115,34 @@ export const editorSlice = createSlice({
         segment.startTime = action.payload.start;
         segment.endTime = action.payload.end;
         state.isDirty = true;
+        // Note: merging happens on finalizeSegmentEdit (mouse release)
       }
+    },
+
+    // Called on mouse release to merge any overlapping segments
+    finalizeSegmentEdit: (state) => {
+      // Find the currently selected segment before merge
+      const selectedSeg = state.selectedSegmentId
+        ? state.segments.find((s) => s.id === state.selectedSegmentId)
+        : null;
+
+      const merged = mergeOverlappingSegments(state.segments);
+
+      // Update selection if the segment was merged away
+      if (
+        selectedSeg &&
+        !merged.find((s) => s.id === state.selectedSegmentId)
+      ) {
+        // Find the merged segment that contains the original segment's time
+        const containingSegment = merged.find(
+          (s) =>
+            s.startTime <= selectedSeg.startTime &&
+            s.endTime >= selectedSeg.endTime
+        );
+        state.selectedSegmentId = containingSegment?.id || null;
+      }
+
+      state.segments = merged;
     },
     splitSegment: (
       state,
@@ -117,7 +182,7 @@ export const editorSlice = createSlice({
     },
     addSegment: (state, action: PayloadAction<{ atTime: number }>) => {
       const { atTime } = action.payload;
-      const defaultDuration = 3;
+      const defaultDuration = 10;
       const endTime = Math.min(atTime + defaultDuration, state.duration);
 
       // Don't add if it would be zero-length
@@ -136,8 +201,16 @@ export const editorSlice = createSlice({
       };
 
       state.segments.push(newSegment);
-      state.segments.sort((a, b) => a.startTime - b.startTime);
-      state.selectedSegmentId = newSegment.id;
+
+      // Merge any overlapping segments
+      const merged = mergeOverlappingSegments(state.segments);
+      state.segments = merged;
+
+      // Select the segment containing the new time range
+      const containingSegment = merged.find(
+        (s) => s.startTime <= atTime && s.endTime >= atTime
+      );
+      state.selectedSegmentId = containingSegment?.id || newSegment.id;
       state.isDirty = true;
     },
     deleteSegment: (state, action: PayloadAction<string>) => {
@@ -177,6 +250,7 @@ export const {
   updateProjectTitle,
   selectSegment,
   updateSegmentTime,
+  finalizeSegmentEdit,
   splitSegment,
   addSegment,
   deleteSegment,

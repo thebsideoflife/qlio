@@ -1,9 +1,10 @@
-import { useRef, useState, useCallback, useEffect } from "react";
+import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
 import {
   selectSegment,
   updateSegmentTime,
+  finalizeSegmentEdit,
   splitSegment,
   addSegment,
   deleteSegment,
@@ -11,10 +12,20 @@ import {
 } from "@/store/editorSlice";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Scissors, Plus, Trash2, ZoomIn, ZoomOut } from "lucide-react";
+import {
+  Scissors,
+  Plus,
+  Trash2,
+  ZoomIn,
+  ZoomOut,
+  Eye,
+  EyeOff,
+} from "lucide-react";
 
 interface TimelineProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  previewMode: boolean;
+  onPreviewModeChange: (preview: boolean) => void;
 }
 
 type DragMode = "playhead" | "left" | "right" | null;
@@ -33,7 +44,11 @@ const MIN_ZOOM = 1;
 const MAX_ZOOM = 20;
 const DEFAULT_ZOOM = 1;
 
-export function Timeline({ videoRef }: TimelineProps) {
+export function Timeline({
+  videoRef,
+  previewMode,
+  onPreviewModeChange,
+}: TimelineProps) {
   const dispatch = useDispatch();
   const segments = useSelector((state: RootState) => state.editor.segments);
   const selectedId = useSelector(
@@ -54,6 +69,70 @@ export function Timeline({ videoRef }: TimelineProps) {
   // Use real duration, or fallback to 10 mins if 0
   const totalDuration = duration > 0 ? duration : 600;
 
+  // Preview mode calculations
+  const sortedSegments = useMemo(
+    () => [...segments].sort((a, b) => a.startTime - b.startTime),
+    [segments]
+  );
+
+  const { previewDuration, segmentPreviewOffsets } = useMemo(() => {
+    const offsets = new Map<string, number>();
+    let offset = 0;
+
+    for (const seg of sortedSegments) {
+      offsets.set(seg.id, offset);
+      offset += seg.endTime - seg.startTime;
+    }
+
+    return { previewDuration: offset, segmentPreviewOffsets: offsets };
+  }, [sortedSegments]);
+
+  // Convert real time to preview time (for playhead position in preview mode)
+  const realTimeToPreviewTime = useCallback(
+    (realTime: number): number => {
+      let previewTime = 0;
+
+      for (const seg of sortedSegments) {
+        if (realTime >= seg.startTime && realTime < seg.endTime) {
+          return previewTime + (realTime - seg.startTime);
+        }
+        if (realTime >= seg.endTime) {
+          previewTime += seg.endTime - seg.startTime;
+        }
+      }
+
+      return previewTime;
+    },
+    [sortedSegments]
+  );
+
+  // Convert preview time to real time (for seeking in preview mode)
+  const previewTimeToRealTime = useCallback(
+    (previewTime: number): number => {
+      let accumulated = 0;
+
+      for (const seg of sortedSegments) {
+        const segDuration = seg.endTime - seg.startTime;
+        if (previewTime < accumulated + segDuration) {
+          const offsetIntoSegment = previewTime - accumulated;
+          return seg.startTime + offsetIntoSegment;
+        }
+        accumulated += segDuration;
+      }
+
+      // Past end - return last segment end
+      return sortedSegments[sortedSegments.length - 1]?.endTime || 0;
+    },
+    [sortedSegments]
+  );
+
+  // Effective duration based on mode
+  const effectiveDuration = previewMode ? previewDuration : totalDuration;
+  // Effective current time for display
+  const effectiveCurrentTime = previewMode
+    ? realTimeToPreviewTime(currentTime)
+    : currentTime;
+
   // Measure container width
   useEffect(() => {
     const container = scrollRef.current;
@@ -73,8 +152,9 @@ export function Timeline({ videoRef }: TimelineProps) {
   // At zoom=1, track fits exactly in container. Higher zoom = wider track.
   const trackWidth = containerWidth * zoom;
 
-  // Pixels per second based on zoom and container
-  const pixelsPerSecond = trackWidth / totalDuration;
+  // Pixels per second based on zoom and container (use effective duration for preview mode)
+  const pixelsPerSecond =
+    effectiveDuration > 0 ? trackWidth / effectiveDuration : trackWidth / 600;
 
   // Convert time to pixels
   const timeToPx = useCallback(
@@ -107,6 +187,37 @@ export function Timeline({ videoRef }: TimelineProps) {
       (s) => currentTime >= s.startTime && currentTime < s.endTime
     );
   }, [segments, currentTime]);
+
+  // Snap time to nearest segment edge if within threshold (in edit mode only)
+  const SNAP_THRESHOLD_PX = 10; // pixels
+  const snapToSegmentEdge = useCallback(
+    (time: number): number => {
+      if (previewMode) return time;
+
+      const snapThresholdTime = pxToTime(SNAP_THRESHOLD_PX);
+      let closestEdge = time;
+      let closestDistance = Infinity;
+
+      for (const seg of segments) {
+        // Check start edge
+        const startDist = Math.abs(time - seg.startTime);
+        if (startDist < snapThresholdTime && startDist < closestDistance) {
+          closestDistance = startDist;
+          closestEdge = seg.startTime;
+        }
+
+        // Check end edge
+        const endDist = Math.abs(time - seg.endTime);
+        if (endDist < snapThresholdTime && endDist < closestDistance) {
+          closestDistance = endDist;
+          closestEdge = seg.endTime;
+        }
+      }
+
+      return closestEdge;
+    },
+    [segments, pxToTime, previewMode]
+  );
 
   // Sync playing state with video
   useEffect(() => {
@@ -163,7 +274,7 @@ export function Timeline({ videoRef }: TimelineProps) {
     if (!scrollRef.current || !isPlaying) return;
 
     const scrollContainer = scrollRef.current;
-    const playheadPx = timeToPx(currentTime);
+    const playheadPx = timeToPx(effectiveCurrentTime);
     const containerWidth = scrollContainer.clientWidth;
     const scrollLeft = scrollContainer.scrollLeft;
 
@@ -174,7 +285,19 @@ export function Timeline({ videoRef }: TimelineProps) {
     } else if (playheadPx > scrollLeft + containerWidth - buffer) {
       scrollContainer.scrollLeft = playheadPx - containerWidth + buffer;
     }
-  }, [currentTime, isPlaying, timeToPx]);
+  }, [effectiveCurrentTime, isPlaying, timeToPx]);
+
+  // Auto-select the segment containing the playhead
+  useEffect(() => {
+    const containingSegment = segments.find(
+      (s) => currentTime >= s.startTime && currentTime < s.endTime
+    );
+
+    const newSelectedId = containingSegment?.id || null;
+    if (newSelectedId !== selectedId) {
+      dispatch(selectSegment(newSelectedId));
+    }
+  }, [currentTime, segments, selectedId, dispatch]);
 
   // Handle playhead drag start
   const handlePlayheadMouseDown = (e: React.MouseEvent) => {
@@ -189,12 +312,14 @@ export function Timeline({ videoRef }: TimelineProps) {
     });
   };
 
-  // Handle segment resize start
+  // Handle segment resize start (disabled in preview mode)
   const handleResizeMouseDown = (
     e: React.MouseEvent,
     segmentId: string,
     mode: "left" | "right"
   ) => {
+    if (previewMode) return; // No resizing in preview mode
+
     e.stopPropagation();
     const segment = segments.find((s) => s.id === segmentId);
     if (!segment) return;
@@ -223,10 +348,19 @@ export function Timeline({ videoRef }: TimelineProps) {
       const clickXInViewport = e.clientX - scrollRect.left;
       // Add scroll offset to get position in the full track
       const clickXInTrack = clickXInViewport + scrollContainer.scrollLeft;
-      // Convert to time
-      return clampTime(pxToTime(clickXInTrack));
+      // Convert to time (this gives us preview time in preview mode)
+      const clickTime = pxToTime(clickXInTrack);
+
+      // In preview mode, convert preview time to real time
+      if (previewMode) {
+        return previewTimeToRealTime(
+          Math.max(0, Math.min(previewDuration, clickTime))
+        );
+      }
+
+      return clampTime(clickTime);
     },
-    [clampTime, pxToTime]
+    [clampTime, pxToTime, previewMode, previewTimeToRealTime, previewDuration]
   );
 
   // Handle segment click - select AND seek to click position
@@ -264,7 +398,9 @@ export function Timeline({ videoRef }: TimelineProps) {
       const deltaTime = pxToTime(deltaX);
 
       if (dragState.mode === "playhead") {
-        const newTime = clampTime(dragState.initialStart + deltaTime);
+        const rawTime = clampTime(dragState.initialStart + deltaTime);
+        // Snap playhead to segment edges in edit mode
+        const newTime = snapToSegmentEdge(rawTime);
         if (videoRef.current) {
           videoRef.current.currentTime = newTime;
         }
@@ -299,6 +435,10 @@ export function Timeline({ videoRef }: TimelineProps) {
     };
 
     const handleMouseUp = () => {
+      // If we were resizing a segment, finalize (merge overlapping segments)
+      if (dragState.mode === "left" || dragState.mode === "right") {
+        dispatch(finalizeSegmentEdit());
+      }
       setDragState(null);
     };
 
@@ -309,7 +449,15 @@ export function Timeline({ videoRef }: TimelineProps) {
       document.removeEventListener("mousemove", handleMouseMove);
       document.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [dragState, pxToTime, clampTime, totalDuration, videoRef, dispatch]);
+  }, [
+    dragState,
+    pxToTime,
+    clampTime,
+    totalDuration,
+    videoRef,
+    dispatch,
+    snapToSegmentEdge,
+  ]);
 
   // Toolbar handlers
   const handleSplit = () => {
@@ -550,12 +698,15 @@ export function Timeline({ videoRef }: TimelineProps) {
   const canAdd = !isInsideSegment();
 
   // Generate time markers - aim for ~8-15 markers visible at any zoom level
-  const generateTimeMarkers = () => {
+  const generateTimeMarkers = useCallback(() => {
     const markers: { time: number; px: number }[] = [];
+    const durationToUse = previewMode ? previewDuration : totalDuration;
+
+    if (durationToUse <= 0) return markers;
 
     // Calculate ideal interval to show ~10 markers across the visible width
     const targetMarkerCount = 10;
-    const visibleDuration = totalDuration / zoom;
+    const visibleDuration = durationToUse / zoom;
     const rawInterval = visibleDuration / targetMarkerCount;
 
     // Snap to nice intervals: 1s, 5s, 10s, 30s, 1m, 2m, 5m, 10m, 15m, 30m
@@ -568,11 +719,11 @@ export function Timeline({ videoRef }: TimelineProps) {
       }
     }
 
-    for (let t = 0; t <= totalDuration; t += interval) {
+    for (let t = 0; t <= durationToUse; t += interval) {
       markers.push({ time: t, px: timeToPx(t) });
     }
     return markers;
-  };
+  }, [previewMode, previewDuration, totalDuration, zoom, timeToPx]);
 
   // Display zoom as percentage where 1x = 0%, max = 100%
   const zoomPercent = Math.round(
@@ -596,16 +747,18 @@ export function Timeline({ videoRef }: TimelineProps) {
         >
           <Scissors className="h-3.5 w-3.5" />
         </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={handleAdd}
-          disabled={!canAdd}
-          className="h-7 w-7 p-0"
-          title="Add segment at playhead"
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </Button>
+        {!previewMode && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleAdd}
+            disabled={!canAdd}
+            className="h-7 w-7 p-0"
+            title="Add segment at playhead"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </Button>
+        )}
 
         <div className="h-4 w-px bg-border mx-1" />
 
@@ -636,7 +789,26 @@ export function Timeline({ videoRef }: TimelineProps) {
 
         <div className="flex-1" />
 
-        {/* Delete button - near time display */}
+        {/* Preview mode toggle */}
+        <Button
+          size="sm"
+          variant={previewMode ? "default" : "ghost"}
+          onClick={() => onPreviewModeChange(!previewMode)}
+          className="h-7 w-7 p-0"
+          title={previewMode ? "Exit preview mode" : "Preview final video"}
+        >
+          {previewMode ? (
+            <EyeOff className="h-3.5 w-3.5" />
+          ) : (
+            <Eye className="h-3.5 w-3.5" />
+          )}
+        </Button>
+
+        <span className="text-xs text-muted-foreground font-mono">
+          {formatTime(effectiveCurrentTime)} / {formatTime(effectiveDuration)}
+        </span>
+
+        {/* Delete button - far right */}
         <Button
           size="sm"
           variant="ghost"
@@ -647,10 +819,6 @@ export function Timeline({ videoRef }: TimelineProps) {
         >
           <Trash2 className="h-3.5 w-3.5" />
         </Button>
-
-        <span className="text-xs text-muted-foreground font-mono">
-          {formatTime(currentTime)} / {formatTime(totalDuration)}
-        </span>
       </div>
 
       {/* Scrollable timeline container */}
@@ -693,7 +861,10 @@ export function Timeline({ videoRef }: TimelineProps) {
 
             {/* Segments */}
             {segments.map((segment) => {
-              const left = timeToPx(segment.startTime);
+              // In preview mode, use the accumulated offset; in edit mode, use real time
+              const left = previewMode
+                ? timeToPx(segmentPreviewOffsets.get(segment.id) || 0)
+                : timeToPx(segment.startTime);
               const width = Math.max(
                 timeToPx(segment.endTime - segment.startTime),
                 4
@@ -712,20 +883,25 @@ export function Timeline({ videoRef }: TimelineProps) {
                   onClick={(e) => handleSegmentClick(e, segment.id)}
                   title={segment.title}
                 >
-                  {/* Left resize handle */}
-                  <div
-                    className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize bg-white/0 hover:bg-white/40 rounded-l z-10"
-                    onMouseDown={(e) =>
-                      handleResizeMouseDown(e, segment.id, "left")
-                    }
-                  />
-                  {/* Right resize handle */}
-                  <div
-                    className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-white/0 hover:bg-white/40 rounded-r z-10"
-                    onMouseDown={(e) =>
-                      handleResizeMouseDown(e, segment.id, "right")
-                    }
-                  />
+                  {/* Resize handles - only in edit mode */}
+                  {!previewMode && (
+                    <>
+                      {/* Left resize handle - covers left half */}
+                      <div
+                        className="absolute left-0 top-0 bottom-0 w-1/2 cursor-ew-resize z-10"
+                        onMouseDown={(e) =>
+                          handleResizeMouseDown(e, segment.id, "left")
+                        }
+                      />
+                      {/* Right resize handle - covers right half */}
+                      <div
+                        className="absolute right-0 top-0 bottom-0 w-1/2 cursor-ew-resize z-10"
+                        onMouseDown={(e) =>
+                          handleResizeMouseDown(e, segment.id, "right")
+                        }
+                      />
+                    </>
+                  )}
 
                   {width > 40 && (
                     <div className="px-3 py-0.5 text-[10px] text-white font-medium truncate pointer-events-none">
@@ -739,7 +915,7 @@ export function Timeline({ videoRef }: TimelineProps) {
             {/* Playhead */}
             <div
               className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-20 pointer-events-none"
-              style={{ left: `${timeToPx(currentTime)}px` }}
+              style={{ left: `${timeToPx(effectiveCurrentTime)}px` }}
             >
               {/* Playhead handle */}
               <div
