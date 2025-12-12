@@ -212,3 +212,68 @@ export const deleteAsset = async (assetId: string) => {
   });
   return response.data;
 };
+
+// ===== Render API =====
+
+export interface RenderRequest {
+  segments: Array<{
+    id: string;
+    startTime: number;
+    endTime: number;
+    title: string;
+  }>;
+  captions: Array<{
+    id: string;
+    startTime: number;
+    endTime: number;
+    text: string;
+    words: Array<{ start: number; end: number; value: string }>;
+  }>;
+  captionSettings: {
+    enabled: boolean;
+    style: {
+      fontSize: number;
+      fontFamily: string;
+      color: string;
+      backgroundColor: string;
+      position: { x: number; y: number };
+      maxWidth: number;
+    };
+  };
+  outputFormat?: "mp4" | "webm";
+  quality?: "draft" | "standard" | "high";
+}
+
+export interface RenderJobResponse {
+  jobId: string;
+  status: "pending" | "rendering" | "completed" | "failed";
+  progress: number;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  error?: string;
+  downloadUrl?: string;
+}
+
+export const startRender = async (
+  projectId: string,
+  request: RenderRequest
+): Promise<{ jobId: string; status: string; message?: string }> => {
+  const response = await axios.post(
+    `${API_URL}/projects/${projectId}/render`,
+    request,
+    {
+      headers: getAuthHeaders(),
+    }
+  );
+  return response.data;
+};
+
+export const getRenderStatus = async (
+  jobId: string
+): Promise<RenderJobResponse> => {
+  const response = await axios.get(`${API_URL}/renders/${jobId}`, {
+    headers: getAuthHeaders(),
+  });
+  return response.data;
+};

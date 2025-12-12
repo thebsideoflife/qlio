@@ -1,4 +1,12 @@
 import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
+import type {
+  CaptionSettings,
+  CaptionWord,
+  CaptionStyle,
+  CaptionLine,
+} from "@/remotion/types";
+import { DEFAULT_CAPTION_SETTINGS } from "@/remotion/types";
+import { groupWordsIntoCaptions } from "@/remotion/utils";
 
 export interface Segment {
   id: string;
@@ -23,6 +31,10 @@ interface EditorState {
   projectId: string | null;
   isDirty: boolean;
   isSyncing: boolean;
+  // Caption state
+  transcriptWords: CaptionWord[];
+  captions: CaptionLine[];
+  captionSettings: CaptionSettings;
 }
 
 const initialState: EditorState = {
@@ -36,6 +48,10 @@ const initialState: EditorState = {
   projectId: null,
   isDirty: false,
   isSyncing: false,
+  // Caption state
+  transcriptWords: [],
+  captions: [],
+  captionSettings: DEFAULT_CAPTION_SETTINGS,
 };
 
 // Helper to merge overlapping segments - uses outermost coordinates (min start, max end)
@@ -238,6 +254,38 @@ export const editorSlice = createSlice({
       state.duration = action.payload;
     },
 
+    // Caption actions
+    setTranscriptWords: (state, action: PayloadAction<CaptionWord[]>) => {
+      state.transcriptWords = action.payload;
+      // Automatically generate captions when transcript is loaded
+      state.captions = groupWordsIntoCaptions(action.payload);
+    },
+    setCaptionSettings: (state, action: PayloadAction<CaptionSettings>) => {
+      state.captionSettings = action.payload;
+      // Note: setCaptionSettings from API load should NOT set dirty
+    },
+    updateCaptionStyle: (
+      state,
+      action: PayloadAction<Partial<CaptionStyle>>
+    ) => {
+      state.captionSettings.style = {
+        ...state.captionSettings.style,
+        ...action.payload,
+      };
+      state.isDirty = true;
+    },
+    setCaptionsEnabled: (state, action: PayloadAction<boolean>) => {
+      state.captionSettings.enabled = action.payload;
+      state.isDirty = true;
+    },
+    updateCaptionPosition: (
+      state,
+      action: PayloadAction<{ x: number; y: number }>
+    ) => {
+      state.captionSettings.style.position = action.payload;
+      state.isDirty = true;
+    },
+
     // Reset state when leaving editor
     resetEditor: () => initialState,
   },
@@ -258,6 +306,12 @@ export const {
   markSynced,
   setCurrentTime,
   setDuration,
+  // Caption actions
+  setTranscriptWords,
+  setCaptionSettings,
+  updateCaptionStyle,
+  setCaptionsEnabled,
+  updateCaptionPosition,
   resetEditor,
 } = editorSlice.actions;
 export default editorSlice.reducer;

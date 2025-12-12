@@ -1,5 +1,7 @@
 import { Timeline } from "@/components/editor/Timeline";
 import { MicrodramaGenerator } from "@/components/editor/MicrodramaGenerator";
+import { CaptionOverlay } from "@/components/editor/CaptionOverlay";
+import { CaptionEditor } from "@/components/editor/CaptionEditor";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
@@ -17,7 +19,7 @@ import { cn } from "@/lib/utils";
 import { useProjectData } from "@/hooks/useProjectData";
 import { useSeamlessPlayback } from "@/hooks/useSeamlessPlayback";
 import { generateSegments } from "@/services/api";
-import { FileText, Wand2 } from "lucide-react";
+import { FileText, Wand2, Captions } from "lucide-react";
 
 export default function Editor() {
   const { projectId } = useParams();
@@ -35,7 +37,9 @@ export default function Editor() {
 
   // Local State
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [activeTab, setActiveTab] = useState<"transcript" | "ai">("ai");
+  const [activeTab, setActiveTab] = useState<"transcript" | "ai" | "captions">(
+    "ai"
+  );
   const [isGenerating, setIsGenerating] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
 
@@ -71,16 +75,37 @@ export default function Editor() {
     }
   };
 
-  const handleTimeUpdate = () => {
-    if (videoRef.current) {
-      dispatch(setCurrentTime(videoRef.current.currentTime));
-    }
-  };
+  // Use RAF for smooth caption word highlighting
+  useEffect(() => {
+    let animationFrameId: number;
+
+    const updateTime = () => {
+      if (videoRef.current && !videoRef.current.paused) {
+        dispatch(setCurrentTime(videoRef.current.currentTime));
+      }
+      animationFrameId = requestAnimationFrame(updateTime);
+    };
+
+    // Start the RAF loop immediately (will check videoRef on each frame)
+    animationFrameId = requestAnimationFrame(updateTime);
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [dispatch]);
 
   const handleWordClick = (startTime: number) => {
     if (videoRef.current) {
       videoRef.current.currentTime = startTime;
-      videoRef.current.play();
+      const playPromise = videoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((error) => {
+          // Ignore AbortError - it's expected when user rapidly interacts
+          if (error.name !== "AbortError") {
+            console.error("Playback error:", error);
+          }
+        });
+      }
     }
   };
 
@@ -171,22 +196,24 @@ export default function Editor() {
     <div className="flex h-[calc(100vh-4rem)]">
       {/* Left: Video & Timeline */}
       <div className="flex-1 flex flex-col min-w-0 bg-background border-r">
-        {/* Video Player */}
+        {/* Video Player with Caption Overlay */}
         <div
-          className="flex-1 bg-black relative flex items-center justify-center group min-h-0"
+          className="flex-1 bg-black relative flex items-center justify-center min-h-0"
           onClick={handleBackgroundClick}
         >
           {videoUrl ? (
-            <video
-              ref={videoRef}
-              src={videoUrl}
-              className="max-h-full max-w-full"
-              controls
-              onTimeUpdate={handleTimeUpdate}
-              onLoadedMetadata={(e) =>
-                dispatch(setDuration(e.currentTarget.duration))
-              }
-            />
+            <>
+              <video
+                ref={videoRef}
+                src={videoUrl}
+                className="max-h-full max-w-full"
+                controls
+                onLoadedMetadata={(e) =>
+                  dispatch(setDuration(e.currentTarget.duration))
+                }
+              />
+              <CaptionOverlay currentTime={currentTime} />
+            </>
           ) : (
             <div className="text-white">Loading Video...</div>
           )}
@@ -216,7 +243,19 @@ export default function Editor() {
             onClick={() => setActiveTab("ai")}
           >
             <Wand2 className="h-4 w-4" />
-            AI Director
+            AI
+          </button>
+          <button
+            className={cn(
+              "flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors border-b-2",
+              activeTab === "captions"
+                ? "border-primary text-primary bg-primary/5"
+                : "border-transparent text-muted-foreground hover:bg-muted/50"
+            )}
+            onClick={() => setActiveTab("captions")}
+          >
+            <Captions className="h-4 w-4" />
+            Captions
           </button>
           <button
             className={cn(
@@ -228,17 +267,19 @@ export default function Editor() {
             onClick={() => setActiveTab("transcript")}
           >
             <FileText className="h-4 w-4" />
-            Transcription
+            Text
           </button>
         </div>
 
         <div className="flex-1 overflow-y-auto relative">
-          {activeTab === "ai" ? (
+          {activeTab === "ai" && (
             <MicrodramaGenerator
               onGenerate={handleGenerateSegments}
               isGenerating={isGenerating}
             />
-          ) : (
+          )}
+          {activeTab === "captions" && <CaptionEditor />}
+          {activeTab === "transcript" && (
             <div className="p-4 space-y-1 text-sm leading-relaxed h-full">
               <div className="flex justify-between items-center mb-4 text-xs text-muted-foreground">
                 <span>Full Transcript</span>

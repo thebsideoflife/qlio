@@ -9,17 +9,18 @@ export const syncMiddleware: Middleware = (store) => {
   // Start polling interval when middleware initializes
   setInterval(async () => {
     const state = store.getState() as RootState;
-    const { projectId, segments, isDirty, isSyncing } = state.editor;
+    const { projectId, segments, captionSettings, isDirty, isSyncing } =
+      state.editor;
 
     // Only sync if: we have a project, there are changes, and not already syncing
     if (projectId && isDirty && !isSyncing) {
       store.dispatch(setSyncing(true));
       try {
-        await updateProject(projectId, { segments });
+        await updateProject(projectId, { segments, captionSettings });
         store.dispatch(markSynced());
-        console.log("[Sync] Segments synced successfully");
+        console.log("[Sync] Project synced successfully");
       } catch (e) {
-        console.error("[Sync] Failed to sync segments:", e);
+        console.error("[Sync] Failed to sync project:", e);
         // Don't clear isDirty on failure - will retry next interval
       }
       store.dispatch(setSyncing(false));

@@ -27,10 +27,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     }
 
     const body = JSON.parse(event.body || "{}");
-    const { title, segments } = body;
+    const { title, segments, captionSettings } = body;
 
     // Check if any updateable fields are provided
-    if (!title && !segments) {
+    if (!title && !segments && !captionSettings) {
       return {
         statusCode: 400,
         headers: {
@@ -63,6 +63,12 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       exprValues[":s"] = segments;
     }
 
+    if (captionSettings) {
+      updateParts.push("#captionSettings = :cs");
+      exprNames["#captionSettings"] = "captionSettings";
+      exprValues[":cs"] = captionSettings;
+    }
+
     await docClient.send(
       new UpdateCommand({
         TableName: PROJECTS_TABLE,
@@ -80,7 +86,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
       },
-      body: JSON.stringify({ success: true, title, segments }),
+      body: JSON.stringify({ success: true, title, segments, captionSettings }),
     };
   } catch (error) {
     console.error("Error updating project:", error);

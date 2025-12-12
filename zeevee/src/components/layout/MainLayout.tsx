@@ -1,6 +1,5 @@
 import {
   Activity,
-  FileCode,
   LogOut,
   KeyRound,
   Plus,
@@ -8,6 +7,7 @@ import {
   RefreshCcw,
   Edit2,
   ChevronRight,
+  Film,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModeToggle } from "@/components/mode-toggle";
@@ -37,6 +37,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useState, useRef, useEffect } from "react";
+import { ExportModal } from "@/components/editor/ExportModal";
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -66,6 +67,7 @@ export function MainLayout({ children }: MainLayoutProps) {
   const [isPasswordOpen, setIsPasswordOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [newPassword, setNewPassword] = useState("");
+  const [exportOpen, setExportOpen] = useState(false);
 
   // Title Editing State
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -185,9 +187,13 @@ export function MainLayout({ children }: MainLayoutProps) {
               </div>
             </div>
             <div className="flex gap-2">
-              <Button variant="outline" size="sm">
-                <FileCode className="h-4 w-4 mr-2" />
-                Export EDL
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => setExportOpen(true)}
+              >
+                <Film className="h-4 w-4 mr-2" />
+                Export Video
               </Button>
             </div>
           </>
@@ -295,6 +301,15 @@ export function MainLayout({ children }: MainLayoutProps) {
       </Dialog>
 
       <UploadWizard open={uploadOpen} onOpenChange={setUploadOpen} />
+
+      {/* Export Modal - only show in editor */}
+      {isEditorPage && projectIdFromPath && (
+        <ExportModal
+          open={exportOpen}
+          onOpenChange={setExportOpen}
+          projectId={projectIdFromPath}
+        />
+      )}
     </div>
   );
 }
