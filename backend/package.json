@@ -4,7 +4,7 @@
   "description": "Serverless backend for ZeeVee",
   "main": "index.js",
   "scripts": {
-    "build": "esbuild src/handlers/*.ts --bundle --platform=node --target=node18 --outdir=dist",
+    "build": "esbuild src/handlers/*.ts --bundle --platform=node --target=node18 --outdir=dist --external:@remotion/lambda --external:@remotion/renderer",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -13,12 +13,15 @@
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.947.0",
     "@aws-sdk/client-dynamodb": "^3.400.0",
+    "@aws-sdk/client-lambda": "^3.400.0",
     "@aws-sdk/client-s3": "^3.948.0",
     "@aws-sdk/client-secrets-manager": "^3.400.0",
     "@aws-sdk/client-sts": "^3.948.0",
     "@aws-sdk/lib-dynamodb": "^3.400.0",
     "@aws-sdk/lib-storage": "^3.948.0",
     "@aws-sdk/s3-request-presigner": "^3.400.0",
+    "@remotion/lambda": "^4.0.387",
+    "@remotion/renderer": "^4.0.387",
     "axios": "^1.6.0",
     "twelvelabs-js": "^1.1.0",
     "uuid": "^13.0.0",

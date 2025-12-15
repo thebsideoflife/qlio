@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils";
 import { useProjectData } from "@/hooks/useProjectData";
 import { useSeamlessPlayback } from "@/hooks/useSeamlessPlayback";
 import { generateSegments } from "@/services/api";
-import { FileText, Wand2, Captions } from "lucide-react";
+import { FileText, Wand2, Captions, Clock } from "lucide-react";
 
 export default function Editor() {
   const { projectId } = useParams();
@@ -280,27 +280,179 @@ export default function Editor() {
           )}
           {activeTab === "captions" && <CaptionEditor />}
           {activeTab === "transcript" && (
-            <div className="p-4 space-y-1 text-sm leading-relaxed h-full">
-              <div className="flex justify-between items-center mb-4 text-xs text-muted-foreground">
-                <span>Full Transcript</span>
-                <span>
-                  {Math.floor(duration / 60)}:
-                  {(duration % 60).toFixed(0).padStart(2, "0")}
-                </span>
-              </div>
+            <TranscriptPanel
+              transcription={transcription}
+              segments={segments}
+              currentTime={currentTime}
+              duration={duration}
+              previewMode={previewMode}
+              onWordClick={handleWordClick}
+              loading={loading}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-              {transcription.length > 0 ? (
-                <p>
-                  {transcription.map((word, idx) => {
+// Helper to format time as MM:SS
+function formatTime(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+// Group words into chunks of ~10 seconds each
+function groupWordsIntoChunks(
+  words: Array<{ start: number; end: number; value: string }>,
+  chunkDuration = 10
+): Array<{
+  startTime: number;
+  endTime: number;
+  words: Array<{ start: number; end: number; value: string }>;
+}> {
+  if (words.length === 0) return [];
+
+  const chunks: Array<{
+    startTime: number;
+    endTime: number;
+    words: Array<{ start: number; end: number; value: string }>;
+  }> = [];
+
+  let currentChunk: {
+    startTime: number;
+    endTime: number;
+    words: Array<{ start: number; end: number; value: string }>;
+  } | null = null;
+
+  for (const word of words) {
+    if (!currentChunk) {
+      currentChunk = { startTime: word.start, endTime: word.end, words: [word] };
+    } else if (word.start - currentChunk.startTime < chunkDuration) {
+      currentChunk.words.push(word);
+      currentChunk.endTime = word.end;
+    } else {
+      chunks.push(currentChunk);
+      currentChunk = { startTime: word.start, endTime: word.end, words: [word] };
+    }
+  }
+
+  if (currentChunk) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
+}
+
+interface TranscriptPanelProps {
+  transcription: Array<{ start: number; end: number; value: string }>;
+  segments: Array<{ id: string; startTime: number; endTime: number }>;
+  currentTime: number;
+  duration: number;
+  previewMode: boolean;
+  onWordClick: (startTime: number) => void;
+  loading: boolean;
+}
+
+function TranscriptPanel({
+  transcription,
+  segments,
+  currentTime,
+  duration,
+  previewMode,
+  onWordClick,
+  loading,
+}: TranscriptPanelProps) {
+  // Filter transcription to only show words within segments when in preview mode
+  const filteredTranscription = previewMode
+    ? transcription.filter((word) =>
+        segments.some(
+          (seg) => word.start >= seg.startTime && word.end <= seg.endTime
+        )
+      )
+    : transcription;
+
+  // Group words into chunks
+  const chunks = groupWordsIntoChunks(filteredTranscription);
+
+  // Calculate total duration shown
+  const shownDuration = previewMode
+    ? segments.reduce((sum, seg) => sum + (seg.endTime - seg.startTime), 0)
+    : duration;
+
+  return (
+    <div className="p-4 space-y-3 text-sm h-full overflow-y-auto">
+      {/* Header */}
+      <div className="flex justify-between items-center text-xs text-muted-foreground pb-2 border-b">
+        <span className="font-medium">
+          {previewMode ? "Preview Transcript" : "Full Transcript"}
+        </span>
+        <span className="flex items-center gap-1">
+          <Clock className="h-3 w-3" />
+          {formatTime(shownDuration)}
+        </span>
+      </div>
+
+      {previewMode && segments.length === 0 && (
+        <div className="text-muted-foreground text-center py-8 text-xs">
+          No segments selected. Add segments to see preview transcript.
+        </div>
+      )}
+
+      {chunks.length > 0 ? (
+        <div className="space-y-4">
+          {chunks.map((chunk, chunkIdx) => {
+            const isChunkActive =
+              currentTime >= chunk.startTime && currentTime <= chunk.endTime;
+
+            return (
+              <div
+                key={chunkIdx}
+                className={cn(
+                  "rounded-lg p-3 transition-colors",
+                  isChunkActive
+                    ? "bg-primary/10 border border-primary/20"
+                    : "bg-muted/30 hover:bg-muted/50"
+                )}
+              >
+                {/* Timestamp badge */}
+                <div className="flex items-center gap-2 mb-2">
+                  <span
+                    className={cn(
+                      "text-[10px] font-mono px-1.5 py-0.5 rounded",
+                      isChunkActive
+                        ? "bg-primary/20 text-primary"
+                        : "bg-muted text-muted-foreground"
+                    )}
+                  >
+                    {formatTime(chunk.startTime)}
+                  </span>
+                  <div className="flex-1 h-px bg-border" />
+                  <span
+                    className={cn(
+                      "text-[10px] font-mono px-1.5 py-0.5 rounded",
+                      isChunkActive
+                        ? "bg-primary/20 text-primary"
+                        : "bg-muted text-muted-foreground"
+                    )}
+                  >
+                    {formatTime(chunk.endTime)}
+                  </span>
+                </div>
+
+                {/* Words */}
+                <p className="leading-relaxed">
+                  {chunk.words.map((word, idx) => {
                     const isActive =
                       currentTime >= word.start && currentTime <= word.end;
                     return (
                       <span
                         key={idx}
-                        onClick={() => handleWordClick(word.start)}
+                        onClick={() => onWordClick(word.start)}
                         className={cn(
-                          "cursor-pointer hover:bg-blue-100 rounded px-0.5 transition-colors",
-                          isActive && "bg-blue-200 text-blue-800 font-medium"
+                          "cursor-pointer hover:bg-primary/20 rounded px-0.5 transition-colors",
+                          isActive && "bg-primary text-primary-foreground"
                         )}
                       >
                         {word.value}{" "}
@@ -308,17 +460,15 @@ export default function Editor() {
                     );
                   })}
                 </p>
-              ) : (
-                <div className="text-muted-foreground text-center mt-10">
-                  {loading
-                    ? "Loading transcript..."
-                    : "No transcript available."}
-                </div>
-              )}
-            </div>
-          )}
+              </div>
+            );
+          })}
         </div>
-      </div>
+      ) : (
+        <div className="text-muted-foreground text-center py-10">
+          {loading ? "Loading transcript..." : "No transcript available."}
+        </div>
+      )}
     </div>
   );
 }

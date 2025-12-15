@@ -34,12 +34,12 @@ export interface Segment {
   title: string;
 }
 
-export interface CaptionedVideoProps {
+export type CaptionedVideoProps = {
   videoUrl: string;
   segments: Segment[];
   captions: CaptionLine[];
   captionSettings: CaptionSettings;
-}
+};
 
 // Snap positions for caption placement
 export const SNAP_POSITIONS = [

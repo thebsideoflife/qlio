@@ -63,30 +63,57 @@ export function ExportModal({
     0
   );
 
-  // Poll for render status
+  // Poll for render status with exponential backoff
   useEffect(() => {
     if (!jobId || status === "completed" || status === "failed") return;
 
-    const pollInterval = setInterval(async () => {
+    let pollCount = 0;
+    let timeoutId: ReturnType<typeof setTimeout>;
+
+    const poll = async () => {
       try {
+        console.log(`[Export] Polling render status for job ${jobId}...`);
         const result = await getRenderStatus(jobId);
+
+        console.log(`[Export] Job ${jobId} status:`, {
+          status: result.status,
+          progress: result.progress,
+        });
+
         setProgress(result.progress);
 
         if (result.status === "completed") {
+          console.log(`[Export] Job ${jobId} completed!`, result.downloadUrl);
           setStatus("completed");
           setDownloadUrl(result.downloadUrl || null);
-          clearInterval(pollInterval);
+          return; // Stop polling
         } else if (result.status === "failed") {
+          console.error(`[Export] Job ${jobId} failed:`, result.error);
           setStatus("failed");
           setError(result.error || "Render failed");
-          clearInterval(pollInterval);
+          return; // Stop polling
         }
-      } catch (err) {
-        console.error("Error polling render status:", err);
-      }
-    }, 2000);
 
-    return () => clearInterval(pollInterval);
+        // Exponential backoff: 2s → 3s → 5s → 8s → 10s (max)
+        pollCount++;
+        const nextDelay = Math.min(2000 * Math.pow(1.5, pollCount), 10000);
+        console.log(`[Export] Next poll in ${nextDelay}ms`);
+        timeoutId = setTimeout(poll, nextDelay);
+      } catch (err) {
+        console.error("[Export] Error polling render status:", err);
+        // Continue polling on error (network issues, etc)
+        pollCount++;
+        const nextDelay = Math.min(2000 * Math.pow(1.5, pollCount), 10000);
+        timeoutId = setTimeout(poll, nextDelay);
+      }
+    };
+
+    // Start first poll immediately
+    poll();
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, [jobId, status]);
 
   const handleStartRender = useCallback(async () => {

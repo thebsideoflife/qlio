@@ -11,19 +11,36 @@ const s3Client = new S3Client({});
  */
 export const presignS3Uri = async (
   s3Uri: string,
-  expiresIn: number = 3600
+  expiresIn: number = 43200 // 12 hours - sufficient for long renders
 ): Promise<string | null> => {
-  if (!s3Uri || !s3Uri.startsWith("s3://")) return null;
+  if (!s3Uri || !s3Uri.startsWith("s3://")) {
+    console.error("Invalid S3 URI:", s3Uri);
+    return null;
+  }
 
   try {
     const parts = s3Uri.replace("s3://", "").split("/");
     const bucket = parts[0];
     const key = parts.slice(1).join("/");
+
+    if (!bucket || !key) {
+      console.error("Failed to parse S3 URI - missing bucket or key:", s3Uri);
+      return null;
+    }
+
     const command = new GetObjectCommand({ Bucket: bucket, Key: key });
-    return await getSignedUrl(s3Client, command, { expiresIn });
+    const signedUrl = await getSignedUrl(s3Client, command, { expiresIn });
+
+    console.log("Successfully generated presigned URL:", {
+      bucket,
+      key,
+      expiresIn,
+      urlLength: signedUrl.length,
+    });
+
+    return signedUrl;
   } catch (e) {
     console.error("Error signing S3 URI:", s3Uri, e);
     return null;
   }
 };
-

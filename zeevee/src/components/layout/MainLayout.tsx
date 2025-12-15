@@ -186,7 +186,8 @@ export function MainLayout({ children }: MainLayoutProps) {
                 </div>
               </div>
             </div>
-            <div className="flex gap-2">
+            {/* Export button temporarily hidden - pending Lambda quota increase */}
+            {/* <div className="flex gap-2">
               <Button
                 variant="default"
                 size="sm"
@@ -195,7 +196,7 @@ export function MainLayout({ children }: MainLayoutProps) {
                 <Film className="h-4 w-4 mr-2" />
                 Export Video
               </Button>
-            </div>
+            </div> */}
           </>
         )}
 

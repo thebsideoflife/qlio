@@ -151,3 +151,4 @@ vite.config.ts.timestamp-*
 
 # Backend Build Artifacts
 backend/dist/
+backend/render-package/

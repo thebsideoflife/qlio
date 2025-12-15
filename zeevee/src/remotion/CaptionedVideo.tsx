@@ -109,6 +109,28 @@ function SegmentClip({
   // Current time within the original video
   const currentTime = startTime + frame / fps;
 
+  // Validate videoUrl
+  if (!videoUrl || videoUrl.trim() === "") {
+    console.error("SegmentClip: videoUrl is empty", {
+      videoUrl,
+      startTime,
+      endTime,
+    });
+    return (
+      <AbsoluteFill
+        style={{
+          backgroundColor: "red",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "white",
+        }}
+      >
+        Error: No video URL
+      </AbsoluteFill>
+    );
+  }
+
   return (
     <AbsoluteFill>
       <OffthreadVideo
@@ -125,14 +147,51 @@ function SegmentClip({
   );
 }
 
-export function CaptionedVideo({
+export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
   videoUrl,
   segments,
   captions,
   captionSettings,
-}: CaptionedVideoProps) {
+}) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
+
+  // Validate videoUrl
+  if (!videoUrl || videoUrl.trim() === "") {
+    console.error("CaptionedVideo: videoUrl is empty or undefined", {
+      videoUrl,
+      segments: segments?.length,
+      captions: captions?.length,
+    });
+    return (
+      <AbsoluteFill
+        style={{
+          backgroundColor: "black",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "white",
+          fontSize: "2rem",
+          padding: "2rem",
+          textAlign: "center",
+        }}
+      >
+        <div>
+          <div style={{ marginBottom: "1rem" }}>⚠️ Error</div>
+          <div style={{ fontSize: "1.5rem" }}>
+            No video source provided (videoUrl is empty)
+          </div>
+        </div>
+      </AbsoluteFill>
+    );
+  }
+
+  console.log("CaptionedVideo rendering with:", {
+    videoUrlLength: videoUrl.length,
+    videoUrlPrefix: videoUrl.substring(0, 50),
+    segmentsCount: segments.length,
+    captionsCount: captions.length,
+  });
 
   // No segments = render full video
   if (segments.length === 0) {
@@ -185,4 +244,4 @@ export function CaptionedVideo({
       ))}
     </AbsoluteFill>
   );
-}
+};
