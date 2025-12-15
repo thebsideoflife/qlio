@@ -114,21 +114,24 @@ resource "aws_iam_role_policy" "lambda_policy" {
   policy = data.aws_iam_policy_document.lambda_policy.json
 }
 
-# Archives
-data "archive_file" "lambda_zip" {
+# ============================================================================
+# SEPARATE ZIP FILES PER LAMBDA - Only changed Lambdas redeploy
+# ============================================================================
+
+# --- Upload ---
+data "archive_file" "upload_zip" {
   type        = "zip"
-  source_dir  = "../backend/dist"
-  output_path = "${path.module}/lambda.zip"
+  source_file = "../backend/dist/generateUploadCredentials.js"
+  output_path = "${path.module}/zips/upload.zip"
 }
 
-# Lambdas
 resource "aws_lambda_function" "generate_upload_credentials" {
-  filename         = data.archive_file.lambda_zip.output_path
+  filename         = data.archive_file.upload_zip.output_path
   function_name    = "${var.project_name}-generate-upload-credentials"
   role             = aws_iam_role.lambda_role.arn
   handler          = "generateUploadCredentials.handler"
   runtime          = "nodejs20.x"
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  source_code_hash = data.archive_file.upload_zip.output_base64sha256
   timeout          = 10
 
   environment {
@@ -141,13 +144,20 @@ resource "aws_lambda_function" "generate_upload_credentials" {
   }
 }
 
+# --- Indexing ---
+data "archive_file" "start_indexing_zip" {
+  type        = "zip"
+  source_file = "../backend/dist/startIndexing.js"
+  output_path = "${path.module}/zips/startIndexing.zip"
+}
+
 resource "aws_lambda_function" "start_indexing" {
-  filename         = data.archive_file.lambda_zip.output_path
+  filename         = data.archive_file.start_indexing_zip.output_path
   function_name    = "${var.project_name}-start-indexing"
   role             = aws_iam_role.lambda_role.arn
   handler          = "startIndexing.handler"
   runtime          = "nodejs20.x"
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  source_code_hash = data.archive_file.start_indexing_zip.output_base64sha256
   timeout          = 30
 
   environment {
@@ -160,13 +170,20 @@ resource "aws_lambda_function" "start_indexing" {
   }
 }
 
+# --- Webhook ---
+data "archive_file" "process_webhook_zip" {
+  type        = "zip"
+  source_file = "../backend/dist/processWebhook.js"
+  output_path = "${path.module}/zips/processWebhook.zip"
+}
+
 resource "aws_lambda_function" "process_webhook" {
-  filename         = data.archive_file.lambda_zip.output_path
+  filename         = data.archive_file.process_webhook_zip.output_path
   function_name    = "${var.project_name}-process-webhook"
   role             = aws_iam_role.lambda_role.arn
   handler          = "processWebhook.handler"
   runtime          = "nodejs20.x"
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  source_code_hash = data.archive_file.process_webhook_zip.output_base64sha256
   timeout          = 30
 
   environment {
@@ -181,13 +198,20 @@ resource "aws_lambda_function" "process_webhook" {
   }
 }
 
+# --- Assets CRUD ---
+data "archive_file" "list_assets_zip" {
+  type        = "zip"
+  source_file = "../backend/dist/listAssets.js"
+  output_path = "${path.module}/zips/listAssets.zip"
+}
+
 resource "aws_lambda_function" "list_assets" {
-  filename         = data.archive_file.lambda_zip.output_path
+  filename         = data.archive_file.list_assets_zip.output_path
   function_name    = "${var.project_name}-list-assets"
   role             = aws_iam_role.lambda_role.arn
   handler          = "listAssets.handler"
   runtime          = "nodejs20.x"
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  source_code_hash = data.archive_file.list_assets_zip.output_base64sha256
   timeout          = 10
 
   environment {
@@ -198,13 +222,19 @@ resource "aws_lambda_function" "list_assets" {
   }
 }
 
+data "archive_file" "get_asset_zip" {
+  type        = "zip"
+  source_file = "../backend/dist/getAsset.js"
+  output_path = "${path.module}/zips/getAsset.zip"
+}
+
 resource "aws_lambda_function" "get_asset" {
-  filename         = data.archive_file.lambda_zip.output_path
+  filename         = data.archive_file.get_asset_zip.output_path
   function_name    = "${var.project_name}-get-asset"
   role             = aws_iam_role.lambda_role.arn
   handler          = "getAsset.handler"
   runtime          = "nodejs20.x"
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  source_code_hash = data.archive_file.get_asset_zip.output_base64sha256
   timeout          = 10
 
   environment {
@@ -215,13 +245,19 @@ resource "aws_lambda_function" "get_asset" {
   }
 }
 
+data "archive_file" "update_asset_zip" {
+  type        = "zip"
+  source_file = "../backend/dist/updateAsset.js"
+  output_path = "${path.module}/zips/updateAsset.zip"
+}
+
 resource "aws_lambda_function" "update_asset" {
-  filename         = data.archive_file.lambda_zip.output_path
+  filename         = data.archive_file.update_asset_zip.output_path
   function_name    = "${var.project_name}-update-asset"
   role             = aws_iam_role.lambda_role.arn
   handler          = "updateAsset.handler"
   runtime          = "nodejs20.x"
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  source_code_hash = data.archive_file.update_asset_zip.output_base64sha256
   timeout          = 10
 
   environment {
@@ -232,13 +268,45 @@ resource "aws_lambda_function" "update_asset" {
   }
 }
 
+data "archive_file" "delete_asset_zip" {
+  type        = "zip"
+  source_file = "../backend/dist/deleteAsset.js"
+  output_path = "${path.module}/zips/deleteAsset.zip"
+}
+
+resource "aws_lambda_function" "delete_asset" {
+  filename         = data.archive_file.delete_asset_zip.output_path
+  function_name    = "${var.project_name}-delete-asset"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "deleteAsset.handler"
+  runtime          = "nodejs20.x"
+  source_code_hash = data.archive_file.delete_asset_zip.output_base64sha256
+  timeout          = 30
+
+  environment {
+    variables = {
+      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
+      ASSETS_TABLE            = aws_dynamodb_table.assets.name
+      SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
+      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
+    }
+  }
+}
+
+# --- Projects CRUD ---
+data "archive_file" "create_project_zip" {
+  type        = "zip"
+  source_file = "../backend/dist/createProject.js"
+  output_path = "${path.module}/zips/createProject.zip"
+}
+
 resource "aws_lambda_function" "create_project" {
-  filename         = data.archive_file.lambda_zip.output_path
+  filename         = data.archive_file.create_project_zip.output_path
   function_name    = "${var.project_name}-create-project"
   role             = aws_iam_role.lambda_role.arn
   handler          = "createProject.handler"
   runtime          = "nodejs20.x"
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  source_code_hash = data.archive_file.create_project_zip.output_base64sha256
   timeout          = 60
 
   environment {
@@ -252,13 +320,19 @@ resource "aws_lambda_function" "create_project" {
   }
 }
 
+data "archive_file" "project_ops_zip" {
+  type        = "zip"
+  source_file = "../backend/dist/projectOps.js"
+  output_path = "${path.module}/zips/projectOps.zip"
+}
+
 resource "aws_lambda_function" "project_ops" {
-  filename         = data.archive_file.lambda_zip.output_path
+  filename         = data.archive_file.project_ops_zip.output_path
   function_name    = "${var.project_name}-project-ops"
   role             = aws_iam_role.lambda_role.arn
   handler          = "projectOps.handler"
   runtime          = "nodejs20.x"
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  source_code_hash = data.archive_file.project_ops_zip.output_base64sha256
   timeout          = 10
 
   environment {
@@ -270,32 +344,19 @@ resource "aws_lambda_function" "project_ops" {
   }
 }
 
-resource "aws_lambda_function" "delete_asset" {
-  filename         = data.archive_file.lambda_zip.output_path
-  function_name    = "${var.project_name}-delete-asset"
-  role             = aws_iam_role.lambda_role.arn
-  handler          = "deleteAsset.handler"
-  runtime          = "nodejs20.x"
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
-  timeout          = 30
-
-  environment {
-    variables = {
-      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
-      ASSETS_TABLE            = aws_dynamodb_table.assets.name
-      SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
-      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-    }
-  }
+data "archive_file" "list_projects_zip" {
+  type        = "zip"
+  source_file = "../backend/dist/listProjects.js"
+  output_path = "${path.module}/zips/listProjects.zip"
 }
 
 resource "aws_lambda_function" "list_projects" {
-  filename         = data.archive_file.lambda_zip.output_path
+  filename         = data.archive_file.list_projects_zip.output_path
   function_name    = "${var.project_name}-list-projects"
   role             = aws_iam_role.lambda_role.arn
   handler          = "listProjects.handler"
   runtime          = "nodejs20.x"
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  source_code_hash = data.archive_file.list_projects_zip.output_base64sha256
   timeout          = 10
 
   environment {
@@ -306,13 +367,20 @@ resource "aws_lambda_function" "list_projects" {
   }
 }
 
+# --- Generate Segments ---
+data "archive_file" "generate_segments_zip" {
+  type        = "zip"
+  source_file = "../backend/dist/generateSegments.js"
+  output_path = "${path.module}/zips/generateSegments.zip"
+}
+
 resource "aws_lambda_function" "generate_segments" {
-  filename         = data.archive_file.lambda_zip.output_path
+  filename         = data.archive_file.generate_segments_zip.output_path
   function_name    = "${var.project_name}-generate-segments"
   role             = aws_iam_role.lambda_role.arn
   handler          = "generateSegments.handler"
   runtime          = "nodejs20.x"
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  source_code_hash = data.archive_file.generate_segments_zip.output_base64sha256
   timeout          = 300
 
   environment {
@@ -326,7 +394,10 @@ resource "aws_lambda_function" "generate_segments" {
   }
 }
 
+# ============================================================================
 # S3 Notification
+# ============================================================================
+
 resource "aws_lambda_permission" "allow_bucket" {
   statement_id  = "AllowExecutionFromS3Bucket"
   action        = "lambda:InvokeFunction"

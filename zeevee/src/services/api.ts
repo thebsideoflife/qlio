@@ -111,9 +111,7 @@ export const uploadToS3 = async (
     }
   });
 
-  console.log(`Starting multipart upload for ${file.name} (${file.type})...`);
   await upload.done();
-  console.log("Upload successful!");
 };
 
 export const listAssets = async () => {
@@ -170,9 +168,22 @@ export interface Segment {
   confidence: number;
 }
 
+export interface CaptionSettings {
+  enabled: boolean;
+  style: {
+    fontSize: number;
+    fontFamily: string;
+    color: string;
+    backgroundColor: string;
+    position: { x: number; y: number };
+    maxWidth: number;
+    highlightColor?: string;
+  };
+}
+
 export const updateProject = async (
   projectId: string,
-  data: { title?: string; segments?: Segment[] }
+  data: { title?: string; segments?: Segment[]; captionSettings?: CaptionSettings }
 ) => {
   const response = await axios.patch(`${API_URL}/projects/${projectId}`, data, {
     headers: getAuthHeaders(),
@@ -208,6 +219,71 @@ export const generateSegments = async (projectId: string, metadata: any) => {
 
 export const deleteAsset = async (assetId: string) => {
   const response = await axios.delete(`${API_URL}/assets/${assetId}`, {
+    headers: getAuthHeaders(),
+  });
+  return response.data;
+};
+
+// ===== Render API =====
+
+export interface RenderRequest {
+  segments: Array<{
+    id: string;
+    startTime: number;
+    endTime: number;
+    title: string;
+  }>;
+  captions: Array<{
+    id: string;
+    startTime: number;
+    endTime: number;
+    text: string;
+    words: Array<{ start: number; end: number; value: string }>;
+  }>;
+  captionSettings: {
+    enabled: boolean;
+    style: {
+      fontSize: number;
+      fontFamily: string;
+      color: string;
+      backgroundColor: string;
+      position: { x: number; y: number };
+      maxWidth: number;
+    };
+  };
+  outputFormat?: "mp4" | "webm";
+  quality?: "draft" | "standard" | "high";
+}
+
+export interface RenderJobResponse {
+  jobId: string;
+  status: "pending" | "rendering" | "completed" | "failed";
+  progress: number;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  error?: string;
+  downloadUrl?: string;
+}
+
+export const startRender = async (
+  projectId: string,
+  request: RenderRequest
+): Promise<{ jobId: string; status: string; message?: string }> => {
+  const response = await axios.post(
+    `${API_URL}/projects/${projectId}/render`,
+    request,
+    {
+      headers: getAuthHeaders(),
+    }
+  );
+  return response.data;
+};
+
+export const getRenderStatus = async (
+  jobId: string
+): Promise<RenderJobResponse> => {
+  const response = await axios.get(`${API_URL}/renders/${jobId}`, {
     headers: getAuthHeaders(),
   });
   return response.data;

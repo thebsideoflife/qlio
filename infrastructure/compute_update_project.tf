@@ -1,7 +1,7 @@
 data "archive_file" "update_project_zip" {
   type        = "zip"
   source_file = "../backend/dist/updateProject.js"
-  output_path = "${path.module}/updateProject.zip"
+  output_path = "${path.module}/zips/updateProject.zip"
 }
 
 resource "aws_lambda_function" "update_project" {
@@ -9,7 +9,7 @@ resource "aws_lambda_function" "update_project" {
   function_name    = "${var.project_name}-update-project"
   role             = aws_iam_role.lambda_role.arn
   handler          = "updateProject.handler"
-  runtime          = "nodejs18.x"
+  runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.update_project_zip.output_base64sha256
   timeout          = 30
 

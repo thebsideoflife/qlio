@@ -252,7 +252,15 @@ export function Timeline({
         const video = videoRef.current;
         if (video) {
           if (video.paused) {
-            video.play();
+            const playPromise = video.play();
+            if (playPromise !== undefined) {
+              playPromise.catch((error) => {
+                // Ignore AbortError - it's expected when user rapidly interacts
+                if (error.name !== "AbortError") {
+                  console.error("Playback error:", error);
+                }
+              });
+            }
           } else {
             video.pause();
           }

@@ -19,6 +19,39 @@ resource "aws_s3_bucket_cors_configuration" "media" {
   }
 }
 
+# Auto-cleanup temporary files to prevent cost accumulation
+resource "aws_s3_bucket_lifecycle_configuration" "media" {
+  bucket = aws_s3_bucket.media.id
+
+  # Stitched videos are intermediate artifacts - delete after 1 day
+  rule {
+    id     = "cleanup-stitched"
+    status = "Enabled"
+
+    filter {
+      prefix = "stitched/"
+    }
+
+    expiration {
+      days = 1
+    }
+  }
+
+  # Render outputs - user should download promptly, delete after 1 day
+  rule {
+    id     = "cleanup-renders"
+    status = "Enabled"
+
+    filter {
+      prefix = "renders/"
+    }
+
+    expiration {
+      days = 1
+    }
+  }
+}
+
 # Notification is circular dependency if defined here with Lambda not yet existing.
 # Will define it in compute.tf or use aws_s3_bucket_notification resource after lambda is defined.
 
