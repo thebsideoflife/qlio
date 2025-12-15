@@ -7,7 +7,6 @@ import {
   RefreshCcw,
   Edit2,
   ChevronRight,
-  Film,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModeToggle } from "@/components/mode-toggle";

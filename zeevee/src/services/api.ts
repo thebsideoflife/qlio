@@ -170,9 +170,22 @@ export interface Segment {
   confidence: number;
 }
 
+export interface CaptionSettings {
+  enabled: boolean;
+  style: {
+    fontSize: number;
+    fontFamily: string;
+    color: string;
+    backgroundColor: string;
+    position: { x: number; y: number };
+    maxWidth: number;
+    highlightColor?: string;
+  };
+}
+
 export const updateProject = async (
   projectId: string,
-  data: { title?: string; segments?: Segment[] }
+  data: { title?: string; segments?: Segment[]; captionSettings?: CaptionSettings }
 ) => {
   const response = await axios.patch(`${API_URL}/projects/${projectId}`, data, {
     headers: getAuthHeaders(),
