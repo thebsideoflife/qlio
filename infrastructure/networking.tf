@@ -12,6 +12,12 @@ resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.main.id
   name        = "$default"
   auto_deploy = true
+
+  # Generous throttling - prevents runaway loops, won't affect normal use
+  default_route_settings {
+    throttling_burst_limit = 100 # Max concurrent requests
+    throttling_rate_limit  = 200 # Requests per second
+  }
 }
 
 # Generate Upload Credentials (for multipart uploads)

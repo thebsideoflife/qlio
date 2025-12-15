@@ -103,8 +103,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     AWS_REGION_NAME
   ) {
     try {
-      console.log(`Checking render progress for ${jobId} (renderId: ${job.renderId})`);
-      
+      console.log(
+        `Checking render progress for ${jobId} (renderId: ${job.renderId})`
+      );
+
       const renderProgress = await getRenderProgress({
         bucketName: job.bucketName,
         renderId: job.renderId,
@@ -122,18 +124,29 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       // Check for fatal errors from Remotion
       if (renderProgress.fatalErrorEncountered) {
         // Extract error details from Remotion
-        const rawError = renderProgress.errors?.[0]?.message || "Render failed with fatal error";
-        
+        const rawError =
+          renderProgress.errors?.[0]?.message ||
+          "Render failed with fatal error";
+
         // Map technical errors to user-friendly messages
         let userFriendlyError = rawError;
-        if (rawError.includes("Concurrency limit") || rawError.includes("Rate Exceeded")) {
-          userFriendlyError = "Server is busy with too many renders. Please try again in a few minutes.";
-        } else if (rawError.includes("timeout") || rawError.includes("Timeout")) {
-          userFriendlyError = "Render timed out. Try rendering a shorter video.";
+        if (
+          rawError.includes("Concurrency limit") ||
+          rawError.includes("Rate Exceeded")
+        ) {
+          userFriendlyError =
+            "Server is busy with too many renders. Please try again in a few minutes.";
+        } else if (
+          rawError.includes("timeout") ||
+          rawError.includes("Timeout")
+        ) {
+          userFriendlyError =
+            "Render timed out. Try rendering a shorter video.";
         } else if (rawError.includes("memory") || rawError.includes("Memory")) {
-          userFriendlyError = "Video is too large to process. Try a shorter segment.";
+          userFriendlyError =
+            "Video is too large to process. Try a shorter segment.";
         }
-        
+
         console.error(`Render ${jobId} failed with fatal error:`, rawError);
 
         await docClient.send(
@@ -142,7 +155,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
             Key: { jobId },
             UpdateExpression:
               "SET #status = :status, #error = :error, updatedAt = :updatedAt",
-            ExpressionAttributeNames: { "#status": "status", "#error": "error" },
+            ExpressionAttributeNames: {
+              "#status": "status",
+              "#error": "error",
+            },
             ExpressionAttributeValues: {
               ":status": "failed",
               ":error": userFriendlyError,
@@ -182,7 +198,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       } else {
         // Still rendering, update progress
         const newProgress = Math.round(renderProgress.overallProgress * 100);
-        
+
         await docClient.send(
           new UpdateCommand({
             TableName: RENDER_JOBS_TABLE,
@@ -209,7 +225,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   if (job.status === "completed" && job.outputUrl) {
     // outputUrl from Remotion is already a full URL, but we should presign it
     // Extract bucket and key from the URL or use stored values
-      if (job.renderId && job.bucketName && job.jobId) {
+    if (job.renderId && job.bucketName && job.jobId) {
       try {
         const extension = job.outputFormat || "mp4";
         // Use jobId for the filename - matches outName in renderVideo.ts
@@ -225,7 +241,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
           Key: key,
         });
         downloadUrl = await getSignedUrl(s3Client, command, {
-          expiresIn: 3600, // 1 hour
+          expiresIn: 43200, // 12 hours - gives user time to download
         });
         console.log(`Successfully generated presigned URL for job ${jobId}`);
       } catch (error) {
@@ -242,7 +258,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   // Calculate effective progress including stitching phase
   let effectiveProgress = job.progress || 0;
   let statusMessage: string | undefined;
-  
+
   if (job.status === "pending_stitch") {
     statusMessage = "Preparing video segments...";
     effectiveProgress = 0;

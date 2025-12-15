@@ -352,6 +352,38 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     ? segments.reduce((sum, s) => sum + (s.endTime - s.startTime), 0)
     : asset.duration || 0;
 
+  // Validate limits to prevent abuse
+  const MAX_SEGMENTS = 10;
+  const MAX_TOTAL_DURATION = 600;
+
+  if (segments.length > MAX_SEGMENTS) {
+    return {
+      statusCode: 400,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
+      body: JSON.stringify({
+        error: `Too many segments (max ${MAX_SEGMENTS})`,
+      }),
+    };
+  }
+
+  if (totalDuration > MAX_TOTAL_DURATION) {
+    return {
+      statusCode: 400,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
+      body: JSON.stringify({
+        error: `Video too long (max ${Math.floor(
+          MAX_TOTAL_DURATION / 60
+        )} minutes)`,
+      }),
+    };
+  }
+
   const estimatedFrames = Math.round(totalDuration * 30); // 30 fps
 
   // Determine if we need FFmpeg stitching

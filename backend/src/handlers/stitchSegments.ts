@@ -9,6 +9,7 @@ import {
   S3Client,
   GetObjectCommand,
   PutObjectCommand,
+  HeadObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { renderMediaOnLambda } from "@remotion/lambda/client";
@@ -282,6 +283,23 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     }
 
     const { bucket: sourceBucket, key: sourceKey } = parseS3Uri(sourceS3Uri);
+
+    // Check file size before downloading (Lambda has 10GB /tmp limit)
+    const MAX_FILE_SIZE = 8 * 1024 * 1024 * 1024; // 8GB - leave headroom for output
+    const headResponse = await s3Client.send(
+      new HeadObjectCommand({ Bucket: sourceBucket, Key: sourceKey })
+    );
+    const fileSize = headResponse.ContentLength || 0;
+
+    if (fileSize > MAX_FILE_SIZE) {
+      throw new Error(
+        `Source video too large (${Math.round(
+          fileSize / 1024 / 1024 / 1024
+        )}GB). Maximum supported size is 8GB.`
+      );
+    }
+
+    console.log(`Source video size: ${Math.round(fileSize / 1024 / 1024)}MB`);
 
     // Create temp directory for processing
     const tmpDir = `/tmp/${jobId}`;
