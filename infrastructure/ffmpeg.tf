@@ -114,6 +114,12 @@ resource "aws_lambda_function" "stitch_segments" {
   timeout     = 900  # 15 minutes - video processing can take time
   memory_size = 3008 # 3GB - FFmpeg needs memory for processing
 
+  # Note: reserved_concurrent_executions removed - account doesn't have enough
+  # unreserved capacity. Cost control is handled by:
+  # 1. Natural workflow throttling (one render at a time per user)
+  # 2. Frontend UI preventing duplicate submissions
+  # 3. AWS Lambda's default account-level concurrency limit (1000)
+
   ephemeral_storage {
     size = 10240 # 10GB - for downloading and processing videos
   }

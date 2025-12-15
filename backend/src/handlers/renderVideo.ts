@@ -55,6 +55,40 @@ interface RenderRequest {
 }
 
 /**
+ * Validates that a segment has required numeric properties.
+ */
+function isValidSegment(
+  segment: unknown
+): segment is { startTime: number; endTime: number } {
+  if (!segment || typeof segment !== "object") return false;
+  const s = segment as Record<string, unknown>;
+  return (
+    typeof s.startTime === "number" &&
+    typeof s.endTime === "number" &&
+    !isNaN(s.startTime) &&
+    !isNaN(s.endTime) &&
+    s.endTime > s.startTime
+  );
+}
+
+/**
+ * Validates that a caption has required properties.
+ */
+function isValidCaption(
+  caption: unknown
+): caption is RenderRequest["captions"][0] {
+  if (!caption || typeof caption !== "object") return false;
+  const c = caption as Record<string, unknown>;
+  return (
+    typeof c.startTime === "number" &&
+    typeof c.endTime === "number" &&
+    !isNaN(c.startTime) &&
+    !isNaN(c.endTime) &&
+    Array.isArray(c.words)
+  );
+}
+
+/**
  * Adjusts caption timings to match the stitched video.
  * When segments are extracted and concatenated, captions need to be
  * remapped from their original video timestamps to the new timeline.
@@ -63,7 +97,34 @@ function adjustCaptionsForStitchedVideo(
   captions: RenderRequest["captions"],
   segments: RenderRequest["segments"]
 ): RenderRequest["captions"] {
+  // Input validation
+  if (!Array.isArray(captions) || !Array.isArray(segments)) {
+    console.warn(
+      "[adjustCaptionsForStitchedVideo] Invalid input: captions or segments is not an array"
+    );
+    return [];
+  }
+
   if (segments.length === 0) return captions;
+
+  // Filter out invalid segments and log warnings
+  const validSegments = segments.filter((seg, idx) => {
+    if (!isValidSegment(seg)) {
+      console.warn(
+        `[adjustCaptionsForStitchedVideo] Skipping invalid segment at index ${idx}:`,
+        seg
+      );
+      return false;
+    }
+    return true;
+  });
+
+  if (validSegments.length === 0) {
+    console.warn(
+      "[adjustCaptionsForStitchedVideo] No valid segments after validation"
+    );
+    return captions;
+  }
 
   // Build a timeline mapping: for each segment, track where it starts in the output
   const timeline: Array<{
@@ -73,7 +134,7 @@ function adjustCaptionsForStitchedVideo(
   }> = [];
 
   let outputTime = 0;
-  for (const segment of segments) {
+  for (const segment of validSegments) {
     timeline.push({
       originalStart: segment.startTime,
       originalEnd: segment.endTime,
@@ -84,6 +145,16 @@ function adjustCaptionsForStitchedVideo(
 
   // Adjust each caption to the new timeline
   return captions
+    .filter((caption, idx) => {
+      if (!isValidCaption(caption)) {
+        console.warn(
+          `[adjustCaptionsForStitchedVideo] Skipping invalid caption at index ${idx}:`,
+          caption
+        );
+        return false;
+      }
+      return true;
+    })
     .map((caption) => {
       // Find which segment(s) this caption belongs to
       for (const seg of timeline) {
@@ -104,12 +175,23 @@ function adjustCaptionsForStitchedVideo(
           );
           const newEnd = newStart + actualDuration;
 
-          // Adjust word timings too
-          const adjustedWords = caption.words.map((word) => ({
-            ...word,
-            start: newStart + (word.start - caption.startTime),
-            end: newStart + (word.end - caption.startTime),
-          }));
+          // Adjust word timings too (with validation)
+          const adjustedWords = (caption.words || [])
+            .filter((word) => {
+              if (
+                !word ||
+                typeof word.start !== "number" ||
+                typeof word.end !== "number"
+              ) {
+                return false;
+              }
+              return true;
+            })
+            .map((word) => ({
+              ...word,
+              start: newStart + (word.start - caption.startTime),
+              end: newStart + (word.end - caption.startTime),
+            }));
 
           return {
             ...caption,

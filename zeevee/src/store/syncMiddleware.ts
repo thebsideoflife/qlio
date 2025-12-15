@@ -1,32 +1,92 @@
 import type { Middleware } from "@reduxjs/toolkit";
 import { updateProject } from "@/services/api";
 import { markSynced, setSyncing } from "./editorSlice";
-import type { RootState } from "./store";
 
 const SYNC_INTERVAL_MS = 10000; // 10 seconds
 
-export const syncMiddleware: Middleware = (store) => {
-  // Start polling interval when middleware initializes
-  setInterval(async () => {
-    const state = store.getState() as RootState;
-    const { projectId, segments, captionSettings, isDirty, isSyncing } =
-      state.editor;
+// Track the interval ID so we can clean it up
+let syncIntervalId: ReturnType<typeof setInterval> | null = null;
 
-    // Only sync if: we have a project, there are changes, and not already syncing
-    if (projectId && isDirty && !isSyncing) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type StoreAPI = { getState: () => any; dispatch: (action: any) => any };
+
+/**
+ * Starts the sync polling interval.
+ * Called when a project is loaded (setProjectId action).
+ */
+function startSyncInterval(store: StoreAPI) {
+  // Clear any existing interval first
+  stopSyncInterval();
+
+  syncIntervalId = setInterval(async () => {
+    const state = store.getState();
+    const {
+      projectId,
+      segments,
+      captionSettings,
+      localVersion,
+      syncedVersion,
+      isSyncing,
+    } = state.editor;
+
+    // Only sync if: we have a project, there are unsynced changes, and not already syncing
+    const hasUnsyncedChanges = localVersion > syncedVersion;
+
+    if (projectId && hasUnsyncedChanges && !isSyncing) {
+      // Capture the version we're about to sync
+      const versionToSync = localVersion;
+
       store.dispatch(setSyncing(true));
       try {
         await updateProject(projectId, { segments, captionSettings });
-        store.dispatch(markSynced());
-        console.log("[Sync] Project synced successfully");
+        // Only mark the specific version as synced - if user made edits during sync,
+        // localVersion will be higher and we'll sync again next interval
+        store.dispatch(markSynced(versionToSync));
       } catch (e) {
         console.error("[Sync] Failed to sync project:", e);
-        // Don't clear isDirty on failure - will retry next interval
+        // Don't update syncedVersion on failure - will retry next interval
       }
       store.dispatch(setSyncing(false));
     }
   }, SYNC_INTERVAL_MS);
+}
 
-  // Pass actions through unchanged
-  return (next) => (action) => next(action);
+/**
+ * Stops the sync polling interval.
+ * Called when leaving the editor (resetEditor action) or loading a new project.
+ */
+function stopSyncInterval() {
+  if (syncIntervalId !== null) {
+    clearInterval(syncIntervalId);
+    syncIntervalId = null;
+  }
+}
+
+export const syncMiddleware: Middleware = (store) => {
+  return (next) => (action) => {
+    const result = next(action);
+
+    // Type guard for action
+    const typedAction = action as { type: string; payload?: unknown };
+
+    // Start sync interval when a project is loaded
+    if (typedAction.type === "editor/setProjectId") {
+      const projectId = typedAction.payload as string | null;
+      if (projectId) {
+        startSyncInterval(store);
+      } else {
+        stopSyncInterval();
+      }
+    }
+
+    // Stop sync interval when editor is reset (user leaves editor)
+    if (typedAction.type === "editor/resetEditor") {
+      stopSyncInterval();
+    }
+
+    return result;
+  };
 };
+
+// Export for testing purposes
+export { startSyncInterval, stopSyncInterval };

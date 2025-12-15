@@ -186,13 +186,6 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
     );
   }
 
-  console.log("CaptionedVideo rendering with:", {
-    videoUrlLength: videoUrl.length,
-    videoUrlPrefix: videoUrl.substring(0, 50),
-    segmentsCount: segments.length,
-    captionsCount: captions.length,
-  });
-
   // No segments = render full video
   if (segments.length === 0) {
     const currentTime = frame / fps;

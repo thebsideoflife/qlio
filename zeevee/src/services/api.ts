@@ -111,9 +111,7 @@ export const uploadToS3 = async (
     }
   });
 
-  console.log(`Starting multipart upload for ${file.name} (${file.type})...`);
   await upload.done();
-  console.log("Upload successful!");
 };
 
 export const listAssets = async () => {

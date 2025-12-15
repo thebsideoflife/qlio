@@ -27,9 +27,10 @@ interface EditorState {
   duration: number;
   projectTitle: string;
   assetName: string;
-  // Sync tracking
+  // Sync tracking - uses version numbers to avoid race conditions
   projectId: string | null;
-  isDirty: boolean;
+  localVersion: number; // Increments on each local edit
+  syncedVersion: number; // Tracks last successfully synced version
   isSyncing: boolean;
   // Caption state
   transcriptWords: CaptionWord[];
@@ -44,9 +45,10 @@ const initialState: EditorState = {
   duration: 0,
   projectTitle: "",
   assetName: "",
-  // Sync tracking
+  // Sync tracking - uses version numbers to avoid race conditions
   projectId: null,
-  isDirty: false,
+  localVersion: 0,
+  syncedVersion: 0,
   isSyncing: false,
   // Caption state
   transcriptWords: [],
@@ -99,8 +101,9 @@ export const editorSlice = createSlice({
     // Project management
     setProjectId: (state, action: PayloadAction<string | null>) => {
       state.projectId = action.payload;
-      // Reset dirty state when loading a new project
-      state.isDirty = false;
+      // Reset sync state when loading a new project
+      state.localVersion = 0;
+      state.syncedVersion = 0;
       state.isSyncing = false;
     },
     setSegments: (state, action: PayloadAction<Segment[]>) => {
@@ -130,7 +133,7 @@ export const editorSlice = createSlice({
       if (segment) {
         segment.startTime = action.payload.start;
         segment.endTime = action.payload.end;
-        state.isDirty = true;
+        state.localVersion++;
         // Note: merging happens on finalizeSegmentEdit (mouse release)
       }
     },
@@ -193,7 +196,7 @@ export const editorSlice = createSlice({
         };
 
         state.segments.splice(index, 1, newSegment1, newSegment2);
-        state.isDirty = true;
+        state.localVersion++;
       }
     },
     addSegment: (state, action: PayloadAction<{ atTime: number }>) => {
@@ -227,7 +230,7 @@ export const editorSlice = createSlice({
         (s) => s.startTime <= atTime && s.endTime >= atTime
       );
       state.selectedSegmentId = containingSegment?.id || newSegment.id;
-      state.isDirty = true;
+      state.localVersion++;
     },
     deleteSegment: (state, action: PayloadAction<string>) => {
       const id = action.payload;
@@ -235,15 +238,17 @@ export const editorSlice = createSlice({
       if (state.selectedSegmentId === id) {
         state.selectedSegmentId = null;
       }
-      state.isDirty = true;
+      state.localVersion++;
     },
 
     // Sync state management
     setSyncing: (state, action: PayloadAction<boolean>) => {
       state.isSyncing = action.payload;
     },
-    markSynced: (state) => {
-      state.isDirty = false;
+    markSynced: (state, action: PayloadAction<number>) => {
+      // Only update syncedVersion to the version that was actually synced
+      // This prevents race conditions where edits made during sync are lost
+      state.syncedVersion = action.payload;
     },
 
     // Playback state
@@ -272,18 +277,18 @@ export const editorSlice = createSlice({
         ...state.captionSettings.style,
         ...action.payload,
       };
-      state.isDirty = true;
+      state.localVersion++;
     },
     setCaptionsEnabled: (state, action: PayloadAction<boolean>) => {
       state.captionSettings.enabled = action.payload;
-      state.isDirty = true;
+      state.localVersion++;
     },
     updateCaptionPosition: (
       state,
       action: PayloadAction<{ x: number; y: number }>
     ) => {
       state.captionSettings.style.position = action.payload;
-      state.isDirty = true;
+      state.localVersion++;
     },
 
     // Reset state when leaving editor

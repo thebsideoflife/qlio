@@ -72,23 +72,14 @@ export function ExportModal({
 
     const poll = async () => {
       try {
-        console.log(`[Export] Polling render status for job ${jobId}...`);
         const result = await getRenderStatus(jobId);
-
-        console.log(`[Export] Job ${jobId} status:`, {
-          status: result.status,
-          progress: result.progress,
-        });
-
         setProgress(result.progress);
 
         if (result.status === "completed") {
-          console.log(`[Export] Job ${jobId} completed!`, result.downloadUrl);
           setStatus("completed");
           setDownloadUrl(result.downloadUrl || null);
           return; // Stop polling
         } else if (result.status === "failed") {
-          console.error(`[Export] Job ${jobId} failed:`, result.error);
           setStatus("failed");
           setError(result.error || "Render failed");
           return; // Stop polling
@@ -97,10 +88,8 @@ export function ExportModal({
         // Exponential backoff: 2s → 3s → 5s → 8s → 10s (max)
         pollCount++;
         const nextDelay = Math.min(2000 * Math.pow(1.5, pollCount), 10000);
-        console.log(`[Export] Next poll in ${nextDelay}ms`);
         timeoutId = setTimeout(poll, nextDelay);
       } catch (err) {
-        console.error("[Export] Error polling render status:", err);
         // Continue polling on error (network issues, etc)
         pollCount++;
         const nextDelay = Math.min(2000 * Math.pow(1.5, pollCount), 10000);

@@ -314,13 +314,15 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     await uploadToS3(outputPath, MEDIA_BUCKET, stitchedKey);
 
     // Generate presigned URL for the stitched video
+    // Use 7 days expiration to match the job TTL and prevent expired URL issues
+    // if Remotion rendering is delayed or the job is retried
     const stitchedUrl = await getSignedUrl(
       s3Client,
       new GetObjectCommand({
         Bucket: MEDIA_BUCKET,
         Key: stitchedKey,
       }),
-      { expiresIn: 43200 } // 12 hours
+      { expiresIn: 604800 } // 7 days - matches job TTL
     );
 
     // Update job with stitched video info and update inputProps.videoUrl

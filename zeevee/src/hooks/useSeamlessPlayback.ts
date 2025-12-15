@@ -6,38 +6,36 @@ export function useSeamlessPlayback(
   segments: Segment[]
 ) {
   useEffect(() => {
-    let animationFrameId: number;
+    const video = videoRef.current;
+    if (!video || segments.length === 0) return;
 
-    const checkTime = () => {
-      const video = videoRef.current;
+    const sorted = [...segments].sort((a, b) => a.startTime - b.startTime);
 
-      if (video && !video.paused && segments.length > 0) {
+    let rafId: number;
+    let lastJump = -1;
+
+    const tick = () => {
+      if (!video.paused) {
         const t = video.currentTime;
-        // Check if we are inside any valid segment
-        // Optimization: We could binary search or sort, but for <50 segments finding is fast enough.
-        const currentSegment = segments.find(
-          (s) => t >= s.startTime && t < s.endTime
-        );
 
-        if (!currentSegment) {
-          // Find the next segment to jump to
-          const nextSegment = segments
-            .filter((s) => s.startTime > t)
-            .sort((a, b) => a.startTime - b.startTime)[0];
+        // Are we in a segment?
+        const inSegment = sorted.some((s) => t >= s.startTime && t < s.endTime);
 
-          if (nextSegment) {
-            video.currentTime = nextSegment.startTime;
-          } else {
-            // End of all segments
+        if (!inSegment) {
+          const next = sorted.find((s) => s.startTime > t);
+          if (next && next.startTime !== lastJump) {
+            lastJump = next.startTime;
+            video.currentTime = next.startTime;
+          } else if (!next) {
             video.pause();
           }
         }
       }
 
-      animationFrameId = requestAnimationFrame(checkTime);
+      rafId = requestAnimationFrame(tick);
     };
 
-    animationFrameId = requestAnimationFrame(checkTime);
-    return () => cancelAnimationFrame(animationFrameId);
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
   }, [segments, videoRef]);
 }

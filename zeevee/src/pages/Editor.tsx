@@ -75,24 +75,23 @@ export default function Editor() {
     }
   };
 
-  // Use RAF for smooth caption word highlighting
+  // RAF for accurate time sync (captions, timeline, transcript)
   useEffect(() => {
-    let animationFrameId: number;
+    if (!videoUrl) return; // Don't start RAF until video is available
 
-    const updateTime = () => {
-      if (videoRef.current && !videoRef.current.paused) {
-        dispatch(setCurrentTime(videoRef.current.currentTime));
+    let rafId: number;
+
+    const tick = () => {
+      const video = videoRef.current;
+      if (video && !isNaN(video.currentTime)) {
+        dispatch(setCurrentTime(video.currentTime));
       }
-      animationFrameId = requestAnimationFrame(updateTime);
+      rafId = requestAnimationFrame(tick);
     };
 
-    // Start the RAF loop immediately (will check videoRef on each frame)
-    animationFrameId = requestAnimationFrame(updateTime);
-
-    return () => {
-      cancelAnimationFrame(animationFrameId);
-    };
-  }, [dispatch]);
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [dispatch, videoUrl]);
 
   const handleWordClick = (startTime: number) => {
     if (videoRef.current) {
@@ -328,13 +327,21 @@ function groupWordsIntoChunks(
 
   for (const word of words) {
     if (!currentChunk) {
-      currentChunk = { startTime: word.start, endTime: word.end, words: [word] };
+      currentChunk = {
+        startTime: word.start,
+        endTime: word.end,
+        words: [word],
+      };
     } else if (word.start - currentChunk.startTime < chunkDuration) {
       currentChunk.words.push(word);
       currentChunk.endTime = word.end;
     } else {
       chunks.push(currentChunk);
-      currentChunk = { startTime: word.start, endTime: word.end, words: [word] };
+      currentChunk = {
+        startTime: word.start,
+        endTime: word.end,
+        words: [word],
+      };
     }
   }
 
