@@ -3,6 +3,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import type { RootState } from "@/store/store";
 import { updateCaptionPosition, updateCaptionStyle } from "@/store/editorSlice";
 import { SNAP_POSITIONS } from "@/remotion/types";
+import { CaptionText } from "./CaptionText";
 
 interface CaptionOverlayProps {
   currentTime: number;
@@ -26,19 +27,10 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
   const [initialSize, setInitialSize] = useState(0);
   const [resizeDirection, setResizeDirection] = useState({ x: 1, y: 1 });
 
-  const highlightColor = style.highlightColor || "#fbbf24";
-  const showAnimation = highlightColor !== "none";
-
   // Find active caption
   const activeCaption = captions.find(
     (c) => currentTime >= c.startTime && currentTime < c.endTime
   );
-
-  // Find active word
-  const activeWordIndex =
-    activeCaption?.words.findIndex(
-      (w) => currentTime >= w.start && currentTime < w.end
-    ) ?? -1;
 
   // Snap helper
   const findSnap = useCallback((x: number, y: number) => {
@@ -162,45 +154,15 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
         onMouseLeave={() => setIsHovered(false)}
       >
         <div
-          className={`relative inline-block rounded transition-all ${
-            isHovered || isDragging ? "ring-2 ring-green-500" : ""
+          className={`relative ${
+            isHovered || isDragging ? "ring-2 ring-green-500 rounded" : ""
           }`}
-          style={{
-            padding: "0.3em 0.6em",
-            backgroundColor: style.backgroundColor,
-          }}
         >
-          <span
-            style={{
-              fontFamily: style.fontFamily,
-              fontSize: `${style.fontSize}vh`,
-              lineHeight: 1.25,
-              color: style.color,
-              textShadow: "0 1px 2px rgba(0,0,0,0.8)",
-              display: "block",
-              textAlign: "center",
-            }}
-          >
-            {activeCaption.words.map((word, i) => (
-              <span
-                key={i}
-                style={{
-                  color:
-                    showAnimation && i === activeWordIndex
-                      ? highlightColor
-                      : style.color,
-                  fontWeight:
-                    showAnimation && i === activeWordIndex ? 600 : 400,
-                  transition: showAnimation
-                    ? "color 0.1s, font-weight 0.1s"
-                    : "none",
-                }}
-              >
-                {word.value}
-                {i < activeCaption.words.length - 1 ? " " : ""}
-              </span>
-            ))}
-          </span>
+          <CaptionText
+            caption={activeCaption}
+            style={style}
+            currentTime={currentTime}
+          />
 
           {/* Resize handles - all four corners */}
           {(isHovered || isResizing) && (

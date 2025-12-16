@@ -9,7 +9,11 @@ import type {
   CaptionedVideoProps,
   CaptionLine,
   CaptionSettings,
+  SegmentFraming,
 } from "./types";
+import { DEFAULT_SEGMENT_FRAMING } from "./types";
+import { AutoFramedVideo } from "./AutoFramedVideo";
+import { CaptionText } from "@/components/editor/CaptionText";
 
 interface CaptionDisplayProps {
   captions: CaptionLine[];
@@ -31,12 +35,6 @@ function CaptionDisplay({
   if (!activeCaption) return null;
 
   const { style } = settings;
-  const activeWordIndex = activeCaption.words.findIndex(
-    (w) => currentTime >= w.start && currentTime < w.end
-  );
-
-  const highlightColor = style.highlightColor || "#fbbf24";
-  const showAnimation = highlightColor !== "none";
 
   return (
     <div
@@ -49,41 +47,11 @@ function CaptionDisplay({
         textAlign: "center",
       }}
     >
-      <div
-        style={{
-          display: "inline-block",
-          padding: "0.3em 0.6em",
-          backgroundColor: style.backgroundColor,
-          borderRadius: 6,
-        }}
-      >
-        <span
-          style={{
-            fontFamily: style.fontFamily,
-            fontSize: `${style.fontSize}vh`,
-            lineHeight: 1.25,
-            color: style.color,
-            textShadow: "0 1px 2px rgba(0,0,0,0.8)",
-          }}
-        >
-          {activeCaption.words.map((word, idx) => (
-            <span
-              key={idx}
-              style={{
-                color:
-                  showAnimation && idx === activeWordIndex
-                    ? highlightColor
-                    : style.color,
-                fontWeight:
-                  showAnimation && idx === activeWordIndex ? 600 : 400,
-              }}
-            >
-              {word.value}
-              {idx < activeCaption.words.length - 1 ? " " : ""}
-            </span>
-          ))}
-        </span>
-      </div>
+      <CaptionText
+        caption={activeCaption}
+        style={style}
+        currentTime={currentTime}
+      />
     </div>
   );
 }
@@ -94,6 +62,8 @@ interface SegmentClipProps {
   endTime: number;
   captions: CaptionLine[];
   captionSettings: CaptionSettings;
+  framing?: SegmentFraming;
+  framingEnabled?: boolean;
 }
 
 function SegmentClip({
@@ -102,6 +72,8 @@ function SegmentClip({
   endTime,
   captions,
   captionSettings,
+  framing,
+  framingEnabled = false,
 }: SegmentClipProps) {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -131,6 +103,25 @@ function SegmentClip({
     );
   }
 
+  // Use AutoFramedVideo when framing is enabled
+  if (framingEnabled && framing) {
+    return (
+      <AutoFramedVideo
+        src={videoUrl}
+        framing={framing}
+        startFrom={Math.round(startTime * fps)}
+        endAt={Math.round(endTime * fps)}
+      >
+        <CaptionDisplay
+          captions={captions}
+          settings={captionSettings}
+          currentTime={currentTime}
+        />
+      </AutoFramedVideo>
+    );
+  }
+
+  // Default: no framing applied
   return (
     <AbsoluteFill>
       <OffthreadVideo
@@ -152,9 +143,12 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
   segments,
   captions,
   captionSettings,
+  globalFraming,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
+
+  const framingEnabled = globalFraming?.enabled ?? false;
 
   // Validate videoUrl
   if (!videoUrl || videoUrl.trim() === "") {
@@ -189,6 +183,24 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
   // No segments = render full video
   if (segments.length === 0) {
     const currentTime = frame / fps;
+
+    // Apply framing if enabled (use default framing with global aspect ratio)
+    if (framingEnabled && globalFraming) {
+      const defaultFraming: SegmentFraming = {
+        ...DEFAULT_SEGMENT_FRAMING,
+        aspectRatio: globalFraming.aspectRatio,
+      };
+      return (
+        <AutoFramedVideo src={videoUrl} framing={defaultFraming}>
+          <CaptionDisplay
+            captions={captions}
+            settings={captionSettings}
+            currentTime={currentTime}
+          />
+        </AutoFramedVideo>
+      );
+    }
+
     return (
       <AbsoluteFill style={{ backgroundColor: "black" }}>
         <OffthreadVideo src={videoUrl} />
@@ -220,21 +232,31 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
 
   return (
     <AbsoluteFill style={{ backgroundColor: "black" }}>
-      {sequences.map(({ segment, startFrame, duration }) => (
-        <Sequence
-          key={segment.id}
-          from={startFrame}
-          durationInFrames={duration}
-        >
-          <SegmentClip
-            videoUrl={videoUrl}
-            startTime={segment.startTime}
-            endTime={segment.endTime}
-            captions={captions}
-            captionSettings={captionSettings}
-          />
-        </Sequence>
-      ))}
+      {sequences.map(({ segment, startFrame, duration }) => {
+        // Use segment-specific framing, or default with global aspect ratio
+        const segmentFraming: SegmentFraming = segment.framing || {
+          ...DEFAULT_SEGMENT_FRAMING,
+          aspectRatio: globalFraming?.aspectRatio ?? "9:16",
+        };
+
+        return (
+          <Sequence
+            key={segment.id}
+            from={startFrame}
+            durationInFrames={duration}
+          >
+            <SegmentClip
+              videoUrl={videoUrl}
+              startTime={segment.startTime}
+              endTime={segment.endTime}
+              captions={captions}
+              captionSettings={captionSettings}
+              framing={segmentFraming}
+              framingEnabled={framingEnabled}
+            />
+          </Sequence>
+        );
+      })}
     </AbsoluteFill>
   );
 };

@@ -1,7 +1,9 @@
+import React from "react";
 import { Timeline } from "@/components/editor/Timeline";
 import { MicrodramaGenerator } from "@/components/editor/MicrodramaGenerator";
 import { CaptionOverlay } from "@/components/editor/CaptionOverlay";
 import { CaptionEditor } from "@/components/editor/CaptionEditor";
+import { FramingSlider } from "@/components/editor/FramingSlider";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
@@ -12,14 +14,31 @@ import {
   setSegments,
   setProjectId,
   resetEditor,
+  updateSegmentFraming,
+  setSegmentFraming,
+  setGlobalAspectRatio,
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
 import { useRef, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useProjectData } from "@/hooks/useProjectData";
 import { useSeamlessPlayback } from "@/hooks/useSeamlessPlayback";
-import { generateSegments } from "@/services/api";
-import { FileText, Wand2, Captions, Clock } from "lucide-react";
+import { generateSegments, analyzeSegmentFraming } from "@/services/api";
+import {
+  FileText,
+  Wand2,
+  Captions,
+  Crop,
+  Maximize2,
+  Sparkles,
+  Loader2,
+  Clock,
+  Smartphone,
+  Square,
+  Monitor,
+} from "lucide-react";
+import { DEFAULT_SEGMENT_FRAMING } from "@/remotion/types";
+import type { SegmentFraming, AspectRatio } from "@/remotion/types";
 
 export default function Editor() {
   const { projectId } = useParams();
@@ -34,6 +53,9 @@ export default function Editor() {
     (state: RootState) => state.editor.currentTime
   );
   const duration = useSelector((state: RootState) => state.editor.duration);
+  const globalFraming = useSelector(
+    (state: RootState) => state.editor.globalFraming
+  );
 
   // Local State
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -42,11 +64,143 @@ export default function Editor() {
   );
   const [isGenerating, setIsGenerating] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
+  const [isAnalyzingFraming, setIsAnalyzingFraming] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Custom Hooks
   const { videoUrl, transcription, loading } = useProjectData(projectId);
   // Seamless playback only in preview mode
   useSeamlessPlayback(videoRef, previewMode ? segments : []);
+
+  // Get current segment's framing for preview
+  const selectedSegment = segments.find((s) => s.id === selectedSegmentId);
+  const currentFraming: SegmentFraming = selectedSegment?.framing || {
+    ...DEFAULT_SEGMENT_FRAMING,
+    aspectRatio: globalFraming.aspectRatio,
+  };
+
+  // Framing preview state
+  const isCropMode = currentFraming.mode === "crop";
+  const framingContainerRef = useRef<HTMLDivElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef<{
+    x: number;
+    y: number;
+    focusX: number;
+    focusY: number;
+  } | null>(null);
+
+  // Handle drag to reposition video within frame
+  const handleFramingMouseDown = (e: React.MouseEvent) => {
+    if (!isCropMode || !selectedSegmentId) return;
+    e.preventDefault();
+    setIsDragging(true);
+    dragStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      focusX: currentFraming.focusX,
+      focusY: currentFraming.focusY,
+    };
+  };
+
+  const handleFramingMouseMove = (e: React.MouseEvent) => {
+    if (
+      !isDragging ||
+      !dragStartRef.current ||
+      !framingContainerRef.current ||
+      !selectedSegmentId
+    )
+      return;
+
+    const container = framingContainerRef.current;
+    const rect = container.getBoundingClientRect();
+
+    // Calculate delta as percentage of container size
+    const deltaX = (e.clientX - dragStartRef.current.x) / rect.width;
+    const deltaY = (e.clientY - dragStartRef.current.y) / rect.height;
+
+    // Invert: dragging right moves focus left (shows more of left side)
+    const newFocusX = Math.max(
+      0,
+      Math.min(1, dragStartRef.current.focusX - deltaX)
+    );
+    const newFocusY = Math.max(
+      0,
+      Math.min(1, dragStartRef.current.focusY - deltaY)
+    );
+
+    dispatch(
+      updateSegmentFraming({
+        segmentId: selectedSegmentId,
+        framing: {
+          focusX: newFocusX,
+          focusY: newFocusY,
+        },
+      })
+    );
+  };
+
+  const handleFramingMouseUp = () => {
+    setIsDragging(false);
+    dragStartRef.current = null;
+  };
+
+  // Toggle crop/fit mode for current segment
+  const toggleFramingMode = () => {
+    if (!selectedSegmentId) return;
+    dispatch(
+      updateSegmentFraming({
+        segmentId: selectedSegmentId,
+        framing: { mode: isCropMode ? "fit" : "crop" },
+      })
+    );
+  };
+
+  // AI analyze framing for current segment
+  const handleAnalyzeFraming = async () => {
+    if (!projectId || !selectedSegment) return;
+    setIsAnalyzingFraming(true);
+    try {
+      const result = await analyzeSegmentFraming(
+        projectId,
+        selectedSegment.id,
+        selectedSegment.startTime,
+        selectedSegment.endTime
+      );
+      dispatch(
+        setSegmentFraming({
+          segmentId: selectedSegment.id,
+          framing: {
+            aspectRatio: globalFraming.aspectRatio,
+            mode: result.framing.mode,
+            focusX: result.framing.focusX,
+            focusY: result.framing.focusY,
+            aiReasoning: result.framing.aiReasoning,
+            isAiGenerated: result.framing.isAiGenerated,
+          },
+        })
+      );
+    } catch (error) {
+      console.error("Failed to analyze framing:", error);
+    } finally {
+      setIsAnalyzingFraming(false);
+    }
+  };
+
+  // Calculate aspect ratio for preview container
+  const getAspectRatioValue = (ratio: AspectRatio): number => {
+    switch (ratio) {
+      case "9:16":
+        return 9 / 16;
+      case "1:1":
+        return 1;
+      case "16:9":
+      default:
+        return 16 / 9;
+    }
+  };
+
+  const aspectRatioValue = getAspectRatioValue(globalFraming.aspectRatio);
 
   // Set projectId in Redux for sync middleware
   useEffect(() => {
@@ -197,97 +351,314 @@ export default function Editor() {
       <div className="flex-1 flex flex-col min-w-0 bg-background border-r">
         {/* Video Player with Caption Overlay */}
         <div
-          className="flex-1 bg-black relative flex items-center justify-center min-h-0"
+          className="flex-1 bg-black relative flex items-center justify-center min-h-0 p-4 gap-3"
           onClick={handleBackgroundClick}
         >
+          {/* Aspect Ratio Selector - Outside video on left */}
+          <div className="flex flex-col gap-1.5 shrink-0">
+            {[
+              {
+                value: "9:16" as AspectRatio,
+                icon: Smartphone,
+                label: "Portrait",
+                sublabel: "TikTok, Reels, Shorts",
+              },
+              {
+                value: "1:1" as AspectRatio,
+                icon: Square,
+                label: "Square",
+                sublabel: "Instagram Feed",
+              },
+              {
+                value: "16:9" as AspectRatio,
+                icon: Monitor,
+                label: "Landscape",
+                sublabel: "YouTube, TV",
+              },
+            ].map((ratio) => (
+              <button
+                key={ratio.value}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  dispatch(setGlobalAspectRatio(ratio.value));
+                }}
+                className={cn(
+                  "w-10 h-10 rounded-lg flex items-center justify-center transition-all",
+                  globalFraming.aspectRatio === ratio.value
+                    ? "bg-primary text-primary-foreground ring-2 ring-primary ring-offset-2 ring-offset-black"
+                    : "bg-white/10 hover:bg-white/20 text-white/70 hover:text-white"
+                )}
+                title={`${ratio.label} (${ratio.value})\n${ratio.sublabel}`}
+              >
+                <ratio.icon className="h-5 w-5" />
+              </button>
+            ))}
+            <div className="text-[10px] text-white/50 text-center mt-1 leading-tight">
+              {globalFraming.aspectRatio}
+            </div>
+          </div>
+
           {videoUrl ? (
-            <>
+            /* Framing Preview - aspect ratio container with draggable video */
+            <div
+              ref={framingContainerRef}
+              className={cn(
+                "relative overflow-hidden bg-black rounded-xl select-none shadow-2xl",
+                isDragging
+                  ? "cursor-grabbing ring-2 ring-primary ring-offset-4 ring-offset-black"
+                  : isCropMode
+                  ? "cursor-grab ring-2 ring-white/20 hover:ring-white/40"
+                  : "cursor-default ring-1 ring-white/10"
+              )}
+              style={{
+                aspectRatio: aspectRatioValue,
+                maxHeight: aspectRatioValue < 1 ? "100%" : "85%",
+                maxWidth: aspectRatioValue >= 1 ? "100%" : "85%",
+              }}
+              onMouseDown={handleFramingMouseDown}
+              onMouseMove={handleFramingMouseMove}
+              onMouseUp={handleFramingMouseUp}
+              onMouseLeave={handleFramingMouseUp}
+            >
               <video
                 ref={videoRef}
                 src={videoUrl}
-                className="max-h-full max-w-full"
-                controls
+                className="w-full h-full pointer-events-none"
+                style={{
+                  objectFit: isCropMode ? "cover" : "contain",
+                  objectPosition: isCropMode
+                    ? `${currentFraming.focusX * 100}% ${
+                        currentFraming.focusY * 100
+                      }%`
+                    : "center center",
+                }}
                 onLoadedMetadata={(e) =>
                   dispatch(setDuration(e.currentTarget.duration))
                 }
               />
+
+              {/* Overlay Controls - Top Right */}
+              <div className="absolute top-2 right-2 flex items-center gap-1.5">
+                {/* Crop/Fit Toggle - shows what clicking will do */}
+                {selectedSegment && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleFramingMode();
+                    }}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    className={cn(
+                      "flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors",
+                      "bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm"
+                    )}
+                    title={
+                      isCropMode
+                        ? "Switch to Fit mode\nShows full video with letterboxing"
+                        : "Switch to Crop mode\nFills frame, drag video to reposition"
+                    }
+                  >
+                    {isCropMode ? (
+                      <>
+                        <Maximize2 className="h-3 w-3" />
+                        <span>Fit</span>
+                      </>
+                    ) : (
+                      <>
+                        <Crop className="h-3 w-3" />
+                        <span>Crop</span>
+                      </>
+                    )}
+                  </button>
+                )}
+
+                {/* AI Auto-frame Button - only for segments */}
+                {selectedSegment && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleAnalyzeFraming();
+                    }}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    disabled={isAnalyzingFraming}
+                    className={cn(
+                      "flex items-center justify-center w-7 h-7 rounded transition-colors",
+                      "bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm",
+                      isAnalyzingFraming && "opacity-70"
+                    )}
+                    title="Auto-frame with AI\nAnalyzes video to find optimal focus point"
+                  >
+                    {isAnalyzingFraming ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                )}
+              </div>
+
+              {/* Drag hint overlay */}
+              {isCropMode && !isDragging && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
+                  <span className="text-white text-sm font-medium px-3 py-1.5 bg-black/70 rounded-full backdrop-blur-sm">
+                    Drag to reposition • Double-click sliders to center
+                  </span>
+                </div>
+              )}
+
+              {/* Position sliders - only in crop mode */}
+              {isCropMode && selectedSegment && (
+                <>
+                  {/* Vertical slider for landscape */}
+                  {globalFraming.aspectRatio === "16:9" && (
+                    <FramingSlider
+                      orientation="vertical"
+                      value={currentFraming.focusY}
+                      aspectRatio={1 / aspectRatioValue}
+                      onChange={(y) =>
+                        dispatch(
+                          updateSegmentFraming({
+                            segmentId: selectedSegmentId!,
+                            framing: { focusY: y },
+                          })
+                        )
+                      }
+                    />
+                  )}
+
+                  {/* Horizontal slider for portrait and square */}
+                  {(globalFraming.aspectRatio === "9:16" ||
+                    globalFraming.aspectRatio === "1:1") && (
+                    <FramingSlider
+                      orientation="horizontal"
+                      value={currentFraming.focusX}
+                      aspectRatio={
+                        globalFraming.aspectRatio === "1:1"
+                          ? 1.0 / (16 / 9) // Square frame / landscape video = 9/16
+                          : aspectRatioValue // Portrait: 9/16
+                      }
+                      onChange={(x) =>
+                        dispatch(
+                          updateSegmentFraming({
+                            segmentId: selectedSegmentId!,
+                            framing: { focusX: x },
+                          })
+                        )
+                      }
+                    />
+                  )}
+                </>
+              )}
+
               <CaptionOverlay currentTime={currentTime} />
-            </>
+            </div>
           ) : (
             <div className="text-white">Loading Video...</div>
           )}
         </div>
 
         {/* Timeline */}
-        <div className="h-36 border-t bg-card p-2">
-          <Timeline
-            videoRef={videoRef}
-            previewMode={previewMode}
-            onPreviewModeChange={setPreviewMode}
-          />
+        <div className="border-t bg-card">
+          <div className="h-32 p-1.5">
+            <Timeline
+              videoRef={videoRef}
+              previewMode={previewMode}
+              onPreviewModeChange={setPreviewMode}
+            />
+          </div>
         </div>
       </div>
 
-      {/* Right: Transcription & Details */}
-      <div className="w-80 flex flex-col bg-card border-l overflow-hidden">
-        {/* Tabs Header */}
-        <div className="flex border-b">
-          <button
-            className={cn(
-              "flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors border-b-2",
-              activeTab === "ai"
-                ? "border-primary text-primary bg-primary/5"
-                : "border-transparent text-muted-foreground hover:bg-muted/50"
-            )}
-            onClick={() => setActiveTab("ai")}
-          >
-            <Wand2 className="h-4 w-4" />
-            AI
-          </button>
-          <button
-            className={cn(
-              "flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors border-b-2",
-              activeTab === "captions"
-                ? "border-primary text-primary bg-primary/5"
-                : "border-transparent text-muted-foreground hover:bg-muted/50"
-            )}
-            onClick={() => setActiveTab("captions")}
-          >
-            <Captions className="h-4 w-4" />
-            Captions
-          </button>
-          <button
-            className={cn(
-              "flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors border-b-2",
-              activeTab === "transcript"
-                ? "border-primary text-primary bg-primary/5"
-                : "border-transparent text-muted-foreground hover:bg-muted/50"
-            )}
-            onClick={() => setActiveTab("transcript")}
-          >
-            <FileText className="h-4 w-4" />
-            Text
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto relative">
-          {activeTab === "ai" && (
-            <MicrodramaGenerator
-              onGenerate={handleGenerateSegments}
-              isGenerating={isGenerating}
-            />
+      {/* Right: Collapsible Sidebar */}
+      <div className="relative flex">
+        {/* Edge toggle handle */}
+        <button
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+          className={cn(
+            "absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 z-20",
+            "w-5 h-12 flex items-center justify-center",
+            "bg-card border rounded-full shadow-md",
+            "opacity-0 hover:opacity-100 transition-opacity",
+            "group-hover:opacity-60",
+            !sidebarOpen && "opacity-100"
           )}
-          {activeTab === "captions" && <CaptionEditor />}
-          {activeTab === "transcript" && (
-            <TranscriptPanel
-              transcription={transcription}
-              segments={segments}
-              currentTime={currentTime}
-              duration={duration}
-              previewMode={previewMode}
-              onWordClick={handleWordClick}
-              loading={loading}
-            />
+          title={sidebarOpen ? "Collapse panel" : "Expand panel"}
+        >
+          <div
+            className={cn(
+              "w-1 h-6 rounded-full bg-muted-foreground/40 transition-transform",
+              !sidebarOpen && "rotate-180"
+            )}
+          />
+        </button>
+
+        <div
+          className={cn(
+            "flex flex-col bg-card border-l overflow-hidden transition-all duration-200",
+            sidebarOpen ? "w-80" : "w-0"
+          )}
+        >
+          {sidebarOpen && (
+            <>
+              {/* Tabs Header - Compact */}
+              <div className="flex border-b">
+                {[
+                  {
+                    id: "ai" as const,
+                    icon: Wand2,
+                    label: "AI",
+                    tooltip: "Generate clips with AI",
+                  },
+                  {
+                    id: "captions" as const,
+                    icon: Captions,
+                    label: "Subs",
+                    tooltip: "Caption settings",
+                  },
+                  {
+                    id: "transcript" as const,
+                    icon: FileText,
+                    label: "Script",
+                    tooltip: "Full transcript",
+                  },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    className={cn(
+                      "flex-1 py-2 text-xs font-medium flex flex-col items-center gap-0.5 transition-colors border-b-2",
+                      activeTab === tab.id
+                        ? "border-primary text-primary bg-primary/5"
+                        : "border-transparent text-muted-foreground hover:bg-muted/50"
+                    )}
+                    onClick={() => setActiveTab(tab.id)}
+                    title={tab.tooltip}
+                  >
+                    <tab.icon className="h-4 w-4" />
+                    <span>{tab.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex-1 overflow-y-auto relative">
+                {activeTab === "ai" && (
+                  <MicrodramaGenerator
+                    onGenerate={handleGenerateSegments}
+                    isGenerating={isGenerating}
+                  />
+                )}
+                {activeTab === "captions" && <CaptionEditor />}
+                {activeTab === "transcript" && (
+                  <TranscriptPanel
+                    transcription={transcription}
+                    segments={segments}
+                    currentTime={currentTime}
+                    duration={duration}
+                    previewMode={previewMode}
+                    onWordClick={handleWordClick}
+                    loading={loading}
+                  />
+                )}
+              </div>
+            </>
           )}
         </div>
       </div>

@@ -246,6 +246,36 @@ resource "aws_lambda_permission" "api_gw_generate_segments" {
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/projects/*/generate"
 }
 
+# Analyze Framing (Smart Autoframing)
+resource "aws_apigatewayv2_integration" "analyze_framing" {
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.analyze_framing.invoke_arn
+  payload_format_version = "2.0"
+}
+
+# Route with segmentId parameter
+resource "aws_apigatewayv2_route" "analyze_framing_segment" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "POST /projects/{projectId}/segments/{segmentId}/analyze-framing"
+  target    = "integrations/${aws_apigatewayv2_integration.analyze_framing.id}"
+}
+
+# Route without segmentId (for analyzing arbitrary time ranges)
+resource "aws_apigatewayv2_route" "analyze_framing_project" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "POST /projects/{projectId}/analyze-framing"
+  target    = "integrations/${aws_apigatewayv2_integration.analyze_framing.id}"
+}
+
+resource "aws_lambda_permission" "api_gw_analyze_framing" {
+  statement_id  = "AllowExecutionFromAPIGatewayAnalyzeFraming"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.analyze_framing.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/projects/*"
+}
+
 output "api_url" {
   value = aws_apigatewayv2_api.main.api_endpoint
 }

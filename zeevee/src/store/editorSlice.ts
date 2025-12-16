@@ -4,8 +4,15 @@ import type {
   CaptionWord,
   CaptionStyle,
   CaptionLine,
+  SegmentFraming,
+  AspectRatio,
+  GlobalFramingSettings,
 } from "@/remotion/types";
-import { DEFAULT_CAPTION_SETTINGS } from "@/remotion/types";
+import {
+  DEFAULT_CAPTION_SETTINGS,
+  DEFAULT_SEGMENT_FRAMING,
+  DEFAULT_GLOBAL_FRAMING,
+} from "@/remotion/types";
 import { groupWordsIntoCaptions } from "@/remotion/utils";
 
 export interface Segment {
@@ -18,6 +25,7 @@ export interface Segment {
   sceneTags: string[];
   keyDialogue: string;
   confidence: number;
+  framing?: SegmentFraming;
 }
 
 interface EditorState {
@@ -36,6 +44,8 @@ interface EditorState {
   transcriptWords: CaptionWord[];
   captions: CaptionLine[];
   captionSettings: CaptionSettings;
+  // Framing state
+  globalFraming: GlobalFramingSettings;
 }
 
 const initialState: EditorState = {
@@ -54,6 +64,8 @@ const initialState: EditorState = {
   transcriptWords: [],
   captions: [],
   captionSettings: DEFAULT_CAPTION_SETTINGS,
+  // Framing state
+  globalFraming: DEFAULT_GLOBAL_FRAMING,
 };
 
 // Helper to merge overlapping segments - uses outermost coordinates (min start, max end)
@@ -291,6 +303,91 @@ export const editorSlice = createSlice({
       state.localVersion++;
     },
 
+    // Framing actions
+    setGlobalFraming: (state, action: PayloadAction<GlobalFramingSettings>) => {
+      state.globalFraming = action.payload;
+      state.localVersion++;
+    },
+    setGlobalAspectRatio: (state, action: PayloadAction<AspectRatio>) => {
+      state.globalFraming.aspectRatio = action.payload;
+      // Apply to all segments
+      state.segments.forEach((segment) => {
+        if (segment.framing) {
+          segment.framing.aspectRatio = action.payload;
+        } else {
+          segment.framing = {
+            ...DEFAULT_SEGMENT_FRAMING,
+            aspectRatio: action.payload,
+          };
+        }
+      });
+      state.localVersion++;
+    },
+    setFramingEnabled: (state, action: PayloadAction<boolean>) => {
+      state.globalFraming.enabled = action.payload;
+      state.localVersion++;
+    },
+    setSegmentFraming: (
+      state,
+      action: PayloadAction<{ segmentId: string; framing: SegmentFraming }>
+    ) => {
+      const segment = state.segments.find(
+        (s) => s.id === action.payload.segmentId
+      );
+      if (segment) {
+        segment.framing = action.payload.framing;
+        state.localVersion++;
+      }
+    },
+    updateSegmentFraming: (
+      state,
+      action: PayloadAction<{
+        segmentId: string;
+        framing: Partial<SegmentFraming>;
+      }>
+    ) => {
+      const segment = state.segments.find(
+        (s) => s.id === action.payload.segmentId
+      );
+      if (segment) {
+        segment.framing = {
+          ...(segment.framing || DEFAULT_SEGMENT_FRAMING),
+          ...action.payload.framing,
+          isAiGenerated: false, // User is overriding
+        };
+        state.localVersion++;
+      }
+    },
+    updateSegmentFocusX: (
+      state,
+      action: PayloadAction<{ segmentId: string; focusX: number }>
+    ) => {
+      const segment = state.segments.find(
+        (s) => s.id === action.payload.segmentId
+      );
+      if (segment) {
+        segment.framing = {
+          ...(segment.framing || DEFAULT_SEGMENT_FRAMING),
+          focusX: action.payload.focusX,
+          isAiGenerated: false,
+        };
+        state.localVersion++;
+      }
+    },
+    applyFramingToAllSegments: (
+      state,
+      action: PayloadAction<Partial<SegmentFraming>>
+    ) => {
+      state.segments.forEach((segment) => {
+        segment.framing = {
+          ...(segment.framing || DEFAULT_SEGMENT_FRAMING),
+          ...action.payload,
+          isAiGenerated: false,
+        };
+      });
+      state.localVersion++;
+    },
+
     // Reset state when leaving editor
     resetEditor: () => initialState,
   },
@@ -317,6 +414,14 @@ export const {
   updateCaptionStyle,
   setCaptionsEnabled,
   updateCaptionPosition,
+  // Framing actions
+  setGlobalFraming,
+  setGlobalAspectRatio,
+  setFramingEnabled,
+  setSegmentFraming,
+  updateSegmentFraming,
+  updateSegmentFocusX,
+  applyFramingToAllSegments,
   resetEditor,
 } = editorSlice.actions;
 export default editorSlice.reducer;

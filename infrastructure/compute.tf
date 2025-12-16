@@ -394,6 +394,32 @@ resource "aws_lambda_function" "generate_segments" {
   }
 }
 
+# --- Analyze Framing (Smart Autoframing with 12labs) ---
+data "archive_file" "analyze_framing_zip" {
+  type        = "zip"
+  source_file = "../backend/dist/analyzeFraming.js"
+  output_path = "${path.module}/zips/analyzeFraming.zip"
+}
+
+resource "aws_lambda_function" "analyze_framing" {
+  filename         = data.archive_file.analyze_framing_zip.output_path
+  function_name    = "${var.project_name}-analyze-framing"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "analyzeFraming.handler"
+  runtime          = "nodejs20.x"
+  source_code_hash = data.archive_file.analyze_framing_zip.output_base64sha256
+  timeout          = 60
+
+  environment {
+    variables = {
+      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
+      ASSETS_TABLE            = aws_dynamodb_table.assets.name
+      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
+      SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
+    }
+  }
+}
+
 # ============================================================================
 # S3 Notification
 # ============================================================================

@@ -288,3 +288,44 @@ export const getRenderStatus = async (
   });
   return response.data;
 };
+
+// ===== Framing Analysis API =====
+
+export interface FramingAnalysisResult {
+  mode: "crop" | "fit";
+  focusX: number;
+  focusY: number;
+  aiReasoning: string;
+  isAiGenerated: boolean;
+}
+
+export interface AnalyzeFramingResponse {
+  segmentId: string | null;
+  startTime: number;
+  endTime: number;
+  framing: FramingAnalysisResult;
+}
+
+/**
+ * Analyze a video segment to determine optimal framing for vertical/square output.
+ * Uses 12labs Pegasus to detect whether to crop (focus on speaker) or fit (show full scene).
+ */
+export const analyzeSegmentFraming = async (
+  projectId: string,
+  segmentId: string | null,
+  startTime: number,
+  endTime: number
+): Promise<AnalyzeFramingResponse> => {
+  const url = segmentId
+    ? `${API_URL}/projects/${projectId}/segments/${segmentId}/analyze-framing`
+    : `${API_URL}/projects/${projectId}/analyze-framing`;
+
+  const response = await axios.post(
+    url,
+    { startTime, endTime },
+    {
+      headers: getAuthHeaders(),
+    }
+  );
+  return response.data;
+};

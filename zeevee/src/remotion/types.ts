@@ -27,18 +27,56 @@ export interface CaptionSettings {
   style: CaptionStyle;
 }
 
+// Aspect ratio options for autoframing
+export type AspectRatio = "9:16" | "1:1" | "16:9";
+
+// Framing mode: crop focuses on a subject, fit shows the full scene
+export type FramingMode = "crop" | "fit";
+
+// Framing settings for a segment
+export interface SegmentFraming {
+  aspectRatio: AspectRatio;
+  mode: FramingMode;
+  focusX: number; // 0.0-1.0, horizontal focus point (0=left, 0.5=center, 1=right)
+  focusY: number; // 0.0-1.0, vertical focus point (0=top, 0.5=center, 1=bottom)
+  aiReasoning?: string; // AI explanation: "Multi-speaker detected", "Single speaker on right"
+  isAiGenerated: boolean; // true if AI-generated, false if user overrode
+}
+
+// Default framing settings
+export const DEFAULT_SEGMENT_FRAMING: SegmentFraming = {
+  aspectRatio: "9:16",
+  mode: "fit",
+  focusX: 0.5,
+  focusY: 0.5,
+  isAiGenerated: false,
+};
+
 export interface Segment {
   id: string;
   startTime: number;
   endTime: number;
   title: string;
+  framing?: SegmentFraming;
 }
+
+// Global framing settings that apply to the entire video
+export interface GlobalFramingSettings {
+  aspectRatio: AspectRatio;
+  enabled: boolean;
+}
+
+export const DEFAULT_GLOBAL_FRAMING: GlobalFramingSettings = {
+  aspectRatio: "9:16",
+  enabled: true,
+};
 
 export type CaptionedVideoProps = {
   videoUrl: string;
   segments: Segment[];
   captions: CaptionLine[];
   captionSettings: CaptionSettings;
+  globalFraming?: GlobalFramingSettings;
 };
 
 // Snap positions for caption placement
