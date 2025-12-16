@@ -65,6 +65,7 @@ export default function Editor() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
   const [isAnalyzingFraming, setIsAnalyzingFraming] = useState(false);
+  const [framingTooltip, setFramingTooltip] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Custom Hooks
@@ -156,16 +157,30 @@ export default function Editor() {
     );
   };
 
+  // Generate a clean tooltip message from framing result
+  const getFramingTooltipMessage = (mode: string, focusX: number): string => {
+    if (mode === "fit") return "Fit to show all";
+
+    // Map focusX to position label
+    if (focusX <= 0.1) return "Crop far left";
+    if (focusX <= 0.35) return "Crop slight left";
+    if (focusX <= 0.65) return "Crop center";
+    if (focusX <= 0.9) return "Crop slight right";
+    return "Crop far right";
+  };
+
   // AI analyze framing for current segment
   const handleAnalyzeFraming = async () => {
     if (!projectId || !selectedSegment) return;
     setIsAnalyzingFraming(true);
+    setFramingTooltip(null);
     try {
       const result = await analyzeSegmentFraming(
         projectId,
         selectedSegment.id,
         selectedSegment.startTime,
-        selectedSegment.endTime
+        selectedSegment.endTime,
+        globalFraming.aspectRatio // Pass the target aspect ratio to the AI
       );
       dispatch(
         setSegmentFraming({
@@ -180,8 +195,20 @@ export default function Editor() {
           },
         })
       );
+
+      // Show tooltip with the AI's decision
+      const message = getFramingTooltipMessage(
+        result.framing.mode,
+        result.framing.focusX
+      );
+      setFramingTooltip(message);
+
+      // Auto-hide after 3 seconds
+      setTimeout(() => setFramingTooltip(null), 5000);
     } catch (error) {
       console.error("Failed to analyze framing:", error);
+      setFramingTooltip("Analysis failed");
+      setTimeout(() => setFramingTooltip(null), 2000);
     } finally {
       setIsAnalyzingFraming(false);
     }
@@ -473,26 +500,39 @@ export default function Editor() {
 
                 {/* AI Auto-frame Button - only for segments */}
                 {selectedSegment && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleAnalyzeFraming();
-                    }}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    disabled={isAnalyzingFraming}
-                    className={cn(
-                      "flex items-center justify-center w-7 h-7 rounded transition-colors",
-                      "bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm",
-                      isAnalyzingFraming && "opacity-70"
+                  <div className="relative">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleAnalyzeFraming();
+                      }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      disabled={isAnalyzingFraming}
+                      className={cn(
+                        "flex items-center justify-center w-7 h-7 rounded transition-colors",
+                        "bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm",
+                        isAnalyzingFraming && "opacity-70"
+                      )}
+                      title="Auto-frame with AI"
+                    >
+                      {isAnalyzingFraming ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+
+                    {/* AI Response Tooltip - positioned to the left to avoid overflow clipping */}
+                    {framingTooltip && (
+                      <div className="absolute top-1/2 right-full -translate-y-1/2 mr-2 z-50 animate-in fade-in slide-in-from-right-1 duration-200">
+                        <div className="relative bg-black/90 text-white text-xs font-medium px-2.5 py-1.5 rounded-md whitespace-nowrap backdrop-blur-sm shadow-lg">
+                          {/* Arrow pointing right */}
+                          <div className="absolute top-1/2 -right-1 -translate-y-1/2 w-2 h-2 bg-black/90 rotate-45" />
+                          <span className="relative">{framingTooltip}</span>
+                        </div>
+                      </div>
                     )}
-                    title="Auto-frame with AI\nAnalyzes video to find optimal focus point"
-                  >
-                    {isAnalyzingFraming ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Sparkles className="h-3.5 w-3.5" />
-                    )}
-                  </button>
+                  </div>
                 )}
               </div>
 

@@ -183,7 +183,11 @@ export interface CaptionSettings {
 
 export const updateProject = async (
   projectId: string,
-  data: { title?: string; segments?: Segment[]; captionSettings?: CaptionSettings }
+  data: {
+    title?: string;
+    segments?: Segment[];
+    captionSettings?: CaptionSettings;
+  }
 ) => {
   const response = await axios.patch(`${API_URL}/projects/${projectId}`, data, {
     headers: getAuthHeaders(),
@@ -307,14 +311,21 @@ export interface AnalyzeFramingResponse {
 }
 
 /**
- * Analyze a video segment to determine optimal framing for vertical/square output.
- * Uses 12labs Pegasus to detect whether to crop (focus on speaker) or fit (show full scene).
+ * Analyze a video segment to determine optimal framing for the target aspect ratio.
+ * Uses 12labs Pegasus to decide whether to crop (focus on subject) or fit (show full scene).
+ *
+ * @param projectId - The project ID
+ * @param segmentId - Optional segment ID for the API route
+ * @param startTime - Segment start time in seconds
+ * @param endTime - Segment end time in seconds
+ * @param targetAspectRatio - The target output aspect ratio ("16:9", "1:1", or "9:16")
  */
 export const analyzeSegmentFraming = async (
   projectId: string,
   segmentId: string | null,
   startTime: number,
-  endTime: number
+  endTime: number,
+  targetAspectRatio: "16:9" | "1:1" | "9:16" = "9:16"
 ): Promise<AnalyzeFramingResponse> => {
   const url = segmentId
     ? `${API_URL}/projects/${projectId}/segments/${segmentId}/analyze-framing`
@@ -322,7 +333,7 @@ export const analyzeSegmentFraming = async (
 
   const response = await axios.post(
     url,
-    { startTime, endTime },
+    { startTime, endTime, targetAspectRatio },
     {
       headers: getAuthHeaders(),
     }

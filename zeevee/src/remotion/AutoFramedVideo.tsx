@@ -40,6 +40,7 @@ function getAspectRatioValue(aspectRatio: AspectRatio): number {
  * - "crop": Uses object-fit: cover to fill the frame, cropping edges.
  *           The focusX/focusY values control which part of the video is visible.
  * - "fit": Uses object-fit: contain to show the entire video with letterboxing.
+ *           Always centered - no positioning options.
  */
 export const AutoFramedVideo: React.FC<AutoFramedVideoProps> = ({
   src,
@@ -56,6 +57,7 @@ export const AutoFramedVideo: React.FC<AutoFramedVideoProps> = ({
   // For crop mode: position the video based on focus point
   // focusX: 0 = left edge visible, 0.5 = center, 1 = right edge visible
   // focusY: 0 = top edge visible, 0.5 = center, 1 = bottom edge visible
+  // For fit mode: always centered (letterboxing is symmetric)
   const objectPosition = isCrop
     ? `${focusX * 100}% ${focusY * 100}%`
     : "center center";
