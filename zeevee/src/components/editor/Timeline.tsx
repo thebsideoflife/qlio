@@ -20,6 +20,8 @@ import {
   ZoomOut,
   Eye,
   EyeOff,
+  Play,
+  Pause,
 } from "lucide-react";
 
 interface TimelineProps {
@@ -65,6 +67,31 @@ export function Timeline({
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [containerWidth, setContainerWidth] = useState(800);
   const [isPlaying, setIsPlaying] = useState(false);
+
+  // Track pinch/gesture state with refs to avoid stale closures
+  const pinchStateRef = useRef<{
+    initialDistance: number | null;
+    initialZoom: number;
+    centerX: number;
+    scrollLeft: number;
+  }>({
+    initialDistance: null,
+    initialZoom: zoom,
+    centerX: 0,
+    scrollLeft: 0,
+  });
+
+  const gestureStateRef = useRef<{
+    isGesturing: boolean;
+    initialZoom: number;
+    centerX: number;
+    scrollLeft: number;
+  }>({
+    isGesturing: false,
+    initialZoom: zoom,
+    centerX: 0,
+    scrollLeft: 0,
+  });
 
   // Use real duration, or fallback to 10 mins if 0
   const totalDuration = duration > 0 ? duration : 600;
@@ -497,89 +524,147 @@ export function Timeline({
     setZoom((z) => Math.max(z / 1.5, MIN_ZOOM));
   };
 
-  // Pinch/gesture zoom using native event listeners
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    // Track pinch state
-    let initialPinchDistance: number | null = null;
-    let initialZoom = zoom;
-    let pinchCenterX = 0;
-    let pinchScrollLeft = 0;
-
-    // Touch-based pinch (mobile)
-    const handleTouchStart = (e: TouchEvent) => {
+  // Touch-based pinch zoom (mobile)
+  const handleTouchStart = useCallback(
+    (e: React.TouchEvent) => {
       if (e.touches.length === 2) {
         e.preventDefault();
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
-        initialPinchDistance = Math.hypot(dx, dy);
-        initialZoom = zoom;
 
-        // Calculate pinch center for zoom-toward-center
         const scrollContainer = scrollRef.current;
         if (scrollContainer) {
           const rect = scrollContainer.getBoundingClientRect();
           const centerX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-          pinchCenterX = centerX - rect.left;
-          pinchScrollLeft = scrollContainer.scrollLeft;
+
+          pinchStateRef.current = {
+            initialDistance: Math.hypot(dx, dy),
+            initialZoom: zoom,
+            centerX: centerX - rect.left,
+            scrollLeft: scrollContainer.scrollLeft,
+          };
         }
       }
-    };
+    },
+    [zoom]
+  );
 
-    const handleTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2 && initialPinchDistance !== null) {
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      if (
+        e.touches.length === 2 &&
+        pinchStateRef.current.initialDistance !== null
+      ) {
         e.preventDefault();
-        e.stopPropagation();
 
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
         const currentDistance = Math.hypot(dx, dy);
 
-        const scale = currentDistance / initialPinchDistance;
+        const scale = currentDistance / pinchStateRef.current.initialDistance;
         const newZoom = Math.max(
           MIN_ZOOM,
-          Math.min(MAX_ZOOM, initialZoom * scale)
+          Math.min(MAX_ZOOM, pinchStateRef.current.initialZoom * scale)
         );
 
         // Zoom toward pinch center
         const scrollContainer = scrollRef.current;
         if (scrollContainer) {
-          const oldPps = (containerWidth * initialZoom) / totalDuration;
-          const newPps = (containerWidth * newZoom) / totalDuration;
+          const oldPps =
+            (containerWidth * pinchStateRef.current.initialZoom) /
+            effectiveDuration;
+          const newPps = (containerWidth * newZoom) / effectiveDuration;
 
-          const centerPxInTrack = pinchCenterX + pinchScrollLeft;
+          const centerPxInTrack =
+            pinchStateRef.current.centerX + pinchStateRef.current.scrollLeft;
           const timeAtCenter = centerPxInTrack / oldPps;
           const newCenterPx = timeAtCenter * newPps;
-          const newScrollLeft = newCenterPx - pinchCenterX;
+          const newScrollLeft = newCenterPx - pinchStateRef.current.centerX;
 
           scrollContainer.scrollLeft = Math.max(0, newScrollLeft);
         }
 
         setZoom(newZoom);
       }
+    },
+    [containerWidth, effectiveDuration]
+  );
+
+  const handleTouchEnd = useCallback(() => {
+    pinchStateRef.current.initialDistance = null;
+  }, []);
+
+  // Wheel event handler - must use native listener with passive:false to prevent default
+  // React synthetic events can't prevent default on passive listeners
+  useEffect(() => {
+    const scrollContainer = scrollRef.current;
+    if (!scrollContainer) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      // Skip if Safari gesture is in progress
+      if (gestureStateRef.current.isGesturing) return;
+
+      // Ctrl/Cmd + wheel = zoom (also handles trackpad pinch on Chrome/Firefox/Edge)
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const rect = scrollContainer.getBoundingClientRect();
+        const cursorX = e.clientX - rect.left;
+        const scrollLeft = scrollContainer.scrollLeft;
+
+        const cursorPxInTrack = cursorX + scrollLeft;
+        const timeAtCursor = cursorPxInTrack / pixelsPerSecond;
+
+        const zoomDelta = -e.deltaY * 0.01;
+        const newZoom = Math.max(
+          MIN_ZOOM,
+          Math.min(MAX_ZOOM, zoom * (1 + zoomDelta))
+        );
+
+        const newPixelsPerSecond =
+          (containerWidth * newZoom) / effectiveDuration;
+        const newCursorPxInTrack = timeAtCursor * newPixelsPerSecond;
+        const newScrollLeft = newCursorPxInTrack - cursorX;
+
+        setZoom(newZoom);
+        requestAnimationFrame(() => {
+          scrollContainer.scrollLeft = Math.max(0, newScrollLeft);
+        });
+      } else {
+        // Plain wheel = horizontal scroll
+        e.preventDefault();
+
+        if (e.deltaX !== 0) {
+          scrollContainer.scrollLeft += e.deltaX;
+        } else if (e.deltaY !== 0) {
+          scrollContainer.scrollLeft += e.deltaY;
+        }
+      }
     };
 
-    const handleTouchEnd = () => {
-      initialPinchDistance = null;
-    };
+    // MUST use passive:false to allow preventDefault
+    scrollContainer.addEventListener("wheel", handleWheel, { passive: false });
 
-    // Safari gesture events (trackpad pinch on Safari)
-    let gestureScrollLeft = 0;
-    let gestureCenterX = 0;
+    return () => {
+      scrollContainer.removeEventListener("wheel", handleWheel);
+    };
+  }, [zoom, pixelsPerSecond, containerWidth, effectiveDuration]);
+
+  // Safari gesture events (only needs useEffect for non-React events)
+  useEffect(() => {
+    const container = containerRef.current;
+    const scrollContainer = scrollRef.current;
+    if (!container || !scrollContainer) return;
 
     const handleGestureStart = (e: Event) => {
       e.preventDefault();
-      initialZoom = zoom;
-
-      // Capture scroll position and center for zoom-toward-center
-      const scrollContainer = scrollRef.current;
-      if (scrollContainer) {
-        const rect = scrollContainer.getBoundingClientRect();
-        gestureScrollLeft = scrollContainer.scrollLeft;
-        gestureCenterX = rect.width / 2; // Use viewport center
-      }
+      gestureStateRef.current = {
+        isGesturing: true,
+        initialZoom: zoom,
+        centerX: scrollContainer.clientWidth / 2,
+        scrollLeft: scrollContainer.scrollLeft,
+      };
     };
 
     const handleGestureChange = (e: Event) => {
@@ -587,91 +672,33 @@ export function Timeline({
       const gestureEvent = e as unknown as { scale: number };
       const newZoom = Math.max(
         MIN_ZOOM,
-        Math.min(MAX_ZOOM, initialZoom * gestureEvent.scale)
+        Math.min(
+          MAX_ZOOM,
+          gestureStateRef.current.initialZoom * gestureEvent.scale
+        )
       );
 
-      // Zoom toward center
-      const scrollContainer = scrollRef.current;
-      if (scrollContainer) {
-        const oldPps = (containerWidth * initialZoom) / totalDuration;
-        const newPps = (containerWidth * newZoom) / totalDuration;
+      const oldPps =
+        (containerWidth * gestureStateRef.current.initialZoom) /
+        effectiveDuration;
+      const newPps = (containerWidth * newZoom) / effectiveDuration;
 
-        const centerPxInTrack = gestureCenterX + gestureScrollLeft;
-        const timeAtCenter = centerPxInTrack / oldPps;
-        const newCenterPx = timeAtCenter * newPps;
-        const newScrollLeft = newCenterPx - gestureCenterX;
+      const centerPxInTrack =
+        gestureStateRef.current.centerX + gestureStateRef.current.scrollLeft;
+      const timeAtCenter = centerPxInTrack / oldPps;
+      const newCenterPx = timeAtCenter * newPps;
+      const newScrollLeft = newCenterPx - gestureStateRef.current.centerX;
 
-        scrollContainer.scrollLeft = Math.max(0, newScrollLeft);
-      }
-
+      scrollContainer.scrollLeft = Math.max(0, newScrollLeft);
       setZoom(newZoom);
     };
 
     const handleGestureEnd = (e: Event) => {
       e.preventDefault();
+      gestureStateRef.current.isGesturing = false;
     };
 
-    // Wheel handler: Ctrl/Cmd + wheel = zoom toward cursor, plain wheel = horizontal scroll
-    const handleWheel = (e: WheelEvent) => {
-      const scrollContainer = scrollRef.current;
-      if (!scrollContainer) return;
-
-      if (e.ctrlKey || e.metaKey) {
-        // Zoom toward cursor position
-        e.preventDefault();
-        e.stopPropagation();
-
-        // Get cursor position relative to the scroll container
-        const rect = scrollContainer.getBoundingClientRect();
-        const cursorX = e.clientX - rect.left;
-        const scrollLeft = scrollContainer.scrollLeft;
-
-        // Calculate the time position under the cursor (before zoom)
-        const cursorPxInTrack = cursorX + scrollLeft;
-        const timeAtCursor = cursorPxInTrack / pixelsPerSecond;
-
-        // Calculate new zoom
-        const zoomDelta = -e.deltaY * 0.01;
-        const newZoom = Math.max(
-          MIN_ZOOM,
-          Math.min(MAX_ZOOM, zoom * (1 + zoomDelta))
-        );
-
-        // Calculate new pixels per second
-        const newPixelsPerSecond = (containerWidth * newZoom) / totalDuration;
-
-        // Calculate where the cursor time would be at new zoom
-        const newCursorPxInTrack = timeAtCursor * newPixelsPerSecond;
-
-        // Adjust scroll to keep the same time under cursor
-        const newScrollLeft = newCursorPxInTrack - cursorX;
-
-        setZoom(newZoom);
-
-        // Apply scroll adjustment after state update
-        requestAnimationFrame(() => {
-          scrollContainer.scrollLeft = Math.max(0, newScrollLeft);
-        });
-      } else {
-        // Horizontal scroll (plain wheel or shift+wheel)
-        // Use deltaX for horizontal scroll, or deltaY if shift is held or deltaX is 0
-        const delta = e.deltaX !== 0 ? e.deltaX : e.deltaY;
-
-        if (delta !== 0) {
-          e.preventDefault();
-          scrollContainer.scrollLeft += delta;
-        }
-      }
-    };
-
-    // Add all listeners with { passive: false } to allow preventDefault
-    container.addEventListener("touchstart", handleTouchStart, {
-      passive: false,
-    });
-    container.addEventListener("touchmove", handleTouchMove, {
-      passive: false,
-    });
-    container.addEventListener("touchend", handleTouchEnd);
+    // Safari gesture events don't have React equivalents
     container.addEventListener("gesturestart", handleGestureStart, {
       passive: false,
     });
@@ -681,18 +708,13 @@ export function Timeline({
     container.addEventListener("gestureend", handleGestureEnd, {
       passive: false,
     });
-    container.addEventListener("wheel", handleWheel, { passive: false });
 
     return () => {
-      container.removeEventListener("touchstart", handleTouchStart);
-      container.removeEventListener("touchmove", handleTouchMove);
-      container.removeEventListener("touchend", handleTouchEnd);
       container.removeEventListener("gesturestart", handleGestureStart);
       container.removeEventListener("gesturechange", handleGestureChange);
       container.removeEventListener("gestureend", handleGestureEnd);
-      container.removeEventListener("wheel", handleWheel);
     };
-  }, [zoom, pixelsPerSecond, containerWidth, totalDuration]);
+  }, [containerWidth, effectiveDuration, zoom]);
 
   // Check if split is possible (segment selected AND playhead inside that segment)
   const canSplit = (() => {
@@ -741,19 +763,20 @@ export function Timeline({
   return (
     <div
       ref={containerRef}
-      className="w-full h-full bg-background border rounded-lg flex flex-col p-2 select-none"
+      className="w-full h-full bg-background border rounded-lg flex flex-col p-1.5 select-none"
     >
       {/* Toolbar */}
-      <div className="flex items-center gap-1 mb-2">
+      <div className="flex items-center gap-0.5 mb-1">
+        {/* Segment editing tools */}
         <Button
           size="sm"
           variant="outline"
           onClick={handleSplit}
           disabled={!canSplit}
-          className="h-7 w-7 p-0"
+          className="h-6 w-6 p-0"
           title="Split segment at playhead"
         >
-          <Scissors className="h-3.5 w-3.5" />
+          <Scissors className="h-3 w-3" />
         </Button>
         {!previewMode && (
           <Button
@@ -761,14 +784,14 @@ export function Timeline({
             variant="outline"
             onClick={handleAdd}
             disabled={!canAdd}
-            className="h-7 w-7 p-0"
+            className="h-6 w-6 p-0"
             title="Add segment at playhead"
           >
-            <Plus className="h-3.5 w-3.5" />
+            <Plus className="h-3 w-3" />
           </Button>
         )}
 
-        <div className="h-4 w-px bg-border mx-1" />
+        <div className="h-3 w-px bg-border mx-1" />
 
         {/* Zoom controls */}
         <Button
@@ -776,12 +799,12 @@ export function Timeline({
           variant="outline"
           onClick={handleZoomOut}
           disabled={zoom <= MIN_ZOOM}
-          className="h-7 w-7 p-0"
+          className="h-6 w-6 p-0"
           title="Zoom out"
         >
-          <ZoomOut className="h-3.5 w-3.5" />
+          <ZoomOut className="h-3 w-3" />
         </Button>
-        <span className="text-xs text-muted-foreground w-10 text-center">
+        <span className="text-[10px] text-muted-foreground w-8 text-center">
           {zoomPercent}%
         </span>
         <Button
@@ -789,32 +812,55 @@ export function Timeline({
           variant="outline"
           onClick={handleZoomIn}
           disabled={zoom >= MAX_ZOOM}
-          className="h-7 w-7 p-0"
+          className="h-6 w-6 p-0"
           title="Zoom in"
         >
-          <ZoomIn className="h-3.5 w-3.5" />
+          <ZoomIn className="h-3 w-3" />
         </Button>
 
-        <div className="flex-1" />
+        {/* Centered playback controls */}
+        <div className="flex-1 flex items-center justify-center gap-1.5">
+          <Button
+            size="sm"
+            variant="default"
+            onClick={() => {
+              const video = videoRef.current;
+              if (video) {
+                if (video.paused) {
+                  video.play().catch(() => {});
+                } else {
+                  video.pause();
+                }
+              }
+            }}
+            className="h-6 w-6 p-0"
+            title={isPlaying ? "Pause (Space)" : "Play (Space)"}
+          >
+            {isPlaying ? (
+              <Pause className="h-3 w-3" />
+            ) : (
+              <Play className="h-3 w-3 ml-0.5" />
+            )}
+          </Button>
+          <span className="text-[10px] text-muted-foreground font-mono">
+            {formatTime(effectiveCurrentTime)} / {formatTime(effectiveDuration)}
+          </span>
+        </div>
 
         {/* Preview mode toggle */}
         <Button
           size="sm"
           variant={previewMode ? "default" : "ghost"}
           onClick={() => onPreviewModeChange(!previewMode)}
-          className="h-7 w-7 p-0"
+          className="h-6 w-6 p-0"
           title={previewMode ? "Exit preview mode" : "Preview final video"}
         >
           {previewMode ? (
-            <EyeOff className="h-3.5 w-3.5" />
+            <EyeOff className="h-3 w-3" />
           ) : (
-            <Eye className="h-3.5 w-3.5" />
+            <Eye className="h-3 w-3" />
           )}
         </Button>
-
-        <span className="text-xs text-muted-foreground font-mono">
-          {formatTime(effectiveCurrentTime)} / {formatTime(effectiveDuration)}
-        </span>
 
         {/* Delete button - far right */}
         <Button
@@ -822,18 +868,24 @@ export function Timeline({
           variant="ghost"
           onClick={handleDelete}
           disabled={!selectedId}
-          className="h-7 w-7 p-0 text-red-500 hover:text-red-400 hover:bg-red-500/10 disabled:text-muted-foreground/30"
+          className="h-6 w-6 p-0 text-red-500 hover:text-red-400 hover:bg-red-500/10 disabled:text-muted-foreground/30"
           title="Delete selected segment"
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 className="h-3 w-3" />
         </Button>
       </div>
 
       {/* Scrollable timeline container */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-x-auto overflow-y-hidden relative"
-        style={{ scrollbarWidth: "thin" }}
+        className="flex-1 overflow-x-auto overflow-y-hidden relative timeline-scrollbar"
+        style={{
+          scrollbarWidth: "thin",
+          scrollbarColor: "hsl(var(--muted-foreground) / 0.3) transparent",
+        }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
       >
         {/* Fixed-width track based on duration * pixelsPerSecond */}
         <div
