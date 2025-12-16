@@ -16,7 +16,22 @@ const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
 const SECRET_ARN = process.env.SECRET_ARN!;
 
-// Framing analysis result
+// ============================================================================
+// TYPES & SCHEMAS
+// ============================================================================
+
+/** Target aspect ratio for reframing (input is always assumed 16:9) */
+type TargetAspectRatio = "16:9" | "1:1" | "9:16";
+
+/** Valid horizontal positions for CROP mode */
+type HorizontalPosition =
+  | "FAR_LEFT"
+  | "SLIGHT_LEFT"
+  | "CENTER"
+  | "SLIGHT_RIGHT"
+  | "FAR_RIGHT";
+
+/** Structured output from the framing analysis */
 interface FramingResult {
   mode: "crop" | "fit";
   focusX: number;
@@ -25,258 +40,353 @@ interface FramingResult {
   isAiGenerated: boolean;
 }
 
-// Map 12labs response to focusX coordinates
-const FOCUS_POSITION_MAP: Record<string, number> = {
-  LEFT: 0.25,
+/** Parsed AI response before validation */
+interface ParsedAIResponse {
+  strategy: string;
+  position: string;
+  raw: string;
+}
+
+// ============================================================================
+// POSITION MAPPING
+// ============================================================================
+
+/** Maps position tokens to focusX values (0 = left edge, 1 = right edge) */
+const HORIZONTAL_POSITION_MAP: Record<HorizontalPosition, number> = {
+  FAR_LEFT: 0.0,
+  SLIGHT_LEFT: 0.25,
   CENTER: 0.5,
-  RIGHT: 0.75,
+  SLIGHT_RIGHT: 0.75,
+  FAR_RIGHT: 1.0,
 };
 
+const VALID_POSITIONS = new Set<string>(Object.keys(HORIZONTAL_POSITION_MAP));
+
+// ============================================================================
+// RESPONSE PARSING (Factor 1: JSON Extraction as Foundation)
+// ============================================================================
+
 /**
- * Parse the 12labs response string into framing parameters.
- * Expected format: "STRATEGY, POSITION" (e.g., "FOCUS, RIGHT" or "WIDE, N/A")
+ * Extract strategy and position from raw AI response.
+ * Handles variations in formatting (spaces, underscores, case).
  */
-function parseFramingResponse(response: string): FramingResult {
-  const normalized = response.toUpperCase().trim();
-
-  // Default result (fit mode, centered)
-  const defaultResult: FramingResult = {
-    mode: "fit",
-    focusX: 0.5,
-    focusY: 0.5,
-    aiReasoning: "Could not parse AI response, defaulting to fit mode",
-    isAiGenerated: true,
-  };
-
-  // Try to parse "STRATEGY, POSITION" format
+function extractFromResponse(raw: string): ParsedAIResponse {
+  const normalized = raw.toUpperCase().trim();
   const parts = normalized.split(",").map((p) => p.trim());
 
-  if (parts.length < 2) {
-    console.warn("Unexpected framing response format:", response);
-    return defaultResult;
-  }
+  return {
+    strategy: parts[0] || "",
+    position: (parts[1] || "").replace(/\s+/g, "_"), // "FAR LEFT" → "FAR_LEFT"
+    raw,
+  };
+}
 
-  const strategy = parts[0];
-  const position = parts[1];
+/**
+ * Validate and convert parsed response to structured FramingResult.
+ * Returns null if validation fails.
+ */
+function validateAndConvert(
+  parsed: ParsedAIResponse,
+  targetAspectRatio: TargetAspectRatio
+): FramingResult | null {
+  const { strategy, position } = parsed;
 
-  if (strategy === "WIDE") {
+  // FIT mode - always valid, always centered
+  if (strategy === "FIT") {
     return {
       mode: "fit",
       focusX: 0.5,
       focusY: 0.5,
-      aiReasoning: "Wide shot detected - showing full frame",
+      aiReasoning:
+        "Showing full frame with letterboxing to preserve wide context",
       isAiGenerated: true,
     };
   }
 
-  if (strategy === "FOCUS") {
-    const focusX = FOCUS_POSITION_MAP[position] ?? 0.5;
+  // CROP mode - validate position
+  if (strategy === "CROP") {
+    // CROP doesn't make sense for landscape (input already 16:9)
+    if (targetAspectRatio === "16:9") {
+      console.warn(
+        "[Framing] CROP requested for landscape output, falling back to FIT"
+      );
+      return {
+        mode: "fit",
+        focusX: 0.5,
+        focusY: 0.5,
+        aiReasoning: "Using fit for landscape output (no crop needed)",
+        isAiGenerated: true,
+      };
+    }
+
+    // Validate position is in our known set
+    if (!VALID_POSITIONS.has(position)) {
+      console.warn(
+        `[Framing] Unknown position "${position}", defaulting to CENTER`
+      );
+    }
+
+    const focusX =
+      HORIZONTAL_POSITION_MAP[position as HorizontalPosition] ?? 0.5;
     const positionLabel =
-      position === "LEFT"
-        ? "left side"
-        : position === "RIGHT"
-        ? "right side"
-        : "center";
+      POSITION_LABELS[position as HorizontalPosition] || "center";
 
     return {
       mode: "crop",
       focusX,
       focusY: 0.5,
-      aiReasoning: `Single speaker detected on ${positionLabel}`,
+      aiReasoning: `Cropping to focus on ${positionLabel}`,
       isAiGenerated: true,
     };
   }
 
-  console.warn("Unknown strategy in framing response:", strategy);
-  return defaultResult;
+  // Unknown strategy
+  return null;
 }
 
+/** Human-readable labels for positions */
+const POSITION_LABELS: Record<HorizontalPosition, string> = {
+  FAR_LEFT: "far left",
+  SLIGHT_LEFT: "slight left",
+  CENTER: "center",
+  SLIGHT_RIGHT: "slight right",
+  FAR_RIGHT: "far right",
+};
+
 /**
- * Build the prompt for 12labs Pegasus to analyze framing.
+ * Parse the 12labs response string into framing parameters.
+ *
+ * Flow: raw string → extract → validate → structured result
+ * Falls back to safe defaults on parse failure.
  */
-function buildFramingPrompt(startTime: number, endTime: number): string {
-  return `Analyze the video segment from ${startTime.toFixed(
-    1
-  )} seconds to ${endTime.toFixed(1)} seconds.
+function parseFramingResponse(
+  response: string,
+  targetAspectRatio: TargetAspectRatio
+): FramingResult {
+  const parsed = extractFromResponse(response);
 
-I am adapting this video for a vertical mobile screen. I need to decide whether to crop in on a speaker or show the full wide shot.
+  // Log for debugging (Factor 11: visibility into AI responses)
+  console.log(
+    `[Framing] Parsed: strategy="${parsed.strategy}", position="${parsed.position}"`
+  );
 
-Determine the best framing strategy:
-1. "WIDE": Use this if there are multiple active speakers, a wide establishing shot, significant movement (walking), or if important context would be lost by cropping.
-2. "FOCUS": Use this ONLY if there is a clearly dominant single speaker who is relatively stationary.
+  const result = validateAndConvert(parsed, targetAspectRatio);
 
-If "FOCUS", where is that speaker located? (Left, Center, or Right).
+  if (result) {
+    return result;
+  }
 
-Return the answer in this strict format: STRATEGY, POSITION
+  // Fallback for unparseable responses
+  console.warn(`[Framing] Could not parse response: "${response}"`);
+  return {
+    mode: "fit",
+    focusX: 0.5,
+    focusY: 0.5,
+    aiReasoning: `Could not parse AI response ("${parsed.strategy}"), defaulting to fit`,
+    isAiGenerated: true,
+  };
+}
+
+// ============================================================================
+// PROMPTS (Factor 2: Own Your Prompts)
+// Prompts are explicit, testable, and not hidden in framework abstractions.
+// ============================================================================
+
+/**
+ * Build orientation-specific prompts for 12labs Pegasus.
+ * The prompt changes based on target aspect ratio to give the AI proper context.
+ */
+function buildFramingPrompt(
+  startTime: number,
+  endTime: number,
+  targetAspectRatio: TargetAspectRatio
+): string {
+  const timeRange = `${startTime.toFixed(1)}s to ${endTime.toFixed(1)}s`;
+
+  if (targetAspectRatio === "16:9") {
+    // Landscape output from landscape input - no decisions needed
+    return `Look at the video segment from ${timeRange}. The original video is 16:9 landscape and the target is also 16:9.
+
+Since the aspect ratios match, just respond: FIT, N/A`;
+  }
+
+  if (targetAspectRatio === "1:1") {
+    // Square output from landscape input
+    return `Look at the video segment from ${timeRange}. The original video is 16:9 landscape.
+
+TARGET: 1:1 square. The left and right edges will be cropped off.
+
+Your job: Find the MOST IMPORTANT MOMENT in this segment (usually whoever is speaking) and decide where to position the crop window.
+
+RULES:
+- If someone is SPEAKING, ALWAYS use CROP centered on them. A tiny letterboxed talking head is useless.
+- CROP fills the frame and looks professional. Use it for: speakers, interviews, focused action, any single subject.
+- FIT shows everything but with black bars above and below. ONLY use FIT when multiple important subjects are on opposite sides of the frame AND they're all essential to show simultaneously.
+
+CROP positions (where to place your square window on the wide frame):
+- FAR_LEFT - Window on the left edge
+- SLIGHT_LEFT - Window slightly left of center
+- CENTER - Window centered
+- SLIGHT_RIGHT - Window slightly right of center  
+- FAR_RIGHT - Window on the right edge
+
 Examples:
-- WIDE, N/A
-- FOCUS, LEFT
-- FOCUS, CENTER
-- FOCUS, RIGHT
+- Speaker on left third → CROP, SLIGHT_LEFT
+- Speaker centered → CROP, CENTER
+- Speaker on right → CROP, SLIGHT_RIGHT
+- Two people debating on opposite sides → FIT, N/A
 
-Respond with ONLY the strategy and position, nothing else.`;
+Respond with ONLY your choice (e.g., "CROP, CENTER"). Nothing else.`;
+  }
+
+  // Portrait (9:16) output from landscape input
+  return `Look at the video segment from ${timeRange}. The original video is 16:9 landscape.
+
+TARGET: 9:16 portrait (vertical). This is a dramatic crop—most of the left and right will be cut off.
+
+Your job: Find the MOST IMPORTANT MOMENT in this segment (usually whoever is speaking) and decide where to position the narrow vertical crop window.
+
+RULES:
+- If someone is SPEAKING, ALWAYS use CROP centered on them. A tiny letterboxed talking head is completely useless on mobile.
+- CROP fills the vertical screen and looks intentional. Use it for: speakers, interviews, focused action, any single subject.
+- FIT shows the full wide video but TINY with huge black bars above and below. ONLY use FIT when multiple essential subjects are on opposite sides AND you absolutely cannot crop to one.
+
+CROP positions (where to place your vertical window on the wide frame):
+- FAR_LEFT - Window on the left edge
+- SLIGHT_LEFT - Window slightly left of center
+- CENTER - Window centered
+- SLIGHT_RIGHT - Window slightly right of center
+- FAR_RIGHT - Window on the right edge
+
+Examples:
+- Speaker on left third → CROP, SLIGHT_LEFT  
+- Speaker centered → CROP, CENTER
+- Speaker on right edge → CROP, FAR_RIGHT
+- Wide landscape shot with no clear subject → FIT, N/A (rare!)
+
+Respond with ONLY your choice (e.g., "CROP, CENTER"). Nothing else.`;
+}
+
+// ============================================================================
+// HANDLER (Factor 5: Own Your Control Flow)
+// Clear flow: validate → fetch context → prompt → parse → respond
+// ============================================================================
+
+/** Standard CORS headers for all responses */
+const CORS_HEADERS = {
+  "Content-Type": "application/json",
+  "Access-Control-Allow-Origin": "*",
+};
+
+/** Create a structured error response */
+function errorResponse(statusCode: number, error: string) {
+  return {
+    statusCode,
+    headers: CORS_HEADERS,
+    body: JSON.stringify({ error }),
+  };
+}
+
+/** Create a success response */
+function successResponse(data: object) {
+  return {
+    statusCode: 200,
+    headers: CORS_HEADERS,
+    body: JSON.stringify(data),
+  };
 }
 
 export const handler: APIGatewayProxyHandler = async (event) => {
-  // 1. Auth Check
+  // Step 1: Auth
   const authResult = await checkAuth(event);
   if (authResult) return authResult;
 
   try {
+    // Step 2: Validate input
     const projectId = event.pathParameters?.projectId;
     const segmentId = event.pathParameters?.segmentId;
 
     if (!projectId) {
-      return {
-        statusCode: 400,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        },
-        body: JSON.stringify({ error: "Missing projectId" }),
-      };
+      return errorResponse(400, "Missing projectId");
     }
 
-    // Parse request body for segment time range
     const body = JSON.parse(event.body || "{}");
-    const { startTime, endTime } = body;
+    const { startTime, endTime, targetAspectRatio } = body;
 
     if (typeof startTime !== "number" || typeof endTime !== "number") {
-      return {
-        statusCode: 400,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        },
-        body: JSON.stringify({
-          error: "Missing or invalid startTime/endTime in request body",
-        }),
-      };
+      return errorResponse(
+        400,
+        "Missing or invalid startTime/endTime in request body"
+      );
     }
 
     if (endTime <= startTime) {
-      return {
-        statusCode: 400,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        },
-        body: JSON.stringify({
-          error: "endTime must be greater than startTime",
-        }),
-      };
+      return errorResponse(400, "endTime must be greater than startTime");
     }
 
-    // 2. Fetch Project to get Asset ID
+    // Validate aspect ratio (default to portrait)
+    const validAspectRatios: TargetAspectRatio[] = ["16:9", "1:1", "9:16"];
+    const aspectRatio: TargetAspectRatio = validAspectRatios.includes(
+      targetAspectRatio
+    )
+      ? targetAspectRatio
+      : "9:16";
+
+    // Step 3: Fetch context (project → asset → videoId)
     const projectRes = await docClient.send(
-      new GetCommand({
-        TableName: PROJECTS_TABLE,
-        Key: { projectId },
-      })
+      new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } })
     );
-
     if (!projectRes.Item) {
-      return {
-        statusCode: 404,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        },
-        body: JSON.stringify({ error: "Project not found" }),
-      };
+      return errorResponse(404, "Project not found");
     }
 
-    const project = projectRes.Item;
-    const assetId = project.assetId;
-
-    // 3. Fetch Asset to get 12 Labs Video ID
+    const assetId = projectRes.Item.assetId;
     const assetRes = await docClient.send(
-      new GetCommand({
-        TableName: ASSETS_TABLE,
-        Key: { assetId },
-      })
+      new GetCommand({ TableName: ASSETS_TABLE, Key: { assetId } })
     );
-
     if (!assetRes.Item) {
-      return {
-        statusCode: 404,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        },
-        body: JSON.stringify({ error: "Asset not found" }),
-      };
+      return errorResponse(404, "Asset not found");
     }
 
-    const asset = assetRes.Item;
-    const videoId = asset.twelveLabsVideoId;
-
+    const videoId = assetRes.Item.twelveLabsVideoId;
     if (!videoId || videoId === "unknown") {
-      return {
-        statusCode: 400,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        },
-        body: JSON.stringify({
-          error: "Asset has not been indexed by 12 Labs yet.",
-        }),
-      };
+      return errorResponse(400, "Asset has not been indexed by 12 Labs yet");
     }
 
-    // 4. Get 12 Labs API Key
+    // Step 4: Get API credentials
     const secretVal = await secretsClient.send(
       new GetSecretValueCommand({ SecretId: SECRET_ARN })
     );
-    const apiKey = secretVal.SecretString;
-    if (!apiKey) throw new Error("12Labs API Key not found");
+    if (!secretVal.SecretString) {
+      throw new Error("12Labs API Key not found in secrets");
+    }
 
-    const client = new TwelveLabs({ apiKey });
+    const client = new TwelveLabs({ apiKey: secretVal.SecretString });
 
-    // 5. Query 12labs for framing analysis
+    // Step 5: Build prompt and call AI
     console.log(
-      `Analyzing framing for segment ${
+      `[Framing] Analyzing segment ${
         segmentId || "unknown"
-      }: ${startTime}s - ${endTime}s`
+      }: ${startTime}s-${endTime}s (target: ${aspectRatio})`
     );
 
-    const prompt = buildFramingPrompt(startTime, endTime);
+    const prompt = buildFramingPrompt(startTime, endTime, aspectRatio);
+    console.log("[Framing] Prompt:", prompt.substring(0, 200) + "...");
 
     let framingResult: FramingResult;
 
     try {
-      // Use the analyze endpoint (same pattern as generateSegments.ts)
-      console.log("Calling 12labs analyze with prompt:", prompt);
-      const response = await (client as any).analyze({
-        videoId,
-        prompt,
-      });
+      const response = await (client as any).analyze({ videoId, prompt });
 
-      console.log(
-        "12labs framing response:",
-        JSON.stringify(response, null, 2)
-      );
+      // Step 6: Extract and parse response
+      const responseText = response?.data ?? response?.text ?? String(response);
+      console.log("[Framing] Raw AI response:", responseText);
 
-      // Extract the text response - handle different response formats
-      let responseText: string;
-      if (response?.data) {
-        responseText = response.data;
-      } else if (typeof response === "string") {
-        responseText = response;
-      } else if (response?.text) {
-        responseText = response.text;
-      } else {
-        responseText = String(response);
-      }
-
-      console.log("Extracted response text:", responseText);
-      framingResult = parseFramingResponse(responseText);
-
-      console.log("Parsed framing result:", framingResult);
+      framingResult = parseFramingResponse(responseText, aspectRatio);
+      console.log("[Framing] Result:", JSON.stringify(framingResult));
     } catch (analysisError) {
-      console.error("12labs framing analysis failed:", analysisError);
-
-      // Return a sensible default on failure
+      // Factor 11: Graceful degradation on AI failure
+      console.error("[Framing] AI analysis failed:", analysisError);
       framingResult = {
         mode: "fit",
         focusX: 0.5,
@@ -286,28 +396,16 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       };
     }
 
-    return {
-      statusCode: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: JSON.stringify({
-        segmentId: segmentId || null,
-        startTime,
-        endTime,
-        framing: framingResult,
-      }),
-    };
+    // Step 7: Return structured result
+    return successResponse({
+      segmentId: segmentId || null,
+      startTime,
+      endTime,
+      framing: framingResult,
+    });
   } catch (error) {
-    console.error("Error analyzing framing:", error);
-    return {
-      statusCode: 500,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: JSON.stringify({ error: "Failed to analyze framing" }),
-    };
+    // Factor 11: Top-level error handling
+    console.error("[Framing] Unexpected error:", error);
+    return errorResponse(500, "Failed to analyze framing");
   }
 };
