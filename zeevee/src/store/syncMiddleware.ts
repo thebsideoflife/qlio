@@ -22,6 +22,7 @@ function startSyncInterval(store: StoreAPI) {
     const state = store.getState();
     const {
       projectId,
+      projectTitle,
       segments,
       captionSettings,
       localVersion,
@@ -38,7 +39,11 @@ function startSyncInterval(store: StoreAPI) {
 
       store.dispatch(setSyncing(true));
       try {
-        await updateProject(projectId, { segments, captionSettings });
+        await updateProject(projectId, {
+          title: projectTitle,
+          segments,
+          captionSettings,
+        });
         // Only mark the specific version as synced - if user made edits during sync,
         // localVersion will be higher and we'll sync again next interval
         store.dispatch(markSynced(versionToSync));

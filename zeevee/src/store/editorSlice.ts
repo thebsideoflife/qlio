@@ -131,6 +131,7 @@ export const editorSlice = createSlice({
     },
     updateProjectTitle: (state, action: PayloadAction<string>) => {
       state.projectTitle = action.payload;
+      state.localVersion++;
     },
     selectSegment: (state, action: PayloadAction<string | null>) => {
       state.selectedSegmentId = action.payload;
