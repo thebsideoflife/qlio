@@ -89,12 +89,12 @@ export const SNAP_POSITIONS = [
 export const DEFAULT_CAPTION_SETTINGS: CaptionSettings = {
   enabled: true,
   style: {
-    fontSize: 5,
+    fontSize: 2,
     fontFamily: "Inter, system-ui, sans-serif",
     color: "#ffffff",
     backgroundColor: "rgba(0, 0, 0, 0.8)",
     position: { x: 50, y: 85 },
-    maxWidth: 80,
+    maxWidth: 95,
     highlightColor: "#fbbf24",
   },
 };

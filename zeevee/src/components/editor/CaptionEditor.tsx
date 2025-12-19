@@ -24,10 +24,10 @@ const FONTS = [
 ];
 
 const SIZES = [
-  { value: "3", label: "Small" },
-  { value: "4", label: "Medium" },
-  { value: "5", label: "Large" },
-  { value: "6", label: "X-Large" },
+  { value: "1", label: "XS" },
+  { value: "2", label: "S" },
+  { value: "3", label: "M" },
+  { value: "4", label: "L" },
 ];
 
 const BACKGROUNDS = [

@@ -91,11 +91,15 @@ export default function Editor() {
     focusY: number;
   } | null>(null);
 
+  // Track if we actually dragged (moved more than a few pixels)
+  const hasDraggedRef = useRef(false);
+
   // Handle drag to reposition video within frame
   const handleFramingMouseDown = (e: React.MouseEvent) => {
     if (!isCropMode || !selectedSegmentId) return;
     e.preventDefault();
     setIsDragging(true);
+    hasDraggedRef.current = false;
     dragStartRef.current = {
       x: e.clientX,
       y: e.clientY,
@@ -120,6 +124,11 @@ export default function Editor() {
     const deltaX = (e.clientX - dragStartRef.current.x) / rect.width;
     const deltaY = (e.clientY - dragStartRef.current.y) / rect.height;
 
+    // Mark as dragged if moved more than a threshold
+    if (Math.abs(deltaX) > 0.01 || Math.abs(deltaY) > 0.01) {
+      hasDraggedRef.current = true;
+    }
+
     // Invert: dragging right moves focus left (shows more of left side)
     const newFocusX = Math.max(
       0,
@@ -141,9 +150,15 @@ export default function Editor() {
     );
   };
 
-  const handleFramingMouseUp = () => {
+  const handleFramingMouseUp = (e?: React.MouseEvent) => {
+    const wasDragging = isDragging && hasDraggedRef.current;
     setIsDragging(false);
     dragStartRef.current = null;
+
+    // If we didn't actually drag, treat it as a click to play/pause
+    if (!wasDragging && e) {
+      handleVideoClick(e);
+    }
   };
 
   // Toggle crop/fit mode for current segment
@@ -253,6 +268,26 @@ export default function Editor() {
   const handleBackgroundClick = () => {
     if (selectedSegmentId) {
       dispatch(selectSegment(null));
+    }
+  };
+
+  // Toggle video play/pause
+  const handleVideoClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (video.paused) {
+      const playPromise = video.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((error) => {
+          if (error.name !== "AbortError") {
+            console.error("Playback error:", error);
+          }
+        });
+      }
+    } else {
+      video.pause();
     }
   };
 
@@ -435,17 +470,20 @@ export default function Editor() {
                   ? "cursor-grabbing ring-2 ring-primary ring-offset-4 ring-offset-black"
                   : isCropMode
                   ? "cursor-grab ring-2 ring-white/20 hover:ring-white/40"
-                  : "cursor-default ring-1 ring-white/10"
+                  : "cursor-pointer ring-1 ring-white/10"
               )}
               style={{
                 aspectRatio: aspectRatioValue,
                 maxHeight: aspectRatioValue < 1 ? "100%" : "85%",
                 maxWidth: aspectRatioValue >= 1 ? "100%" : "85%",
               }}
-              onMouseDown={handleFramingMouseDown}
-              onMouseMove={handleFramingMouseMove}
-              onMouseUp={handleFramingMouseUp}
-              onMouseLeave={handleFramingMouseUp}
+              onMouseDown={isCropMode ? handleFramingMouseDown : undefined}
+              onMouseMove={isCropMode ? handleFramingMouseMove : undefined}
+              onMouseUp={isCropMode ? handleFramingMouseUp : undefined}
+              onMouseLeave={
+                isCropMode ? () => handleFramingMouseUp() : undefined
+              }
+              onClick={!isCropMode ? handleVideoClick : undefined}
             >
               <video
                 ref={videoRef}
@@ -645,13 +683,13 @@ export default function Editor() {
                   {
                     id: "ai" as const,
                     icon: Wand2,
-                    label: "AI",
-                    tooltip: "Generate clips with AI",
+                    label: "IQ",
+                    tooltip: "IQ Studio - Generate clips with AI",
                   },
                   {
                     id: "captions" as const,
                     icon: Captions,
-                    label: "Subs",
+                    label: "Caps",
                     tooltip: "Caption settings",
                   },
                   {
