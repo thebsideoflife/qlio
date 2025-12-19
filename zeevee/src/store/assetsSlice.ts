@@ -89,6 +89,15 @@ export const assetsSlice = createSlice({
     removeAsset: (state, action: PayloadAction<string>) => {
       state.items = state.items.filter((item) => item.id !== action.payload);
     },
+    updateAsset: (
+      state,
+      action: PayloadAction<{ id: string; updates: Partial<Asset> }>
+    ) => {
+      const asset = state.items.find((a) => a.id === action.payload.id);
+      if (asset) {
+        Object.assign(asset, action.payload.updates);
+      }
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -109,6 +118,11 @@ export const assetsSlice = createSlice({
   },
 });
 
-export const { addAsset, updateAssetStatus, setAssets, removeAsset } =
-  assetsSlice.actions;
+export const {
+  addAsset,
+  updateAssetStatus,
+  setAssets,
+  removeAsset,
+  updateAsset,
+} = assetsSlice.actions;
 export default assetsSlice.reducer;

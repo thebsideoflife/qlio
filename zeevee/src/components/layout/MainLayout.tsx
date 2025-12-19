@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   Activity,
   LogOut,
@@ -33,7 +34,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useState } from "react";
 import { ExportModal } from "@/components/editor/ExportModal";
 import { EditableTitle } from "@/components/ui/editable-title";
 
@@ -77,6 +77,13 @@ export function MainLayout({ children }: MainLayoutProps) {
   const completedCount = assets.filter(
     (a) => a.status === "completed" || a.status === "READY"
   ).length;
+
+  // Listen for custom event to open upload wizard from other components
+  useEffect(() => {
+    const handleOpenUpload = () => setUploadOpen(true);
+    window.addEventListener("open-upload-wizard", handleOpenUpload);
+    return () => window.removeEventListener("open-upload-wizard", handleOpenUpload);
+  }, []);
 
   const handleLogout = () => {
     localStorage.removeItem("api_password");

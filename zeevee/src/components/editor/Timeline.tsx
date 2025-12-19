@@ -264,7 +264,10 @@ export function Timeline({
     };
   }, [videoRef]);
 
-  // Keyboard shortcuts (Space for play/pause, Delete for delete segment)
+  // Frame step amount: 1/30th second ≈ 33.33ms (works well for 24/25/30fps content)
+  const FRAME_STEP = 1 / 30;
+
+  // Keyboard shortcuts (Space for play/pause, Delete for delete segment, Arrow keys for frame stepping)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -297,12 +300,30 @@ export function Timeline({
           e.preventDefault();
           dispatch(deleteSegment(selectedId));
         }
+      } else if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+        e.preventDefault();
+        const video = videoRef.current;
+        if (video) {
+          // Pause video when frame stepping
+          if (!video.paused) {
+            video.pause();
+          }
+
+          const direction = e.code === "ArrowLeft" ? -1 : 1;
+          // Shift + Arrow = 10 frames, just Arrow = 1 frame
+          const multiplier = e.shiftKey ? 10 : 1;
+          const delta = direction * FRAME_STEP * multiplier;
+
+          const newTime = clampTime(currentTime + delta);
+          video.currentTime = newTime;
+          dispatch(setCurrentTime(newTime));
+        }
       }
     };
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [videoRef, selectedId, dispatch]);
+  }, [videoRef, selectedId, dispatch, currentTime, clampTime]);
 
   // Auto-scroll to keep playhead visible when playing
   useEffect(() => {
