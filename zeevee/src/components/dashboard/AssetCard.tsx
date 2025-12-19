@@ -33,7 +33,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { listProjects, deleteProject, createProject } from "@/services/api";
+import {
+  listProjects,
+  deleteProject,
+  createProject,
+  updateProject,
+} from "@/services/api";
+import { EditableTitle } from "@/components/ui/editable-title";
 
 interface AssetCardProps {
   asset: Asset;
@@ -209,21 +215,47 @@ export function AssetCard({ asset, onDelete }: AssetCardProps) {
                   {projects.map((project) => (
                     <div
                       key={project.projectId}
-                      className="flex items-center gap-1"
+                      className="flex items-center gap-1 group/project"
                     >
                       <Button
                         variant="outline"
                         size="sm"
-                        className="flex-1 justify-start text-left"
+                        className="flex-1 justify-start text-left min-w-0 overflow-hidden"
                         onClick={(e) => {
                           e.stopPropagation();
                           navigate(`/editor/${project.projectId}`);
                         }}
                       >
                         <Film className="h-3 w-3 mr-2 shrink-0" />
-                        <span className="truncate">
-                          {project.title || "Untitled"}
-                        </span>
+                        <EditableTitle
+                          title={project.title || "Untitled"}
+                          onSave={(newTitle) => {
+                            // Optimistic update
+                            setProjects(
+                              projects.map((p) =>
+                                p.projectId === project.projectId
+                                  ? { ...p, title: newTitle }
+                                  : p
+                              )
+                            );
+                            // Persist to backend
+                            updateProject(project.projectId, {
+                              title: newTitle,
+                            }).catch((e) => {
+                              console.error("Failed to update title:", e);
+                              // Revert on failure
+                              setProjects(
+                                projects.map((p) =>
+                                  p.projectId === project.projectId
+                                    ? { ...p, title: project.title }
+                                    : p
+                                )
+                              );
+                            });
+                          }}
+                          className="flex-1 min-w-0"
+                          showEditIcon
+                        />
                       </Button>
                       <Button
                         variant="ghost"

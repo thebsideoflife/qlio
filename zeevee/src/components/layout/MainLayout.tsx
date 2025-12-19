@@ -5,7 +5,6 @@ import {
   Plus,
   Search,
   RefreshCcw,
-  Edit2,
   ChevronRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -17,7 +16,6 @@ import { fetchAssets } from "@/store/assetsSlice";
 import { updateProjectTitle } from "@/store/editorSlice";
 import type { RootState, AppDispatch } from "@/store/store";
 import { UploadWizard } from "@/components/upload/UploadWizard";
-import { updateProject } from "@/services/api";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,8 +33,9 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import { ExportModal } from "@/components/editor/ExportModal";
+import { EditableTitle } from "@/components/ui/editable-title";
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -67,50 +66,6 @@ export function MainLayout({ children }: MainLayoutProps) {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
-
-  // Title Editing State
-  const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [editedTitle, setEditedTitle] = useState(projectTitle);
-  const titleInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    setEditedTitle(projectTitle);
-  }, [projectTitle]);
-
-  useEffect(() => {
-    if (isEditingTitle && titleInputRef.current) {
-      titleInputRef.current.focus();
-    }
-  }, [isEditingTitle]);
-
-  const handleTitleSave = async () => {
-    if (!editedTitle.trim() || !projectIdFromPath) {
-      setIsEditingTitle(false);
-      setEditedTitle(projectTitle);
-      return;
-    }
-
-    try {
-      // Optimistic update
-      dispatch(updateProjectTitle(editedTitle));
-      setIsEditingTitle(false);
-
-      await updateProject(projectIdFromPath, { title: editedTitle });
-    } catch (error) {
-      console.error("Failed to update project title", error);
-      // Revert on failure?
-      dispatch(updateProjectTitle(projectTitle));
-    }
-  };
-
-  const handleTitleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      handleTitleSave();
-    } else if (e.key === "Escape") {
-      setIsEditingTitle(false);
-      setEditedTitle(projectTitle);
-    }
-  };
 
   const processingCount = assets.filter(
     (a) =>
@@ -164,23 +119,15 @@ export function MainLayout({ children }: MainLayoutProps) {
                   </span>
                   <ChevronRight className="h-3 w-3 text-muted-foreground" />
 
-                  {isEditingTitle ? (
-                    <Input
-                      ref={titleInputRef}
-                      value={editedTitle}
-                      onChange={(e) => setEditedTitle(e.target.value)}
-                      onBlur={handleTitleSave}
-                      onKeyDown={handleTitleKeyDown}
-                      className="h-6 w-48 px-1 py-0 text-sm font-semibold border-none focus-visible:ring-1"
+                  {projectIdFromPath && (
+                    <EditableTitle
+                      title={projectTitle || "Untitled Microdrama"}
+                      onSave={(newTitle) =>
+                        dispatch(updateProjectTitle(newTitle))
+                      }
+                      className="font-semibold underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 hover:bg-muted/50 px-1 rounded"
+                      inputClassName="h-6 w-48 px-1 py-0 text-sm font-semibold border-none focus-visible:ring-1"
                     />
-                  ) : (
-                    <div
-                      className="font-semibold flex items-center gap-2 cursor-pointer hover:bg-muted/50 px-1 rounded group"
-                      onClick={() => setIsEditingTitle(true)}
-                    >
-                      {projectTitle || "Untitled Microdrama"}
-                      <Edit2 className="h-3 w-3 opacity-0 group-hover:opacity-100 text-muted-foreground" />
-                    </div>
                   )}
                 </div>
               </div>

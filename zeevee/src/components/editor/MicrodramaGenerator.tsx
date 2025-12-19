@@ -42,6 +42,7 @@ type SelectionOption = {
   label: string;
   icon: LucideIcon | IconType;
   tooltip: string;
+  durations?: string[]; // Available durations for this purpose
 };
 
 type StepConfig = {
@@ -49,6 +50,22 @@ type StepConfig = {
   question: string;
   options: SelectionOption[];
 };
+
+// Duration options per purpose (auto = let agent decide)
+const AUTO_DURATION = "Auto";
+const DURATIONS: Record<string, string[]> = {
+  binge: ["3 min", "5 min", "10 min"], // No auto - it's the full video
+  highlights: [AUTO_DURATION, "15s", "30s", "60s", "90s"],
+  trailer: [AUTO_DURATION, "90s", "2 min", "2.5 min"],
+  tunein: [AUTO_DURATION, "15s", "30s"],
+  bridge: [AUTO_DURATION, "30s", "60s", "90s"],
+  episode_recap: [AUTO_DURATION, "60s", "90s", "2 min"],
+  season_recap: [AUTO_DURATION, "2 min", "3 min", "5 min"],
+  social_segment: [AUTO_DURATION, "15s", "30s", "60s"],
+};
+
+// Check if purpose supports auto duration
+const supportsAutoDuration = (purpose: string) => purpose !== "binge";
 
 const CONTENT_TYPES: SelectionOption[] = [
   { value: "tv", label: "TV", icon: Tv, tooltip: "Television series content" },
@@ -171,17 +188,17 @@ const PURPOSES: SelectionOption[] = [
 const STEPS: StepConfig[] = [
   {
     key: "type",
-    question: "What are we working from?",
+    question: "What kind of content are we working with?",
     options: CONTENT_TYPES,
   },
   {
     key: "platform",
-    question: "Where will this be published?",
+    question: "Where should this live?",
     options: PLATFORMS,
   },
   {
     key: "purpose",
-    question: "What are you trying to create?",
+    question: "What would you like to create?",
     options: PURPOSES,
   },
 ];
@@ -190,6 +207,7 @@ const DEFAULT_SELECTIONS = {
   type: "",
   platform: "",
   purpose: "",
+  duration: "",
 };
 
 export function MicrodramaGenerator({
@@ -221,8 +239,16 @@ export function MicrodramaGenerator({
     setCurrentStep(0);
   };
 
-  const isComplete = STEPS.every((step) => selections[step.key]);
-  const completedSteps = STEPS.filter((step) => selections[step.key]).length;
+  // Set duration when purpose changes - default to Auto if supported
+  const handlePurposeChange = (value: string) => {
+    const defaultDuration = value && supportsAutoDuration(value) ? AUTO_DURATION : "";
+    setSelections((prev) => ({ ...prev, purpose: value, duration: defaultDuration }));
+  };
+
+  const availableDurations = selections.purpose ? DURATIONS[selections.purpose] || [] : [];
+  const isComplete = STEPS.every((step) => selections[step.key]) && selections.duration;
+  const completedSteps = STEPS.filter((step) => selections[step.key]).length + (selections.duration ? 1 : 0);
+  const totalSteps = STEPS.length + 1; // +1 for duration
 
   // Auto-scroll to bottom when step changes
   useEffect(() => {
@@ -241,7 +267,7 @@ export function MicrodramaGenerator({
             <span className="font-semibold text-sm">IQ Director</span>
             {viewMode === "chat" && (
               <span className="text-xs text-muted-foreground">
-                Step {Math.min(currentStep + 1, STEPS.length)} of {STEPS.length}
+                Step {Math.min(currentStep + 1, totalSteps)} of {totalSteps}
               </span>
             )}
           </div>
@@ -290,10 +316,17 @@ export function MicrodramaGenerator({
             selections={selections}
             currentStep={currentStep}
             onSelect={handleChatSelect}
+            onPurposeChange={handlePurposeChange}
+            availableDurations={availableDurations}
             scrollRef={scrollRef}
           />
         ) : (
-          <CompactView selections={selections} onSelect={updateSelection} />
+          <CompactView
+            selections={selections}
+            onSelect={updateSelection}
+            onPurposeChange={handlePurposeChange}
+            availableDurations={availableDurations}
+          />
         )}
 
         {/* Generate Button */}
@@ -311,7 +344,7 @@ export function MicrodramaGenerator({
             ) : !isComplete ? (
               <>
                 <Sparkles className="w-4 h-4 mr-2" />
-                {completedSteps}/{STEPS.length} Selected
+                {completedSteps}/{totalSteps} Selected
               </>
             ) : (
               <>
@@ -333,14 +366,20 @@ function ChatView({
   selections,
   currentStep,
   onSelect,
+  onPurposeChange,
+  availableDurations,
   scrollRef,
 }: {
   steps: StepConfig[];
   selections: Record<string, string>;
   currentStep: number;
   onSelect: (key: string, value: string) => void;
+  onPurposeChange: (value: string) => void;
+  availableDurations: string[];
   scrollRef: React.RefObject<HTMLDivElement | null>;
 }) {
+  const showDurationStep = currentStep >= steps.length - 1 && selections.purpose;
+
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-4">
       {steps.map((step, index) => {
@@ -349,6 +388,7 @@ function ChatView({
           (o) => o.value === selections[step.key]
         );
         const isAnswered = !!selectedOption;
+        const isPurposeStep = step.key === "purpose";
 
         if (!isVisible) return null;
 
@@ -357,46 +397,57 @@ function ChatView({
             key={step.key}
             className={cn(
               "space-y-3 transition-all duration-300",
-              index === currentStep ? "opacity-100" : "opacity-70"
+              index === currentStep && !showDurationStep ? "opacity-100" : "opacity-70"
             )}
           >
             {/* Question bubble */}
-            <div className="flex gap-2">
-              <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center">
-                <Wand2 className="h-3.5 w-3.5 text-primary" />
-              </div>
-              <div className="bg-muted/50 rounded-2xl rounded-tl-sm px-3 py-2 max-w-[85%]">
-                <p className="text-sm font-medium">{step.question}</p>
-              </div>
+            <div className="bg-muted/30 rounded-xl px-3 py-2">
+              <p className="text-sm text-muted-foreground">{step.question}</p>
             </div>
 
             {/* Answer or Options */}
-            {isAnswered && index < currentStep ? (
+            {isAnswered && (index < currentStep || (isPurposeStep && showDurationStep)) ? (
               // Show selected answer as a chat bubble
               <div className="flex justify-end">
                 <button
-                  onClick={() => onSelect(step.key, "")}
-                  className="bg-blue-600 text-white rounded-2xl rounded-tr-sm px-3 py-2 flex items-center gap-2 hover:bg-blue-700 transition-colors"
+                  onClick={() => isPurposeStep ? onPurposeChange("") : onSelect(step.key, "")}
+                  className="bg-blue-500/90 text-white rounded-xl px-3 py-1.5 flex items-center gap-2 hover:bg-blue-600 transition-colors shadow-sm"
                 >
-                  <selectedOption.icon className="h-4 w-4" />
-                  <span className="text-sm font-medium">
+                  <selectedOption.icon className="h-3.5 w-3.5" />
+                  <span className="text-sm">
                     {selectedOption.label}
                   </span>
                 </button>
               </div>
             ) : (
               // Show options grid
-              <div className="pl-9">
+              <div>
                 <ChatOptionGrid
                   options={step.options}
                   selected={selections[step.key]}
-                  onSelect={(value) => onSelect(step.key, value)}
+                  onSelect={(value) => isPurposeStep ? onPurposeChange(value) : onSelect(step.key, value)}
                 />
               </div>
             )}
           </div>
         );
       })}
+
+      {/* Duration Step */}
+      {showDurationStep && (
+        <div className="space-y-3 transition-all duration-300 opacity-100">
+          <div className="bg-muted/30 rounded-xl px-3 py-2">
+            <p className="text-sm text-muted-foreground">How long should it be?</p>
+          </div>
+          <div>
+            <DurationPicker
+              durations={availableDurations}
+              selected={selections.duration}
+              onSelect={(value) => onSelect("duration", value)}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -411,21 +462,21 @@ function ChatOptionGrid({
   onSelect: (value: string) => void;
 }) {
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex flex-wrap gap-1.5">
       {options.map((opt) => (
         <Tooltip key={opt.value}>
           <TooltipTrigger asChild>
             <button
               onClick={() => onSelect(opt.value)}
               className={cn(
-                "flex items-center gap-2 px-3 py-2 rounded-full border text-sm transition-all",
+                "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-sm transition-all",
                 selected === opt.value
-                  ? "border-blue-500 bg-blue-500/10 text-blue-500"
-                  : "border-muted hover:bg-muted/50"
+                  ? "border-blue-400/50 bg-blue-500/10 text-blue-400"
+                  : "border-muted/50 hover:bg-muted/30 hover:border-muted"
               )}
             >
-              <opt.icon className="h-4 w-4" />
-              <span className="font-medium">{opt.label}</span>
+              <opt.icon className="h-3.5 w-3.5" />
+              <span>{opt.label}</span>
             </button>
           </TooltipTrigger>
           <TooltipContent side="bottom">
@@ -437,14 +488,97 @@ function ChatOptionGrid({
   );
 }
 
+function DurationPicker({
+  durations,
+  selected,
+  onSelect,
+}: {
+  durations: string[];
+  selected: string;
+  onSelect: (value: string) => void;
+}) {
+  const [customValue, setCustomValue] = useState("");
+  const [isEditingCustom, setIsEditingCustom] = useState(false);
+  
+  // Check if current selection is a custom value (not a preset)
+  const isCustomSelected = selected && !durations.includes(selected);
+
+  const handleCustomSubmit = () => {
+    if (customValue.trim()) {
+      onSelect(customValue.trim());
+    }
+    setIsEditingCustom(false);
+  };
+
+  const handleCustomClick = () => {
+    setCustomValue(isCustomSelected ? selected : "");
+    setIsEditingCustom(true);
+  };
+
+  return (
+    <div className="flex flex-wrap gap-1.5 items-center">
+      {durations.map((duration) => {
+        const isAuto = duration === AUTO_DURATION;
+        const isSelected = selected === duration;
+
+        return (
+          <button
+            key={duration}
+            onClick={() => onSelect(duration)}
+            className={cn(
+              "px-2.5 py-1 rounded-lg border text-xs font-medium transition-all",
+              isSelected
+                ? "border-blue-400/50 bg-blue-500/10 text-blue-400"
+                : "border-muted/50 hover:bg-muted/30 hover:border-muted",
+              isAuto && !isSelected && "border-dashed"
+            )}
+          >
+            {duration}
+          </button>
+        );
+      })}
+
+      {/* Custom duration input */}
+      {isEditingCustom ? (
+        <input
+          type="text"
+          value={customValue}
+          onChange={(e) => setCustomValue(e.target.value)}
+          onBlur={handleCustomSubmit}
+          onKeyDown={(e) => e.key === "Enter" && handleCustomSubmit()}
+          placeholder="45s"
+          autoFocus
+          className="w-14 px-2.5 py-1 rounded-lg border border-blue-400/50 bg-blue-500/10 text-xs font-medium text-center focus:outline-none text-blue-400"
+        />
+      ) : (
+        <button
+          onClick={handleCustomClick}
+          className={cn(
+            "px-2.5 py-1 rounded-lg border border-dashed text-xs font-medium transition-all",
+            isCustomSelected
+              ? "border-blue-400/50 bg-blue-500/10 text-blue-400"
+              : "border-muted/50 hover:bg-muted/30 text-muted-foreground"
+          )}
+        >
+          {isCustomSelected ? selected : "Other"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /* Compact View */
 
 function CompactView({
   selections,
   onSelect,
+  onPurposeChange,
+  availableDurations,
 }: {
   selections: Record<string, string>;
   onSelect: (key: string, value: string) => void;
+  onPurposeChange: (value: string) => void;
+  availableDurations: string[];
 }) {
   return (
     <div className="flex-1 overflow-y-auto p-3 space-y-4">
@@ -468,9 +602,19 @@ function CompactView({
         <CompactOptionGrid
           options={PURPOSES}
           selected={selections.purpose}
-          onSelect={(v) => onSelect("purpose", v)}
+          onSelect={onPurposeChange}
         />
       </Section>
+
+      {selections.purpose && availableDurations.length > 0 && (
+        <Section label="Duration">
+          <DurationPicker
+            durations={availableDurations}
+            selected={selections.duration}
+            onSelect={(v) => onSelect("duration", v)}
+          />
+        </Section>
+      )}
     </div>
   );
 }
