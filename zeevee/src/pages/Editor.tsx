@@ -683,13 +683,13 @@ export default function Editor() {
                   {
                     id: "ai" as const,
                     icon: Wand2,
-                    label: "AI",
-                    tooltip: "Generate clips with AI",
+                    label: "IQ",
+                    tooltip: "IQ Studio - Generate clips with AI",
                   },
                   {
                     id: "captions" as const,
                     icon: Captions,
-                    label: "Subs",
+                    label: "Caps",
                     tooltip: "Caption settings",
                   },
                   {
