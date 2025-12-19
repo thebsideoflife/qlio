@@ -142,12 +142,12 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
       style={{ zIndex: 10 }}
     >
       <div
-        className="absolute pointer-events-auto cursor-move select-none"
+        className="absolute pointer-events-auto cursor-move select-none flex justify-center"
         style={{
           left: `${style.position.x}%`,
           top: `${style.position.y}%`,
           transform: "translate(-50%, -50%)",
-          maxWidth: `${style.maxWidth}%`,
+          width: `${style.maxWidth}%`,
         }}
         onMouseDown={onDragStart}
         onMouseEnter={() => setIsHovered(true)}
