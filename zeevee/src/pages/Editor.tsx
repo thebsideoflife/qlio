@@ -73,12 +73,19 @@ export default function Editor() {
   // Seamless playback only in preview mode
   useSeamlessPlayback(videoRef, previewMode ? segments : []);
 
-  // Get current segment's framing for preview
-  const selectedSegment = segments.find((s) => s.id === selectedSegmentId);
-  const currentFraming: SegmentFraming = selectedSegment?.framing || {
-    ...DEFAULT_SEGMENT_FRAMING,
-    aspectRatio: globalFraming.aspectRatio,
-  };
+  // Get current segment's framing for preview - memoized to avoid find() on every render
+  const selectedSegment = React.useMemo(
+    () => segments.find((s) => s.id === selectedSegmentId),
+    [segments, selectedSegmentId]
+  );
+  const currentFraming: SegmentFraming = React.useMemo(
+    () =>
+      selectedSegment?.framing || {
+        ...DEFAULT_SEGMENT_FRAMING,
+        aspectRatio: globalFraming.aspectRatio,
+      },
+    [selectedSegment?.framing, globalFraming.aspectRatio]
+  );
 
   // Framing preview state
   const isCropMode = currentFraming.mode === "crop";
@@ -820,22 +827,31 @@ function TranscriptPanel({
   onWordClick,
   loading,
 }: TranscriptPanelProps) {
-  // Filter transcription to only show words within segments when in preview mode
-  const filteredTranscription = previewMode
-    ? transcription.filter((word) =>
-        segments.some(
-          (seg) => word.start >= seg.startTime && word.end <= seg.endTime
-        )
+  // Memoize filtered transcription - only recompute when transcription, segments, or previewMode changes
+  // NOT on every currentTime change (which happens 60fps)
+  const filteredTranscription = React.useMemo(() => {
+    if (!previewMode) return transcription;
+    return transcription.filter((word) =>
+      segments.some(
+        (seg) => word.start >= seg.startTime && word.end <= seg.endTime
       )
-    : transcription;
+    );
+  }, [transcription, segments, previewMode]);
 
-  // Group words into chunks
-  const chunks = groupWordsIntoChunks(filteredTranscription);
+  // Memoize chunks - expensive operation that shouldn't run on every frame
+  const chunks = React.useMemo(
+    () => groupWordsIntoChunks(filteredTranscription),
+    [filteredTranscription]
+  );
 
-  // Calculate total duration shown
-  const shownDuration = previewMode
-    ? segments.reduce((sum, seg) => sum + (seg.endTime - seg.startTime), 0)
-    : duration;
+  // Memoize total duration calculation
+  const shownDuration = React.useMemo(
+    () =>
+      previewMode
+        ? segments.reduce((sum, seg) => sum + (seg.endTime - seg.startTime), 0)
+        : duration,
+    [previewMode, segments, duration]
+  );
 
   return (
     <div className="p-4 space-y-3 text-sm h-full overflow-y-auto">

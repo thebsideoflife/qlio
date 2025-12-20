@@ -1,5 +1,5 @@
 import { useSelector, useDispatch } from "react-redux";
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import type { RootState } from "@/store/store";
 import { updateCaptionPosition, updateCaptionStyle } from "@/store/editorSlice";
 import { SNAP_POSITIONS } from "@/remotion/types";
@@ -27,9 +27,10 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
   const [initialSize, setInitialSize] = useState(0);
   const [resizeDirection, setResizeDirection] = useState({ x: 1, y: 1 });
 
-  // Find active caption
-  const activeCaption = captions.find(
-    (c) => currentTime >= c.startTime && currentTime < c.endTime
+  // Find active caption - memoized since currentTime updates 60fps
+  const activeCaption = useMemo(
+    () => captions.find((c) => currentTime >= c.startTime && currentTime < c.endTime),
+    [captions, currentTime]
   );
 
   // Snap helper
