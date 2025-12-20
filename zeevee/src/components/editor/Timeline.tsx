@@ -208,8 +208,8 @@ export function Timeline({
     [totalDuration]
   );
 
-  // Check if playhead is inside any segment
-  const isInsideSegment = useCallback(() => {
+  // Check if playhead is inside any segment - memoized to avoid recalculating on every render
+  const isInsideSegment = useMemo(() => {
     return segments.some(
       (s) => currentTime >= s.startTime && currentTime < s.endTime
     );
@@ -738,18 +738,20 @@ export function Timeline({
   }, [containerWidth, effectiveDuration, zoom]);
 
   // Check if split is possible (segment selected AND playhead inside that segment)
-  const canSplit = (() => {
+  // Memoized to avoid recalculating on every render
+  const canSplit = useMemo(() => {
     if (!selectedId) return false;
     const segment = segments.find((s) => s.id === selectedId);
     if (!segment) return false;
     return currentTime > segment.startTime && currentTime < segment.endTime;
-  })();
+  }, [selectedId, segments, currentTime]);
 
   // Can add only when outside any segment
-  const canAdd = !isInsideSegment();
+  const canAdd = !isInsideSegment;
 
   // Generate time markers - aim for ~8-15 markers visible at any zoom level
-  const generateTimeMarkers = useCallback(() => {
+  // Memoized since it's used twice in render (markers + tick marks)
+  const timeMarkers = useMemo(() => {
     const markers: { time: number; px: number }[] = [];
     const durationToUse = previewMode ? previewDuration : totalDuration;
 
@@ -915,7 +917,7 @@ export function Timeline({
         >
           {/* Time markers */}
           <div className="h-4 relative shrink-0">
-            {generateTimeMarkers().map(({ time, px }) => (
+            {timeMarkers.map(({ time, px }) => (
               <span
                 key={time}
                 className="absolute text-[10px] text-muted-foreground -translate-x-1/2"
@@ -932,7 +934,7 @@ export function Timeline({
             onClick={handleTrackClick}
           >
             {/* Time tick marks */}
-            {generateTimeMarkers().map(({ time, px }) => (
+            {timeMarkers.map(({ time, px }) => (
               <div
                 key={time}
                 className="absolute top-0 bottom-0 border-l border-muted-foreground/20 pointer-events-none"

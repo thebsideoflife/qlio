@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import {
   Activity,
   LogOut,
@@ -67,16 +67,21 @@ export function MainLayout({ children }: MainLayoutProps) {
   const [newPassword, setNewPassword] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
 
-  const processingCount = assets.filter(
-    (a) =>
-      a.status === "processing" ||
-      a.status === "uploading" ||
-      a.status === "indexing"
-  ).length;
+  const processingCount = useMemo(
+    () =>
+      assets.filter(
+        (a) =>
+          a.status === "processing" ||
+          a.status === "uploading" ||
+          a.status === "indexing"
+      ).length,
+    [assets]
+  );
 
-  const completedCount = assets.filter(
-    (a) => a.status === "completed" || a.status === "READY"
-  ).length;
+  const completedCount = useMemo(
+    () => assets.filter((a) => a.status === "completed" || a.status === "READY").length,
+    [assets]
+  );
 
   // Listen for custom event to open upload wizard from other components
   useEffect(() => {
