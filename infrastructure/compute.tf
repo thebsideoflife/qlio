@@ -82,7 +82,15 @@ data "aws_iam_policy_document" "lambda_policy" {
       aws_dynamodb_table.assets.arn,
       "${aws_dynamodb_table.assets.arn}/index/*",
       aws_dynamodb_table.projects.arn,
-      "${aws_dynamodb_table.projects.arn}/index/*"
+      "${aws_dynamodb_table.projects.arn}/index/*",
+      aws_dynamodb_table.chunk_tasks.arn
+    ]
+  }
+  # Allow Lambda to invoke other Lambdas (for split -> indexChunks flow)
+  statement {
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-*"
     ]
   }
   statement {
@@ -163,6 +171,73 @@ resource "aws_lambda_function" "start_indexing" {
   environment {
     variables = {
       TABLE_NAME              = aws_dynamodb_table.assets.name
+      CHUNK_TASKS_TABLE       = aws_dynamodb_table.chunk_tasks.name
+      SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
+      TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
+      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
+      SPLIT_FUNCTION_NAME     = aws_lambda_function.split_video.function_name
+    }
+  }
+
+  depends_on = [aws_lambda_function.split_video]
+}
+
+# --- Split Video (FFmpeg container for long video splitting) ---
+# Note: This reuses the FFmpeg ECR repository from ffmpeg.tf
+resource "aws_lambda_function" "split_video" {
+  function_name = "${var.project_name}-split-video"
+  role          = aws_iam_role.stitch_lambda_role.arn
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.ffmpeg_lambda.repository_url}:latest"
+
+  timeout     = 900  # 15 minutes - video splitting can take time
+  memory_size = 3008 # 3GB - FFmpeg needs memory for processing
+
+  ephemeral_storage {
+    size = 10240 # 10GB - for downloading and processing videos
+  }
+
+  environment {
+    variables = {
+      TABLE_NAME                  = aws_dynamodb_table.assets.name
+      BUCKET_NAME                 = aws_s3_bucket.media.id
+      INDEX_CHUNKS_FUNCTION_NAME  = aws_lambda_function.index_chunks.function_name
+    }
+  }
+
+  # Override the CMD to use splitVideo handler instead of stitchSegments
+  image_config {
+    command = ["splitVideo.handler"]
+  }
+
+  lifecycle {
+    ignore_changes = [image_uri]
+  }
+
+  depends_on = [aws_lambda_function.index_chunks]
+}
+
+# --- Index Chunks (triggers 12labs indexing for all chunks) ---
+data "archive_file" "index_chunks_zip" {
+  type        = "zip"
+  source_file = "../backend/dist/indexChunks.js"
+  output_path = "${path.module}/zips/indexChunks.zip"
+}
+
+resource "aws_lambda_function" "index_chunks" {
+  filename         = data.archive_file.index_chunks_zip.output_path
+  function_name    = "${var.project_name}-index-chunks"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "indexChunks.handler"
+  runtime          = "nodejs20.x"
+  source_code_hash = data.archive_file.index_chunks_zip.output_base64sha256
+  timeout          = 120
+
+  environment {
+    variables = {
+      TABLE_NAME              = aws_dynamodb_table.assets.name
+      CHUNK_TASKS_TABLE       = aws_dynamodb_table.chunk_tasks.name
+      BUCKET_NAME             = aws_s3_bucket.media.id
       SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
       TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
@@ -184,11 +259,12 @@ resource "aws_lambda_function" "process_webhook" {
   handler          = "processWebhook.handler"
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.process_webhook_zip.output_base64sha256
-  timeout          = 30
+  timeout          = 60
 
   environment {
     variables = {
       TABLE_NAME              = aws_dynamodb_table.assets.name
+      CHUNK_TASKS_TABLE       = aws_dynamodb_table.chunk_tasks.name
       BUCKET_NAME             = aws_s3_bucket.media.id
       SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
       TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
@@ -408,7 +484,7 @@ resource "aws_lambda_function" "analyze_framing" {
   handler          = "analyzeFraming.handler"
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.analyze_framing_zip.output_base64sha256
-  timeout          = 60
+  timeout          = 120  # Increased for chunked video analysis
 
   environment {
     variables = {
@@ -416,6 +492,7 @@ resource "aws_lambda_function" "analyze_framing" {
       ASSETS_TABLE            = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
       SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
+      TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
     }
   }
 }
@@ -435,6 +512,7 @@ resource "aws_lambda_permission" "allow_bucket" {
 resource "aws_s3_bucket_notification" "bucket_notification" {
   bucket = aws_s3_bucket.media.id
 
+  # Raw video uploads
   lambda_function {
     lambda_function_arn = aws_lambda_function.start_indexing.arn
     events              = ["s3:ObjectCreated:*"]
@@ -454,6 +532,14 @@ resource "aws_s3_bucket_notification" "bucket_notification" {
     events              = ["s3:ObjectCreated:*"]
     filter_prefix       = "raw/"
     filter_suffix       = ".m4v"
+  }
+
+  # Chunk uploads (from splitVideo) - trigger indexing via same Lambda
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.start_indexing.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "chunks/"
+    filter_suffix       = ".mp4"
   }
 
   depends_on = [aws_lambda_permission.allow_bucket]

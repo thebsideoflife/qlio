@@ -50,6 +50,20 @@ resource "aws_s3_bucket_lifecycle_configuration" "media" {
       days = 1
     }
   }
+
+  # Chunk files are only needed during indexing - delete after 7 days
+  rule {
+    id     = "cleanup-chunks"
+    status = "Enabled"
+
+    filter {
+      prefix = "chunks/"
+    }
+
+    expiration {
+      days = 7
+    }
+  }
 }
 
 # Notification is circular dependency if defined here with Lambda not yet existing.
@@ -96,5 +110,24 @@ resource "aws_dynamodb_table" "projects" {
     name            = "AssetIdIndex"
     hash_key        = "assetId"
     projection_type = "ALL"
+  }
+}
+
+# Lookup table for chunk task IDs to asset mapping
+# This enables efficient webhook handling for chunked videos
+resource "aws_dynamodb_table" "chunk_tasks" {
+  name         = "${var.project_name}-chunk-tasks"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "taskId"
+
+  attribute {
+    name = "taskId"
+    type = "S"
+  }
+
+  # TTL to auto-cleanup old entries (tasks are only needed during indexing)
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
   }
 }

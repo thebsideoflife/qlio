@@ -9,10 +9,10 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
-import { TwelveLabs } from "twelvelabs-js";
 import { randomUUID } from "crypto";
 import { checkAuth } from "../utils/auth";
 import { DirectorAgent, VideoContext, UserGoals } from "../services/director";
+import { createTwelveLabsWrapper } from "../services/twelvelabs";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -20,7 +20,6 @@ const secretsClient = new SecretsManagerClient({});
 
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
-const TWELVE_LABS_INDEX_ID = process.env.TWELVE_LABS_INDEX_ID!;
 const SECRET_ARN = process.env.SECRET_ARN!;
 
 interface Segment {
@@ -98,9 +97,13 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     }
 
     const asset = assetRes.Item;
-    const videoId = asset.twelveLabsVideoId;
 
-    if (!videoId || videoId === "unknown") {
+    // Check if asset is ready (either has videoId for non-chunked, or all chunks indexed)
+    const isChunked = asset.isChunked || false;
+    const videoId = asset.twelveLabsVideoId;
+    const chunks = asset.chunks || [];
+
+    if (!isChunked && (!videoId || videoId === "unknown")) {
       return {
         statusCode: 400,
         headers: {
@@ -113,24 +116,31 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       };
     }
 
-    // 4. Get 12 Labs API Key
+    if (isChunked && chunks.some((c: any) => !c.videoId)) {
+      return {
+        statusCode: 400,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+        body: JSON.stringify({
+          error: "Asset chunks are still being indexed. Please wait.",
+        }),
+      };
+    }
+
+    // 4. Get 12 Labs API Key and create wrapper
     const secretVal = await secretsClient.send(
       new GetSecretValueCommand({ SecretId: SECRET_ARN })
     );
     const apiKey = secretVal.SecretString;
     if (!apiKey) throw new Error("12Labs API Key not found");
 
-    const client = new TwelveLabs({
-      apiKey,
-    });
-    // Manually override axios default timeout if exposed, or rely on Lambda timeout
-    // The SDK uses axios under the hood. If we can't set it via constructor,
-    // we can try to rely on the environment or accept the default.
-    // Given the TypeScript error, we'll revert to default constructor and rely on our new robust fallback logic.
+    // Create the TwelveLabs wrapper which handles chunked videos transparently
+    const twelvelabs = createTwelveLabsWrapper(apiKey, ASSETS_TABLE);
 
     // --- DIRECTOR AGENT WORKFLOW ---
 
-    // 129
     // Step 1: Ingest (Perceive & Ground)
     console.log("Step 1: Ingesting video context...");
 
@@ -153,24 +163,13 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     let availableScenes = "";
 
     // A. Fetch Duration from 12Labs (Official Source) - Only if we still don't have it
+    // Uses wrapper which handles chunked videos automatically
     try {
       if (videoDuration === 0) {
-        const videoInfo = await client.indexes.videos.retrieve(
-          TWELVE_LABS_INDEX_ID,
-          videoId
-        );
-        const anyVideoInfo = videoInfo as any;
-        if (
-          anyVideoInfo.metadata &&
-          typeof anyVideoInfo.metadata.duration === "number"
-        ) {
-          videoDuration = anyVideoInfo.metadata.duration;
+        const videoMetadata = await twelvelabs.getVideoMetadata(assetId);
+        if (videoMetadata.duration > 0) {
+          videoDuration = videoMetadata.duration;
           console.log(`Updated video duration from 12Labs: ${videoDuration}s`);
-        } else {
-          console.log(
-            "12Labs metadata did not contain duration:",
-            anyVideoInfo.metadata
-          );
         }
       }
     } catch (err) {
@@ -194,12 +193,11 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       // Let's rely on 12Labs 'analyze' first.
     } catch (e) {}
 
-    // B. Fetch Summary/Tags (Gist) & "Available Scenes" List using correct SDK methods
+    // B. Fetch Summary/Tags (Gist) & "Available Scenes" List using wrapper
+    // Wrapper handles chunked videos transparently - aggregates from all chunks
     try {
-      // Fetch standard summary using client.gist() - the correct method per 12Labs docs
       console.log("Fetching Gist (title, topics)...");
-      const gist = await (client as any).gist({
-        videoId: videoId,
+      const gist = await twelvelabs.gist(assetId, {
         types: ["title", "topic"],
       });
       if (gist) {
@@ -215,15 +213,15 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     }
 
     try {
-      // Fetch Detailed Scene List (Grounding) using client.analyze() - the correct method per 12Labs docs
+      // Fetch Detailed Scene List (Grounding) using wrapper
+      // For chunked videos, this queries all chunks and adjusts timestamps
       const groundingPrompt =
         "Provide a chronological list of every distinct scene in the video. " +
         "For each scene, strictly provide the Start Time (in seconds), End Time (in seconds), and a detailed visual description. " +
         "Format each scene as: [StartSeconds-EndSeconds] Description";
 
       console.log("Fetching Available Scenes (analyze)...");
-      const sceneResponse = await (client as any).analyze({
-        videoId: videoId,
+      const sceneResponse = await twelvelabs.analyze(assetId, {
         prompt: groundingPrompt,
       });
       console.log("Scene Response:", JSON.stringify(sceneResponse, null, 2));
@@ -231,9 +229,6 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       if (sceneResponse && sceneResponse.data) {
         availableScenes = sceneResponse.data;
         console.log("Grounding: Retrieved Available Scenes list.");
-      } else if (sceneResponse && typeof sceneResponse === "string") {
-        availableScenes = sceneResponse;
-        console.log("Grounding: Retrieved Available Scenes (string response).");
       } else {
         console.warn(
           "Grounding: Scene response was empty or unexpected format."

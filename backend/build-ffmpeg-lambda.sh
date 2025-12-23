@@ -40,8 +40,8 @@ docker push "${ECR_URL}:latest"
 
 echo "Done! Image pushed to: ${ECR_URL}:latest"
 
-# Update Lambda function
-echo "Updating Lambda function..."
+# Update Lambda functions that use this image
+echo "Updating stitch-segments Lambda..."
 aws lambda update-function-code \
   --profile "$AWS_PROFILE" \
   --region "$AWS_REGION" \
@@ -49,5 +49,13 @@ aws lambda update-function-code \
   --image-uri "${ECR_URL}:latest" \
   --publish
 
-echo "Lambda function updated!"
+echo "Updating split-video Lambda..."
+aws lambda update-function-code \
+  --profile "$AWS_PROFILE" \
+  --region "$AWS_REGION" \
+  --function-name "zeevee-split-video" \
+  --image-uri "${ECR_URL}:latest" \
+  --publish
+
+echo "Lambda functions updated!"
 

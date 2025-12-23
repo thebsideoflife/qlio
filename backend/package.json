@@ -23,6 +23,7 @@
     "@remotion/lambda": "^4.0.387",
     "@remotion/renderer": "^4.0.387",
     "axios": "^1.6.0",
+    "form-data": "^4.0.5",
     "twelvelabs-js": "^1.1.0",
     "uuid": "^13.0.0",
     "zod": "^3.22.0"

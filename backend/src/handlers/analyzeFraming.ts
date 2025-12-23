@@ -5,8 +5,8 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
-import { TwelveLabs } from "twelvelabs-js";
 import { checkAuth } from "../utils/auth";
+import { createTwelveLabsWrapper } from "../services/twelvelabs";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -348,12 +348,21 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       return errorResponse(404, "Asset not found");
     }
 
-    const videoId = assetRes.Item.twelveLabsVideoId;
-    if (!videoId || videoId === "unknown") {
+    const asset = assetRes.Item;
+    const isChunked = asset.isChunked || false;
+    const videoId = asset.twelveLabsVideoId;
+    const chunks = asset.chunks || [];
+
+    // Check if asset is ready for analysis
+    if (!isChunked && (!videoId || videoId === "unknown")) {
       return errorResponse(400, "Asset has not been indexed by 12 Labs yet");
     }
 
-    // Step 4: Get API credentials
+    if (isChunked && chunks.some((c: any) => !c.videoId)) {
+      return errorResponse(400, "Asset chunks are still being indexed");
+    }
+
+    // Step 4: Get API credentials and create wrapper
     const secretVal = await secretsClient.send(
       new GetSecretValueCommand({ SecretId: SECRET_ARN })
     );
@@ -361,7 +370,11 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       throw new Error("12Labs API Key not found in secrets");
     }
 
-    const client = new TwelveLabs({ apiKey: secretVal.SecretString });
+    // Use wrapper which handles chunked videos transparently
+    const twelvelabs = createTwelveLabsWrapper(
+      secretVal.SecretString,
+      ASSETS_TABLE
+    );
 
     // Step 5: Build prompt and call AI
     console.log(
@@ -376,10 +389,16 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     let framingResult: FramingResult;
 
     try {
-      const response = await (client as any).analyze({ videoId, prompt });
+      // Use wrapper's analyze method - handles chunked videos automatically
+      // by finding the right chunk for the given time range
+      const response = await twelvelabs.analyze(assetId, {
+        prompt,
+        startTime,
+        endTime,
+      });
 
       // Step 6: Extract and parse response
-      const responseText = response?.data ?? response?.text ?? String(response);
+      const responseText = response.data;
       console.log("[Framing] Raw AI response:", responseText);
 
       framingResult = parseFramingResponse(responseText, aspectRatio);
