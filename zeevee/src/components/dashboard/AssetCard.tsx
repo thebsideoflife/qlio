@@ -59,7 +59,6 @@ interface Project {
   title: string;
   createdAt: string;
   status: string;
-  thumbnail?: string;
   segments?: ProjectSegment[];
 }
 
@@ -374,14 +373,9 @@ export function AssetCard({
     }
   };
 
-  // Get fallback thumbnail URL
-  const getFallbackThumbnail = (): string => {
-    return (
-      asset.thumbnailUrl ||
-      asset.thumbnail ||
-      "https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?w=200&auto=format&fit=crop&q=60"
-    );
-  };
+  // Fallback thumbnail for when video isn't available
+  const FALLBACK_THUMBNAIL =
+    "https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?w=200&auto=format&fit=crop&q=60";
 
   // Get first segment start time for a project
   const getFirstSegmentTime = (project: Project): number | null => {
@@ -402,15 +396,20 @@ export function AssetCard({
         onClick={onSelect}
       >
         <div className="relative aspect-[4/3] w-full overflow-hidden">
-          <img
-            src={
-              asset.thumbnailUrl ||
-              asset.thumbnail ||
-              "https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?w=400&auto=format&fit=crop&q=60"
-            }
-            alt={asset.title}
-            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
-          />
+          {asset.videoUrl ? (
+            <VideoThumbnail
+              videoUrl={asset.videoUrl}
+              time={5}
+              className="h-full w-full transition-transform duration-500 group-hover:scale-105"
+              fallbackUrl={FALLBACK_THUMBNAIL}
+            />
+          ) : (
+            <img
+              src={FALLBACK_THUMBNAIL}
+              alt={asset.title}
+              className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+            />
+          )}
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
           {/* Status badge */}
           {(asset.status === "uploading" ||
@@ -443,15 +442,20 @@ export function AssetCard({
       <div className="rounded-xl overflow-hidden bg-gradient-to-b from-slate-900 to-slate-950 border border-slate-800/50 shadow-xl">
         {/* Hero Section - 16:9 landscape */}
         <div className="relative aspect-video w-full overflow-hidden group">
-          <img
-            src={
-              asset.thumbnailUrl ||
-              asset.thumbnail ||
-              "https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?w=800&auto=format&fit=crop&q=60"
-            }
-            alt={asset.title}
-            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
-          />
+          {asset.videoUrl ? (
+            <VideoThumbnail
+              videoUrl={asset.videoUrl}
+              time={5}
+              className="h-full w-full transition-transform duration-500 group-hover:scale-105"
+              fallbackUrl={FALLBACK_THUMBNAIL}
+            />
+          ) : (
+            <img
+              src={FALLBACK_THUMBNAIL}
+              alt={asset.title}
+              className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+            />
+          )}
           {/* Gradient overlay */}
           <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-transparent" />
 
@@ -602,11 +606,11 @@ export function AssetCard({
                         videoUrl={asset.videoUrl}
                         time={getFirstSegmentTime(project)!}
                         className="w-full h-full"
-                        fallbackUrl={getFallbackThumbnail()}
+                        fallbackUrl={FALLBACK_THUMBNAIL}
                       />
                     ) : (
                       <img
-                        src={getFallbackThumbnail()}
+                        src={FALLBACK_THUMBNAIL}
                         alt={project.title}
                         className="w-full h-full object-cover"
                       />

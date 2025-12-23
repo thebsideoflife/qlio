@@ -109,8 +109,6 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
       const newAsset = {
         id: uploadInfo.assetId,
         title: file.name,
-        thumbnail:
-          "https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?w=800&auto=format&fit=crop&q=60",
         status: "uploading" as const,
         format: "1080p",
         size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,

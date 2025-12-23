@@ -10,8 +10,6 @@ export interface Asset {
   id: string;
   title: string;
   originalName?: string;
-  thumbnail?: string;
-  thumbnailUrl?: string;
   status:
     | "processing"
     | "uploading"

@@ -187,7 +187,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     const assetId = asset.assetId;
 
     // Handle non-chunked video completion
-    return await handleSingleVideoCompletion(assetId, videoId || asset.twelveLabsVideoId);
+    return await handleSingleVideoCompletion(
+      assetId,
+      videoId || asset.twelveLabsVideoId
+    );
   } catch (error) {
     console.error("Error processing webhook:", error);
     return {
@@ -205,19 +208,18 @@ async function handleSingleVideoCompletion(
   assetId: string,
   videoId: string
 ): Promise<{ statusCode: number; headers?: any; body: string }> {
-  // Fetch 12 Labs API Key to get thumbnail AND transcription
+  // Fetch 12 Labs API Key to get transcription
   const secretVal12Labs = await secretsClient.send(
     new GetSecretValueCommand({ SecretId: SECRET_ARN })
   );
   const apiKey = secretVal12Labs.SecretString;
-  let thumbnailUrl = null;
   let transcriptionUrl = null;
   let videoDuration = 0;
 
   if (apiKey && videoId && videoId !== "unknown") {
     const client = new TwelveLabs({ apiKey });
 
-    // A. Get Thumbnail
+    // Get video metadata for duration
     try {
       const video = await client.indexes.videos.retrieve(
         TWELVE_LABS_INDEX_ID,
@@ -230,66 +232,11 @@ async function handleSingleVideoCompletion(
       }
 
       console.log("12Labs video response:", JSON.stringify(video, null, 2));
-
-      // Determine timestamp for thumbnail (avoid black start frame)
-      let thumbTime = 0;
-      if (videoDuration > 10) {
-        thumbTime = 5;
-      } else if (videoDuration > 0) {
-        thumbTime = videoDuration / 2;
-      }
-
-      // Fetch thumbnail directly from API to control timestamp
-      console.log(`Fetching thumbnail at ${thumbTime}s...`);
-      const thumbUrl = `https://api.twelvelabs.io/v1.2/indexes/${TWELVE_LABS_INDEX_ID}/videos/${videoId}/thumbnail`;
-
-      let thumbResponse;
-      try {
-        thumbResponse = await axios.get(thumbUrl, {
-          headers: { "x-api-key": apiKey },
-          params: { time: thumbTime },
-          responseType: "arraybuffer",
-        });
-      } catch (e) {
-        console.warn(
-          "Failed to fetch custom thumbnail, falling back to default URL"
-        );
-        const externalThumbnailUrl =
-          (video as any).thumbnailUrl ||
-          (video as any).thumbnail_url ||
-          (video as any).hls?.thumbnailUrls?.[0] ||
-          (video as any).hls?.thumbnail_urls?.[0] ||
-          (video as any).metadata?.thumbnail_url;
-
-        if (externalThumbnailUrl) {
-          thumbResponse = await axios.get(externalThumbnailUrl, {
-            responseType: "arraybuffer",
-          });
-        }
-      }
-
-      if (thumbResponse && thumbResponse.data) {
-        const thumbKey = `thumbnails/${assetId}.jpg`;
-
-        await s3Client.send(
-          new PutObjectCommand({
-            Bucket: BUCKET_NAME,
-            Key: thumbKey,
-            Body: thumbResponse.data,
-            ContentType: "image/jpeg",
-          })
-        );
-
-        thumbnailUrl = `s3://${BUCKET_NAME}/${thumbKey}`;
-        console.log(`Thumbnail stored at ${thumbnailUrl}`);
-      } else {
-        console.warn("No thumbnail could be retrieved.");
-      }
     } catch (err) {
-      console.error("Failed to fetch/store thumbnail from 12 Labs", err);
+      console.error("Failed to fetch video metadata from 12 Labs", err);
     }
 
-    // B. Get Transcription & Store in S3
+    // Get Transcription & Store in S3
     try {
       console.log(`Fetching transcription for video ${videoId}...`);
 
@@ -333,7 +280,7 @@ async function handleSingleVideoCompletion(
       TableName: TABLE_NAME,
       Key: { assetId },
       UpdateExpression:
-        "SET #s = :status, twelveLabsVideoId = :vid, thumbnailUrl = :thumb, transcriptionUrl = :trans, #dur = :dur, updatedAt = :ua",
+        "SET #s = :status, twelveLabsVideoId = :vid, transcriptionUrl = :trans, #dur = :dur, updatedAt = :ua",
       ExpressionAttributeNames: {
         "#s": "status",
         "#dur": "duration",
@@ -341,7 +288,6 @@ async function handleSingleVideoCompletion(
       ExpressionAttributeValues: {
         ":status": "READY",
         ":vid": videoId || "unknown",
-        ":thumb": thumbnailUrl,
         ":trans": transcriptionUrl,
         ":dur": videoDuration,
         ":ua": new Date().toISOString(),
@@ -412,8 +358,6 @@ async function handleChunkCompletion(
     // All chunks are indexed - finalize the asset
     console.log(`All chunks complete for asset ${assetId}, finalizing...`);
 
-    // Get thumbnail from first chunk
-    let thumbnailUrl = null;
     let totalDuration = 0;
 
     const secretVal12Labs = await secretsClient.send(
@@ -422,55 +366,16 @@ async function handleChunkCompletion(
     const apiKey = secretVal12Labs.SecretString;
 
     if (apiKey) {
-      const client = new TwelveLabs({ apiKey });
-
-      // Get thumbnail from first chunk
-      const firstChunk = chunks.find((c) => c.chunkIndex === 0);
-      if (firstChunk?.videoId) {
-        try {
-          const video = await client.indexes.videos.retrieve(
-            TWELVE_LABS_INDEX_ID,
-            firstChunk.videoId
-          );
-
-          let thumbTime = 5;
-          const thumbUrl = `https://api.twelvelabs.io/v1.2/indexes/${TWELVE_LABS_INDEX_ID}/videos/${firstChunk.videoId}/thumbnail`;
-
-          const thumbResponse = await axios.get(thumbUrl, {
-            headers: { "x-api-key": apiKey },
-            params: { time: thumbTime },
-            responseType: "arraybuffer",
-          });
-
-          if (thumbResponse.data) {
-            const thumbKey = `thumbnails/${assetId}.jpg`;
-            await s3Client.send(
-              new PutObjectCommand({
-                Bucket: BUCKET_NAME,
-                Key: thumbKey,
-                Body: thumbResponse.data,
-                ContentType: "image/jpeg",
-              })
-            );
-            thumbnailUrl = `s3://${BUCKET_NAME}/${thumbKey}`;
-            console.log(`Thumbnail stored at ${thumbnailUrl}`);
-          }
-        } catch (err) {
-          console.error("Failed to fetch thumbnail from first chunk:", err);
-        }
-      }
-
       // Calculate total duration from chunks
-      totalDuration = chunks.reduce(
-        (max, c) => Math.max(max, c.endOffset),
-        0
-      );
+      totalDuration = chunks.reduce((max, c) => Math.max(max, c.endOffset), 0);
 
       // Aggregate transcriptions from all chunks
       try {
         const allTranscriptions: any[] = [];
 
-        for (const chunk of chunks.sort((a, b) => a.chunkIndex - b.chunkIndex)) {
+        for (const chunk of chunks.sort(
+          (a, b) => a.chunkIndex - b.chunkIndex
+        )) {
           if (!chunk.videoId) continue;
 
           try {
@@ -512,7 +417,9 @@ async function handleChunkCompletion(
               ContentType: "application/json",
             })
           );
-          console.log(`Aggregated transcription stored at s3://${BUCKET_NAME}/${key}`);
+          console.log(
+            `Aggregated transcription stored at s3://${BUCKET_NAME}/${key}`
+          );
         }
       } catch (err) {
         console.error("Failed to aggregate transcriptions:", err);
@@ -525,7 +432,7 @@ async function handleChunkCompletion(
         TableName: TABLE_NAME,
         Key: { assetId },
         UpdateExpression:
-          "SET #s = :status, chunks = :chunks, thumbnailUrl = :thumb, #dur = :dur, pendingChunks = :pending, updatedAt = :ua",
+          "SET #s = :status, chunks = :chunks, #dur = :dur, pendingChunks = :pending, updatedAt = :ua",
         ExpressionAttributeNames: {
           "#s": "status",
           "#dur": "duration",
@@ -533,7 +440,6 @@ async function handleChunkCompletion(
         ExpressionAttributeValues: {
           ":status": "READY",
           ":chunks": chunks,
-          ":thumb": thumbnailUrl,
           ":dur": totalDuration,
           ":pending": 0,
           ":ua": new Date().toISOString(),
@@ -558,9 +464,7 @@ async function handleChunkCompletion(
       })
     );
 
-    console.log(
-      `Asset ${assetId} waiting for ${pendingChunks} more chunk(s)`
-    );
+    console.log(`Asset ${assetId} waiting for ${pendingChunks} more chunk(s)`);
   }
 
   // Delete the chunk task entry (it's served its purpose)

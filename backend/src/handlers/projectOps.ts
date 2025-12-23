@@ -1,6 +1,10 @@
 import { APIGatewayProxyHandler } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  DeleteCommand,
+} from "@aws-sdk/lib-dynamodb";
 import { checkAuth } from "../utils/auth";
 import { presignS3Uri } from "../utils/s3";
 
@@ -89,11 +93,6 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         if (presignedUrl) asset.videoUrl = presignedUrl;
       }
 
-      if (asset.thumbnailUrl) {
-        const presignedUrl = await presignS3Uri(asset.thumbnailUrl);
-        if (presignedUrl) asset.thumbnailUrl = presignedUrl;
-      }
-
       if (asset.transcriptionUrl) {
         const presignedUrl = await presignS3Uri(asset.transcriptionUrl);
         if (presignedUrl) asset.transcriptionUrl = presignedUrl;
@@ -126,4 +125,3 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     };
   }
 };
-
