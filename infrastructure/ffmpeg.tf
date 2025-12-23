@@ -48,12 +48,13 @@ resource "aws_iam_role_policy_attachment" "stitch_lambda_basic" {
 }
 
 data "aws_iam_policy_document" "stitch_lambda_policy" {
-  # S3 access for media bucket (read source videos, write stitched)
+  # S3 access for media bucket (read source videos, write stitched/chunks)
   statement {
     actions = [
       "s3:GetObject",
       "s3:PutObject",
-      "s3:ListBucket"
+      "s3:ListBucket",
+      "s3:HeadObject"
     ]
     resources = [
       aws_s3_bucket.media.arn,
@@ -61,24 +62,27 @@ data "aws_iam_policy_document" "stitch_lambda_policy" {
     ]
   }
 
-  # DynamoDB access for render jobs
+  # DynamoDB access for render jobs and assets
   statement {
     actions = [
       "dynamodb:GetItem",
-      "dynamodb:UpdateItem"
+      "dynamodb:UpdateItem",
+      "dynamodb:PutItem"
     ]
     resources = [
-      aws_dynamodb_table.render_jobs.arn
+      aws_dynamodb_table.render_jobs.arn,
+      aws_dynamodb_table.assets.arn
     ]
   }
 
-  # Lambda invoke for Remotion (to trigger render after stitching)
+  # Lambda invoke for Remotion and indexChunks
   statement {
     actions = [
       "lambda:InvokeFunction"
     ]
     resources = [
-      "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:remotion-render-*"
+      "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:remotion-render-*",
+      "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-index-chunks"
     ]
   }
 

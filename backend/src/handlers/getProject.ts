@@ -68,11 +68,6 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         if (presignedUrl) asset.videoUrl = presignedUrl;
       }
 
-      if (asset.thumbnailUrl) {
-        const presignedUrl = await presignS3Uri(asset.thumbnailUrl);
-        if (presignedUrl) asset.thumbnailUrl = presignedUrl;
-      }
-
       if (asset.transcriptionUrl) {
         const presignedUrl = await presignS3Uri(asset.transcriptionUrl);
         if (presignedUrl) asset.transcriptionUrl = presignedUrl;

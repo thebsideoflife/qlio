@@ -4,14 +4,16 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   QueryCommand,
+  GetCommand,
   UpdateCommand,
+  DeleteCommand,
 } from "@aws-sdk/lib-dynamodb";
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
 import { TwelveLabs } from "twelvelabs-js";
-import { randomUUID, createHmac } from "crypto";
+import { createHmac } from "crypto";
 import axios from "axios";
 
 const s3Client = new S3Client({});
@@ -24,10 +26,21 @@ const docClient = DynamoDBDocumentClient.from(dynamoClient, {
 const secretsClient = new SecretsManagerClient({});
 
 const TABLE_NAME = process.env.TABLE_NAME!;
+const CHUNK_TASKS_TABLE = process.env.CHUNK_TASKS_TABLE;
 const SECRET_ARN = process.env.SECRET_ARN!;
 const SIGNING_SECRET_ARN = process.env.SIGNING_SECRET_ARN!;
 const TWELVE_LABS_INDEX_ID = process.env.TWELVE_LABS_INDEX_ID!;
 const BUCKET_NAME = process.env.BUCKET_NAME!;
+
+interface ChunkInfo {
+  chunkIndex: number;
+  s3Key: string;
+  startOffset: number;
+  endOffset: number;
+  duration: number;
+  taskId?: string;
+  videoId?: string;
+}
 
 export const handler: APIGatewayProxyHandler = async (event) => {
   try {
@@ -129,7 +142,28 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       };
     }
 
-    // 2. Find Asset by Task ID
+    const videoId = body.data?.video_id;
+
+    // 2. Check if this is a chunk task first
+    if (CHUNK_TASKS_TABLE) {
+      const chunkTaskResult = await docClient.send(
+        new GetCommand({
+          TableName: CHUNK_TASKS_TABLE,
+          Key: { taskId },
+        })
+      );
+
+      if (chunkTaskResult.Item) {
+        // This is a chunk completion webhook
+        return await handleChunkCompletion(
+          chunkTaskResult.Item,
+          videoId,
+          taskId
+        );
+      }
+    }
+
+    // 3. Find Asset by Task ID (non-chunked video)
     const queryRes = await docClient.send(
       new QueryCommand({
         TableName: TABLE_NAME,
@@ -151,167 +185,12 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
     const asset = queryRes.Items[0];
     const assetId = asset.assetId;
-    let videoId = body.data?.video_id || asset.twelveLabsVideoId;
 
-    // Fetch 12 Labs API Key to get thumbnail AND transcription
-    const secretVal12Labs = await secretsClient.send(
-      new GetSecretValueCommand({ SecretId: SECRET_ARN })
+    // Handle non-chunked video completion
+    return await handleSingleVideoCompletion(
+      assetId,
+      videoId || asset.twelveLabsVideoId
     );
-    const apiKey = secretVal12Labs.SecretString;
-    let thumbnailUrl = null;
-    let transcriptionUrl = null;
-    let videoDuration = 0;
-
-    if (apiKey && videoId && videoId !== "unknown") {
-      const client = new TwelveLabs({ apiKey });
-
-      // A. Get Thumbnail
-      try {
-        const video = await client.indexes.videos.retrieve(
-          TWELVE_LABS_INDEX_ID,
-          videoId
-        );
-
-        // Safely access duration
-        if ("metadata" in video && (video as any).metadata?.duration) {
-          videoDuration = (video as any).metadata.duration;
-        }
-
-        console.log("12Labs video response:", JSON.stringify(video, null, 2));
-
-        // Determine timestamp for thumbnail (avoid black start frame)
-        let thumbTime = 0;
-        if (videoDuration > 10) {
-          thumbTime = 5;
-        } else if (videoDuration > 0) {
-          thumbTime = videoDuration / 2;
-        }
-
-        // Fetch thumbnail directly from API to control timestamp
-        console.log(`Fetching thumbnail at ${thumbTime}s...`);
-        // Use the same base URL version as other calls if possible, but search said v1.2
-        // We'll try to construct the URL manually.
-        // Note: The SDK might not expose this easily, so we use axios.
-        const thumbUrl = `https://api.twelvelabs.io/v1.2/indexes/${TWELVE_LABS_INDEX_ID}/videos/${videoId}/thumbnail`;
-
-        let thumbResponse;
-        try {
-          thumbResponse = await axios.get(thumbUrl, {
-            headers: { "x-api-key": apiKey },
-            params: { time: thumbTime },
-            responseType: "arraybuffer",
-          });
-        } catch (e) {
-          console.warn(
-            "Failed to fetch custom thumbnail, falling back to default URL"
-          );
-          // Fallback to existing logic if custom fetch fails
-          const externalThumbnailUrl =
-            (video as any).thumbnailUrl ||
-            (video as any).thumbnail_url ||
-            (video as any).hls?.thumbnailUrls?.[0] ||
-            (video as any).hls?.thumbnail_urls?.[0] ||
-            (video as any).metadata?.thumbnail_url;
-
-          if (externalThumbnailUrl) {
-            thumbResponse = await axios.get(externalThumbnailUrl, {
-              responseType: "arraybuffer",
-            });
-          }
-        }
-
-        if (thumbResponse && thumbResponse.data) {
-          const thumbKey = `thumbnails/${assetId}.jpg`;
-
-          await s3Client.send(
-            new PutObjectCommand({
-              Bucket: BUCKET_NAME,
-              Key: thumbKey,
-              Body: thumbResponse.data,
-              ContentType: "image/jpeg",
-            })
-          );
-
-          thumbnailUrl = `s3://${BUCKET_NAME}/${thumbKey}`;
-          console.log(`Thumbnail stored at ${thumbnailUrl}`);
-        } else {
-          console.warn("No thumbnail could be retrieved.");
-        }
-      } catch (err) {
-        console.error("Failed to fetch/store thumbnail from 12 Labs", err);
-      }
-
-      // B. Get Transcription & Store in S3
-      try {
-        console.log(`Fetching transcription for video ${videoId}...`);
-
-        const url = `https://api.twelvelabs.io/v1.3/indexes/${TWELVE_LABS_INDEX_ID}/videos/${videoId}`;
-        const response = await axios.get(url, {
-          headers: {
-            "x-api-key": apiKey,
-          },
-          params: {
-            transcription: true,
-          },
-        });
-
-        const data = response.data;
-        // The transcription is in data.transcription
-        const transcriptionData = data.transcription;
-
-        if (transcriptionData && Array.isArray(transcriptionData)) {
-          // Store in S3
-          const key = `transcriptions/${assetId}.json`;
-          await s3Client.send(
-            new PutObjectCommand({
-              Bucket: BUCKET_NAME,
-              Key: key,
-              Body: JSON.stringify(transcriptionData),
-              ContentType: "application/json",
-            })
-          );
-
-          // Store as S3 URI, not public URL
-          transcriptionUrl = `s3://${BUCKET_NAME}/${key}`;
-          console.log("Transcription stored at", transcriptionUrl);
-        } else {
-          console.warn("No transcription data found in response", data);
-        }
-      } catch (err) {
-        console.error("Failed to fetch/store transcription", err);
-      }
-    }
-
-    // 3. Update DynamoDB
-    await docClient.send(
-      new UpdateCommand({
-        TableName: TABLE_NAME,
-        Key: { assetId },
-        UpdateExpression:
-          "set #s = :status, twelveLabsVideoId = :vid, thumbnailUrl = :thumb, transcriptionUrl = :trans, #dur = :dur, updatedAt = :ua",
-        ExpressionAttributeNames: {
-          "#s": "status",
-          "#dur": "duration",
-        },
-        ExpressionAttributeValues: {
-          ":status": "READY",
-          ":vid": videoId || "unknown",
-          ":thumb": thumbnailUrl,
-          ":trans": transcriptionUrl,
-          ":dur": videoDuration,
-          ":ua": new Date().toISOString(),
-        },
-      })
-    );
-
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: "OK",
-        status: "READY",
-      }),
-    };
   } catch (error) {
     console.error("Error processing webhook:", error);
     return {
@@ -321,3 +200,295 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     };
   }
 };
+
+/**
+ * Handle completion of a single (non-chunked) video indexing
+ */
+async function handleSingleVideoCompletion(
+  assetId: string,
+  videoId: string
+): Promise<{ statusCode: number; headers?: any; body: string }> {
+  // Fetch 12 Labs API Key to get transcription
+  const secretVal12Labs = await secretsClient.send(
+    new GetSecretValueCommand({ SecretId: SECRET_ARN })
+  );
+  const apiKey = secretVal12Labs.SecretString;
+  let transcriptionUrl = null;
+  let videoDuration = 0;
+
+  if (apiKey && videoId && videoId !== "unknown") {
+    const client = new TwelveLabs({ apiKey });
+
+    // Get video metadata for duration
+    try {
+      const video = await client.indexes.videos.retrieve(
+        TWELVE_LABS_INDEX_ID,
+        videoId
+      );
+
+      // Safely access duration
+      if ("metadata" in video && (video as any).metadata?.duration) {
+        videoDuration = (video as any).metadata.duration;
+      }
+
+      console.log("12Labs video response:", JSON.stringify(video, null, 2));
+    } catch (err) {
+      console.error("Failed to fetch video metadata from 12 Labs", err);
+    }
+
+    // Get Transcription & Store in S3
+    try {
+      console.log(`Fetching transcription for video ${videoId}...`);
+
+      const url = `https://api.twelvelabs.io/v1.3/indexes/${TWELVE_LABS_INDEX_ID}/videos/${videoId}`;
+      const response = await axios.get(url, {
+        headers: {
+          "x-api-key": apiKey,
+        },
+        params: {
+          transcription: true,
+        },
+      });
+
+      const data = response.data;
+      const transcriptionData = data.transcription;
+
+      if (transcriptionData && Array.isArray(transcriptionData)) {
+        const key = `transcriptions/${assetId}.json`;
+        await s3Client.send(
+          new PutObjectCommand({
+            Bucket: BUCKET_NAME,
+            Key: key,
+            Body: JSON.stringify(transcriptionData),
+            ContentType: "application/json",
+          })
+        );
+
+        transcriptionUrl = `s3://${BUCKET_NAME}/${key}`;
+        console.log("Transcription stored at", transcriptionUrl);
+      } else {
+        console.warn("No transcription data found in response", data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch/store transcription", err);
+    }
+  }
+
+  // Update DynamoDB
+  await docClient.send(
+    new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { assetId },
+      UpdateExpression:
+        "SET #s = :status, twelveLabsVideoId = :vid, transcriptionUrl = :trans, #dur = :dur, updatedAt = :ua",
+      ExpressionAttributeNames: {
+        "#s": "status",
+        "#dur": "duration",
+      },
+      ExpressionAttributeValues: {
+        ":status": "READY",
+        ":vid": videoId || "unknown",
+        ":trans": transcriptionUrl,
+        ":dur": videoDuration,
+        ":ua": new Date().toISOString(),
+      },
+    })
+  );
+
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message: "OK",
+      status: "READY",
+    }),
+  };
+}
+
+/**
+ * Handle completion of a chunk indexing task
+ */
+async function handleChunkCompletion(
+  chunkTask: any,
+  videoId: string,
+  taskId: string
+): Promise<{ statusCode: number; headers?: any; body: string }> {
+  const { assetId, chunkIndex } = chunkTask;
+
+  console.log(
+    `Chunk ${chunkIndex} completed for asset ${assetId}, videoId: ${videoId}`
+  );
+
+  // Get current asset
+  const assetRes = await docClient.send(
+    new GetCommand({
+      TableName: TABLE_NAME,
+      Key: { assetId },
+    })
+  );
+
+  if (!assetRes.Item) {
+    console.error("Asset not found for chunk task:", assetId);
+    return {
+      statusCode: 404,
+      body: JSON.stringify({ error: "Asset not found" }),
+    };
+  }
+
+  const asset = assetRes.Item;
+  const chunks: ChunkInfo[] = asset.chunks || [];
+
+  // Update the chunk with the videoId
+  const chunkToUpdate = chunks.find((c) => c.chunkIndex === chunkIndex);
+  if (chunkToUpdate) {
+    chunkToUpdate.videoId = videoId;
+  } else {
+    console.error(`Chunk ${chunkIndex} not found in asset chunks`);
+  }
+
+  // Check if all chunks are now complete
+  const pendingChunks = chunks.filter((c) => !c.videoId).length;
+  const allChunksComplete = pendingChunks === 0;
+
+  console.log(
+    `Chunk status: ${chunks.length - pendingChunks}/${chunks.length} complete`
+  );
+
+  if (allChunksComplete) {
+    // All chunks are indexed - finalize the asset
+    console.log(`All chunks complete for asset ${assetId}, finalizing...`);
+
+    let totalDuration = 0;
+
+    const secretVal12Labs = await secretsClient.send(
+      new GetSecretValueCommand({ SecretId: SECRET_ARN })
+    );
+    const apiKey = secretVal12Labs.SecretString;
+
+    if (apiKey) {
+      // Calculate total duration from chunks
+      totalDuration = chunks.reduce((max, c) => Math.max(max, c.endOffset), 0);
+
+      // Aggregate transcriptions from all chunks
+      try {
+        const allTranscriptions: any[] = [];
+
+        for (const chunk of chunks.sort(
+          (a, b) => a.chunkIndex - b.chunkIndex
+        )) {
+          if (!chunk.videoId) continue;
+
+          try {
+            const url = `https://api.twelvelabs.io/v1.3/indexes/${TWELVE_LABS_INDEX_ID}/videos/${chunk.videoId}`;
+            const response = await axios.get(url, {
+              headers: { "x-api-key": apiKey },
+              params: { transcription: true },
+            });
+
+            const transcriptionData = response.data?.transcription;
+            if (transcriptionData && Array.isArray(transcriptionData)) {
+              // Adjust timestamps to original video timeline
+              for (const segment of transcriptionData) {
+                allTranscriptions.push({
+                  ...segment,
+                  start: (segment.start || 0) + chunk.startOffset,
+                  end: (segment.end || 0) + chunk.startOffset,
+                });
+              }
+            }
+          } catch (err) {
+            console.error(
+              `Failed to fetch transcription for chunk ${chunk.chunkIndex}:`,
+              err
+            );
+          }
+        }
+
+        if (allTranscriptions.length > 0) {
+          // Sort by start time and dedupe overlaps
+          allTranscriptions.sort((a, b) => a.start - b.start);
+
+          const key = `transcriptions/${assetId}.json`;
+          await s3Client.send(
+            new PutObjectCommand({
+              Bucket: BUCKET_NAME,
+              Key: key,
+              Body: JSON.stringify(allTranscriptions),
+              ContentType: "application/json",
+            })
+          );
+          console.log(
+            `Aggregated transcription stored at s3://${BUCKET_NAME}/${key}`
+          );
+        }
+      } catch (err) {
+        console.error("Failed to aggregate transcriptions:", err);
+      }
+    }
+
+    // Update asset as READY
+    await docClient.send(
+      new UpdateCommand({
+        TableName: TABLE_NAME,
+        Key: { assetId },
+        UpdateExpression:
+          "SET #s = :status, chunks = :chunks, #dur = :dur, pendingChunks = :pending, updatedAt = :ua",
+        ExpressionAttributeNames: {
+          "#s": "status",
+          "#dur": "duration",
+        },
+        ExpressionAttributeValues: {
+          ":status": "READY",
+          ":chunks": chunks,
+          ":dur": totalDuration,
+          ":pending": 0,
+          ":ua": new Date().toISOString(),
+        },
+      })
+    );
+
+    console.log(`Asset ${assetId} is now READY`);
+  } else {
+    // Still waiting for more chunks
+    await docClient.send(
+      new UpdateCommand({
+        TableName: TABLE_NAME,
+        Key: { assetId },
+        UpdateExpression:
+          "SET chunks = :chunks, pendingChunks = :pending, updatedAt = :ua",
+        ExpressionAttributeValues: {
+          ":chunks": chunks,
+          ":pending": pendingChunks,
+          ":ua": new Date().toISOString(),
+        },
+      })
+    );
+
+    console.log(`Asset ${assetId} waiting for ${pendingChunks} more chunk(s)`);
+  }
+
+  // Delete the chunk task entry (it's served its purpose)
+  if (CHUNK_TASKS_TABLE) {
+    try {
+      await docClient.send(
+        new DeleteCommand({
+          TableName: CHUNK_TASKS_TABLE,
+          Key: { taskId },
+        })
+      );
+    } catch (err) {
+      console.warn("Failed to delete chunk task entry:", err);
+    }
+  }
+
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message: "Chunk processed",
+      assetId,
+      chunkIndex,
+      allComplete: pendingChunks === 0,
+    }),
+  };
+}

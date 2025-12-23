@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useDispatch } from "react-redux";
 import { addAsset, updateAssetStatus } from "@/store/assetsSlice";
-import { ArrowRight, Upload, Loader2 } from "lucide-react";
+import { ArrowRight, Upload, Loader2, AlertCircle } from "lucide-react";
 import {
   getUploadCredentials,
   uploadToS3,
@@ -18,6 +18,9 @@ import {
 } from "@/services/api";
 import { cn } from "@/lib/utils";
 import type { AppDispatch } from "@/store/store";
+
+// Maximum video duration in seconds (2 hours)
+const MAX_VIDEO_DURATION_SECONDS = 120 * 60;
 
 interface UploadWizardProps {
   open: boolean;
@@ -36,6 +39,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
     "idle" | "uploading" | "done" | "error"
   >("idle");
   const [uploadPercentage, setUploadPercentage] = useState(0);
+  const [durationError, setDurationError] = useState<string | null>(null);
 
   // Store upload info for background upload
   const uploadInfoRef = useRef<UploadCredentialsResponse | null>(null);
@@ -56,6 +60,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
     setIsCreatingAsset(true);
     setUploadProgress("uploading");
     setUploadPercentage(0);
+    setDurationError(null);
 
     // 1. Get Duration on Client Side
     let duration = 0;
@@ -78,6 +83,17 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
       console.warn("Error getting video duration:", err);
     }
 
+    // 2. Validate duration (max 2 hours)
+    if (duration > MAX_VIDEO_DURATION_SECONDS) {
+      const durationMinutes = Math.round(duration / 60);
+      setDurationError(
+        `Video is too long (${durationMinutes} minutes). Maximum allowed duration is 120 minutes.`
+      );
+      setIsCreatingAsset(false);
+      setUploadProgress("idle");
+      return;
+    }
+
     try {
       // 2. Get temporary credentials for multipart upload
       const uploadInfo = await getUploadCredentials(file.type, {
@@ -93,8 +109,6 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
       const newAsset = {
         id: uploadInfo.assetId,
         title: file.name,
-        thumbnail:
-          "https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?w=800&auto=format&fit=crop&q=60",
         status: "uploading" as const,
         format: "1080p",
         size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
@@ -156,12 +170,14 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
       setAssetId(null);
       setUploadProgress("idle");
       setIsCreatingAsset(false);
+      setDurationError(null);
     }, 300);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setFile(e.target.files[0]);
+      setDurationError(null); // Clear any previous duration error
     }
   };
 
@@ -231,7 +247,15 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
           </p>
         </DialogHeader>
 
-        <div className="py-4 min-h-[300px]">{renderStepContent()}</div>
+        <div className="py-4 min-h-[300px]">
+          {renderStepContent()}
+          {durationError && (
+            <div className="mt-4 p-3 bg-destructive/10 border border-destructive/20 rounded-lg flex items-start gap-2">
+              <AlertCircle className="w-5 h-5 text-destructive flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-destructive">{durationError}</p>
+            </div>
+          )}
+        </div>
 
         <DialogFooter className="flex justify-end sm:justify-end">
           <Button

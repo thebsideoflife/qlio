@@ -5,22 +5,14 @@ import {
   PutCommand,
   GetCommand,
 } from "@aws-sdk/lib-dynamodb";
-import {
-  SecretsManagerClient,
-  GetSecretValueCommand,
-} from "@aws-sdk/client-secrets-manager";
-import { TwelveLabs } from "twelvelabs-js";
 import { randomUUID } from "crypto";
 import { checkAuth } from "../utils/auth";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
-const secretsClient = new SecretsManagerClient({});
 
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
-const TWELVE_LABS_INDEX_ID = process.env.TWELVE_LABS_INDEX_ID!;
-const SECRET_ARN = process.env.SECRET_ARN!;
 
 interface Segment {
   id: string;
@@ -74,9 +66,9 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     }
 
     const asset = assetRes.Item;
-    const videoId = asset.twelveLabsVideoId;
 
-    if (!videoId || videoId === "unknown") {
+    // Check asset status - must be READY before creating a project
+    if (asset.status !== "READY") {
       return {
         statusCode: 400,
         headers: {
@@ -84,17 +76,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
           "Access-Control-Allow-Origin": "*",
         },
         body: JSON.stringify({
-          error: "Asset has not been indexed by 12 Labs yet.",
+          error: "Asset is not ready yet. Please wait for indexing to complete.",
         }),
       };
     }
-
-    // Get 12 Labs API Key
-    const secretVal = await secretsClient.send(
-      new GetSecretValueCommand({ SecretId: SECRET_ARN })
-    );
-    const apiKey = secretVal.SecretString;
-    if (!apiKey) throw new Error("12Labs API Key not found");
 
     // 3. (Optional) Generate Initial Microdrama Segments
     // This logic is now primarily handled in the Editor via 'generateSegments' API,
