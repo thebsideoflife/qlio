@@ -52,9 +52,10 @@ type StepConfig = {
 };
 
 // Duration options per purpose (auto = let agent decide)
+// Note: binge has no duration options - it always uses the full video split into episodes
 const AUTO_DURATION = "Auto";
 const DURATIONS: Record<string, string[]> = {
-  binge: ["3 min", "5 min", "10 min"], // No auto - it's the full video
+  binge: [], // No duration selection - always full video
   highlights: [AUTO_DURATION, "15s", "30s", "60s", "90s"],
   trailer: [AUTO_DURATION, "90s", "2 min", "2.5 min"],
   tunein: [AUTO_DURATION, "15s", "30s"],
@@ -64,8 +65,8 @@ const DURATIONS: Record<string, string[]> = {
   social_segment: [AUTO_DURATION, "15s", "30s", "60s"],
 };
 
-// Check if purpose supports auto duration
-const supportsAutoDuration = (purpose: string) => purpose !== "binge";
+// Check if purpose needs duration selection
+const needsDurationSelection = (purpose: string) => purpose !== "binge";
 
 const CONTENT_TYPES: SelectionOption[] = [
   { value: "tv", label: "TV", icon: Tv, tooltip: "Television series content" },
@@ -239,16 +240,17 @@ export function MicrodramaGenerator({
     setCurrentStep(0);
   };
 
-  // Set duration when purpose changes - default to Auto if supported
+  // Set duration when purpose changes - default to Auto if supported, skip for binge
   const handlePurposeChange = (value: string) => {
-    const defaultDuration = value && supportsAutoDuration(value) ? AUTO_DURATION : "";
+    const defaultDuration = value && needsDurationSelection(value) ? AUTO_DURATION : "";
     setSelections((prev) => ({ ...prev, purpose: value, duration: defaultDuration }));
   };
 
   const availableDurations = selections.purpose ? DURATIONS[selections.purpose] || [] : [];
-  const isComplete = STEPS.every((step) => selections[step.key]) && selections.duration;
-  const completedSteps = STEPS.filter((step) => selections[step.key]).length + (selections.duration ? 1 : 0);
-  const totalSteps = STEPS.length + 1; // +1 for duration
+  const needsDuration = selections.purpose && needsDurationSelection(selections.purpose);
+  const isComplete = STEPS.every((step) => selections[step.key]) && (!needsDuration || selections.duration);
+  const completedSteps = STEPS.filter((step) => selections[step.key]).length + (needsDuration && selections.duration ? 1 : 0);
+  const totalSteps = STEPS.length + (needsDuration ? 1 : 0); // +1 for duration only if needed
 
   // Auto-scroll to bottom when step changes
   useEffect(() => {
@@ -378,7 +380,8 @@ function ChatView({
   availableDurations: string[];
   scrollRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  const showDurationStep = currentStep >= steps.length - 1 && selections.purpose;
+  // Only show duration step if the purpose requires it (not for binge)
+  const showDurationStep = currentStep >= steps.length - 1 && selections.purpose && needsDurationSelection(selections.purpose);
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-4">

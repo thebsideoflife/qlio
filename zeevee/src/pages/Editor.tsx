@@ -335,11 +335,11 @@ export default function Editor() {
     if (!projectId) return;
     setIsGenerating(true);
 
-    // Pass current video duration if available
-    const currentDuration = videoRef.current
+    // Pass current video duration as separate field (don't overwrite duration selection)
+    const videoDuration = videoRef.current
       ? videoRef.current.duration
       : duration;
-    const metadata = { ...selections, duration: currentDuration };
+    const metadata = { ...selections, videoDuration };
 
     try {
       const result = await generateSegments(projectId, metadata);
