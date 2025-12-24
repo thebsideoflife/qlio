@@ -99,10 +99,18 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       }
     }
 
+    // Presign last render URL if exists
+    let lastRenderUrl: string | undefined;
+    if (project.lastRenderS3Uri) {
+      lastRenderUrl =
+        (await presignS3Uri(project.lastRenderS3Uri)) || undefined;
+    }
+
     // Combine data
     const responseData = {
       ...project,
       asset,
+      lastRenderUrl,
     };
 
     return {

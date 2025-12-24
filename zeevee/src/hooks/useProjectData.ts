@@ -6,6 +6,7 @@ import {
   setTranscriptWords,
   setCaptionSettings,
   setGlobalFraming,
+  setLastRenderUrl,
 } from "@/store/editorSlice";
 import { getProject } from "@/services/api";
 import type { CaptionWord } from "@/remotion/types";
@@ -39,6 +40,11 @@ export function useProjectData(projectId: string | undefined) {
       // Load global framing settings if they exist
       if (project.globalFraming) {
         dispatch(setGlobalFraming(project.globalFraming));
+      }
+
+      // Load last render URL if it exists
+      if (project.lastRenderUrl) {
+        dispatch(setLastRenderUrl(project.lastRenderUrl));
       }
 
       dispatch(

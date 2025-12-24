@@ -188,6 +188,7 @@ export const updateProject = async (
     segments?: Segment[];
     captionSettings?: CaptionSettings;
     globalFraming?: GlobalFramingSettings;
+    lastRenderS3Uri?: string;
   }
 ) => {
   const response = await axios.patch(`${API_URL}/projects/${projectId}`, data, {
@@ -265,6 +266,7 @@ export interface RenderJobResponse {
   completedAt?: string;
   error?: string;
   downloadUrl?: string;
+  outputS3Uri?: string;
 }
 
 export const startRender = async (
