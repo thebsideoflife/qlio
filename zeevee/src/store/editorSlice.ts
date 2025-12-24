@@ -227,7 +227,7 @@ export const editorSlice = createSlice({
     },
     addSegment: (state, action: PayloadAction<{ atTime: number }>) => {
       const { atTime } = action.payload;
-      const defaultDuration = 10;
+      const defaultDuration = 60;
       const endTime = Math.min(atTime + defaultDuration, state.duration);
 
       // Don't add if it would be zero-length

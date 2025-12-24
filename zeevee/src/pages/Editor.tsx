@@ -88,7 +88,24 @@ export default function Editor() {
   );
 
   // Framing preview state
-  const isCropMode = currentFraming.mode === "crop";
+  // When no segment selected, use local preview state that doesn't persist
+  const [previewFramingMode, setPreviewFramingMode] = useState<"crop" | "fit">(
+    "crop"
+  );
+  const [previewFocus, setPreviewFocus] = useState({ x: 0.5, y: 0.5 });
+
+  const isCropMode = selectedSegment
+    ? currentFraming.mode === "crop"
+    : previewFramingMode === "crop";
+
+  // Use segment framing when selected, otherwise use preview values
+  const displayFocusX = selectedSegment
+    ? currentFraming.focusX
+    : previewFocus.x;
+  const displayFocusY = selectedSegment
+    ? currentFraming.focusY
+    : previewFocus.y;
+
   const framingContainerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef<{
@@ -102,81 +119,94 @@ export default function Editor() {
   const hasDraggedRef = useRef(false);
 
   // Handle drag to reposition video within frame
+  // Uses window-level listeners to capture mouse events even when cursor leaves the container
   const handleFramingMouseDown = (e: React.MouseEvent) => {
-    if (!isCropMode || !selectedSegmentId) return;
+    if (!isCropMode) return;
     e.preventDefault();
     setIsDragging(true);
     hasDraggedRef.current = false;
     dragStartRef.current = {
       x: e.clientX,
       y: e.clientY,
-      focusX: currentFraming.focusX,
-      focusY: currentFraming.focusY,
+      focusX: displayFocusX,
+      focusY: displayFocusY,
     };
   };
 
-  const handleFramingMouseMove = (e: React.MouseEvent) => {
-    if (
-      !isDragging ||
-      !dragStartRef.current ||
-      !framingContainerRef.current ||
-      !selectedSegmentId
-    )
-      return;
+  // Use effect to attach window-level listeners when dragging
+  useEffect(() => {
+    if (!isDragging) return;
 
-    const container = framingContainerRef.current;
-    const rect = container.getBoundingClientRect();
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!dragStartRef.current || !framingContainerRef.current) return;
 
-    // Calculate delta as percentage of container size
-    const deltaX = (e.clientX - dragStartRef.current.x) / rect.width;
-    const deltaY = (e.clientY - dragStartRef.current.y) / rect.height;
+      const container = framingContainerRef.current;
+      const rect = container.getBoundingClientRect();
 
-    // Mark as dragged if moved more than a threshold
-    if (Math.abs(deltaX) > 0.01 || Math.abs(deltaY) > 0.01) {
-      hasDraggedRef.current = true;
-    }
+      const deltaX = (e.clientX - dragStartRef.current.x) / rect.width;
+      const deltaY = (e.clientY - dragStartRef.current.y) / rect.height;
 
-    // Invert: dragging right moves focus left (shows more of left side)
-    const newFocusX = Math.max(
-      0,
-      Math.min(1, dragStartRef.current.focusX - deltaX)
-    );
-    const newFocusY = Math.max(
-      0,
-      Math.min(1, dragStartRef.current.focusY - deltaY)
-    );
+      if (Math.abs(deltaX) > 0.01 || Math.abs(deltaY) > 0.01) {
+        hasDraggedRef.current = true;
+      }
 
-    dispatch(
-      updateSegmentFraming({
-        segmentId: selectedSegmentId,
-        framing: {
-          focusX: newFocusX,
-          focusY: newFocusY,
-        },
-      })
-    );
-  };
+      const newFocusX = Math.max(
+        0,
+        Math.min(1, dragStartRef.current.focusX - deltaX)
+      );
+      const newFocusY = Math.max(
+        0,
+        Math.min(1, dragStartRef.current.focusY - deltaY)
+      );
 
-  const handleFramingMouseUp = (e?: React.MouseEvent) => {
-    const wasDragging = isDragging && hasDraggedRef.current;
-    setIsDragging(false);
-    dragStartRef.current = null;
+      if (selectedSegmentId) {
+        dispatch(
+          updateSegmentFraming({
+            segmentId: selectedSegmentId,
+            framing: { focusX: newFocusX, focusY: newFocusY },
+          })
+        );
+      } else {
+        setPreviewFocus({ x: newFocusX, y: newFocusY });
+      }
+    };
 
-    // If we didn't actually drag, treat it as a click to play/pause
-    if (!wasDragging && e) {
+    const handleMouseUp = () => {
+      setIsDragging(false);
+      dragStartRef.current = null;
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDragging, selectedSegmentId, dispatch]);
+
+  // Handle click on video container (play/pause) - only if we didn't drag
+  const handleFramingClick = (e: React.MouseEvent) => {
+    if (!hasDraggedRef.current) {
       handleVideoClick(e);
     }
+    hasDraggedRef.current = false;
   };
 
-  // Toggle crop/fit mode for current segment
+  // Toggle crop/fit mode for current segment (or preview mode if no segment)
   const toggleFramingMode = () => {
-    if (!selectedSegmentId) return;
-    dispatch(
-      updateSegmentFraming({
-        segmentId: selectedSegmentId,
-        framing: { mode: isCropMode ? "fit" : "crop" },
-      })
-    );
+    const newMode = isCropMode ? "fit" : "crop";
+    if (selectedSegmentId) {
+      dispatch(
+        updateSegmentFraming({
+          segmentId: selectedSegmentId,
+          framing: { mode: newMode },
+        })
+      );
+    } else {
+      // Just toggle preview mode (doesn't persist)
+      setPreviewFramingMode(newMode);
+    }
   };
 
   // Generate a clean tooltip message from framing result
@@ -485,12 +515,7 @@ export default function Editor() {
                 maxWidth: aspectRatioValue >= 1 ? "100%" : "85%",
               }}
               onMouseDown={isCropMode ? handleFramingMouseDown : undefined}
-              onMouseMove={isCropMode ? handleFramingMouseMove : undefined}
-              onMouseUp={isCropMode ? handleFramingMouseUp : undefined}
-              onMouseLeave={
-                isCropMode ? () => handleFramingMouseUp() : undefined
-              }
-              onClick={!isCropMode ? handleVideoClick : undefined}
+              onClick={isCropMode ? handleFramingClick : handleVideoClick}
             >
               <video
                 ref={videoRef}
@@ -499,9 +524,7 @@ export default function Editor() {
                 style={{
                   objectFit: isCropMode ? "cover" : "contain",
                   objectPosition: isCropMode
-                    ? `${currentFraming.focusX * 100}% ${
-                        currentFraming.focusY * 100
-                      }%`
+                    ? `${displayFocusX * 100}% ${displayFocusY * 100}%`
                     : "center center",
                 }}
                 onLoadedMetadata={(e) =>
@@ -511,37 +534,35 @@ export default function Editor() {
 
               {/* Overlay Controls - Top Right */}
               <div className="absolute top-2 right-2 flex items-center gap-1.5">
-                {/* Crop/Fit Toggle - shows what clicking will do */}
-                {selectedSegment && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleFramingMode();
-                    }}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    className={cn(
-                      "flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors",
-                      "bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm"
-                    )}
-                    title={
-                      isCropMode
-                        ? "Switch to Fit mode\nShows full video with letterboxing"
-                        : "Switch to Crop mode\nFills frame, drag video to reposition"
-                    }
-                  >
-                    {isCropMode ? (
-                      <>
-                        <Maximize2 className="h-3 w-3" />
-                        <span>Fit</span>
-                      </>
-                    ) : (
-                      <>
-                        <Crop className="h-3 w-3" />
-                        <span>Crop</span>
-                      </>
-                    )}
-                  </button>
-                )}
+                {/* Crop/Fit Toggle - always visible */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleFramingMode();
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  className={cn(
+                    "flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors",
+                    "bg-black/60 hover:bg-black/80 text-white backdrop-blur-sm"
+                  )}
+                  title={
+                    isCropMode
+                      ? "Switch to Fit mode\nShows full video with letterboxing"
+                      : "Switch to Crop mode\nFills frame, drag video to reposition"
+                  }
+                >
+                  {isCropMode ? (
+                    <>
+                      <Maximize2 className="h-3 w-3" />
+                      <span>Fit</span>
+                    </>
+                  ) : (
+                    <>
+                      <Crop className="h-3 w-3" />
+                      <span>Crop</span>
+                    </>
+                  )}
+                </button>
 
                 {/* AI Auto-frame Button - only for segments */}
                 {selectedSegment && (
@@ -590,23 +611,27 @@ export default function Editor() {
                 </div>
               )}
 
-              {/* Position sliders - only in crop mode */}
-              {isCropMode && selectedSegment && (
+              {/* Position sliders - visible in crop mode */}
+              {isCropMode && (
                 <>
                   {/* Vertical slider for landscape */}
                   {globalFraming.aspectRatio === "16:9" && (
                     <FramingSlider
                       orientation="vertical"
-                      value={currentFraming.focusY}
+                      value={displayFocusY}
                       aspectRatio={1 / aspectRatioValue}
-                      onChange={(y) =>
-                        dispatch(
-                          updateSegmentFraming({
-                            segmentId: selectedSegmentId!,
-                            framing: { focusY: y },
-                          })
-                        )
-                      }
+                      onChange={(y) => {
+                        if (selectedSegmentId) {
+                          dispatch(
+                            updateSegmentFraming({
+                              segmentId: selectedSegmentId,
+                              framing: { focusY: y },
+                            })
+                          );
+                        } else {
+                          setPreviewFocus((prev) => ({ ...prev, y }));
+                        }
+                      }}
                     />
                   )}
 
@@ -615,20 +640,24 @@ export default function Editor() {
                     globalFraming.aspectRatio === "1:1") && (
                     <FramingSlider
                       orientation="horizontal"
-                      value={currentFraming.focusX}
+                      value={displayFocusX}
                       aspectRatio={
                         globalFraming.aspectRatio === "1:1"
                           ? 1.0 / (16 / 9) // Square frame / landscape video = 9/16
                           : aspectRatioValue // Portrait: 9/16
                       }
-                      onChange={(x) =>
-                        dispatch(
-                          updateSegmentFraming({
-                            segmentId: selectedSegmentId!,
-                            framing: { focusX: x },
-                          })
-                        )
-                      }
+                      onChange={(x) => {
+                        if (selectedSegmentId) {
+                          dispatch(
+                            updateSegmentFraming({
+                              segmentId: selectedSegmentId,
+                              framing: { focusX: x },
+                            })
+                          );
+                        } else {
+                          setPreviewFocus((prev) => ({ ...prev, x }));
+                        }
+                      }}
                     />
                   )}
                 </>
