@@ -13,7 +13,7 @@ import type {
 } from "./types";
 import { DEFAULT_SEGMENT_FRAMING } from "./types";
 import { AutoFramedVideo } from "./AutoFramedVideo";
-import { CaptionText } from "@/components/editor/CaptionText";
+import { CaptionText } from "../components/editor/CaptionText";
 
 interface CaptionDisplayProps {
   captions: CaptionLine[];

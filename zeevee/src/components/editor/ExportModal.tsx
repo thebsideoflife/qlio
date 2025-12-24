@@ -26,6 +26,7 @@ import {
   XCircle,
   Film,
   Captions as CaptionsIcon,
+  Crop,
 } from "lucide-react";
 
 interface ExportModalProps {
@@ -45,6 +46,9 @@ export function ExportModal({
   const captions = useSelector((state: RootState) => state.editor.captions);
   const captionSettings = useSelector(
     (state: RootState) => state.editor.captionSettings
+  );
+  const globalFraming = useSelector(
+    (state: RootState) => state.editor.globalFraming
   );
 
   const [outputFormat, setOutputFormat] = useState<"mp4" | "webm">("mp4");
@@ -112,15 +116,9 @@ export function ExportModal({
     setDownloadUrl(null);
 
     try {
+      // Only send render options - all project data (segments, captions, framing)
+      // is read from the database by the backend for data integrity
       const result = await startRender(projectId, {
-        segments: segments.map((s) => ({
-          id: s.id,
-          startTime: s.startTime,
-          endTime: s.endTime,
-          title: s.title,
-        })),
-        captions,
-        captionSettings,
         outputFormat,
         quality,
       });
@@ -132,7 +130,7 @@ export function ExportModal({
       const error = err as { response?: { data?: { error?: string } } };
       setError(error.response?.data?.error || "Failed to start render");
     }
-  }, [projectId, segments, captions, captionSettings, outputFormat, quality]);
+  }, [projectId, outputFormat, quality]);
 
   const handleDownload = useCallback(() => {
     if (downloadUrl) {
@@ -193,6 +191,19 @@ export function ExportModal({
                   </>
                 ) : (
                   "Disabled"
+                )}
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-muted-foreground">Framing</span>
+              <span className="font-medium flex items-center gap-1">
+                {globalFraming.enabled ? (
+                  <>
+                    <Crop className="h-3 w-3" />
+                    {globalFraming.aspectRatio}
+                  </>
+                ) : (
+                  "Original"
                 )}
               </span>
             </div>

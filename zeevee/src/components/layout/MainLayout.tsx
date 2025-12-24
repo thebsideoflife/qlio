@@ -7,6 +7,7 @@ import {
   Search,
   RefreshCcw,
   ChevronRight,
+  Film,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModeToggle } from "@/components/mode-toggle";
@@ -79,7 +80,9 @@ export function MainLayout({ children }: MainLayoutProps) {
   );
 
   const completedCount = useMemo(
-    () => assets.filter((a) => a.status === "completed" || a.status === "READY").length,
+    () =>
+      assets.filter((a) => a.status === "completed" || a.status === "READY")
+        .length,
     [assets]
   );
 
@@ -87,7 +90,8 @@ export function MainLayout({ children }: MainLayoutProps) {
   useEffect(() => {
     const handleOpenUpload = () => setUploadOpen(true);
     window.addEventListener("open-upload-wizard", handleOpenUpload);
-    return () => window.removeEventListener("open-upload-wizard", handleOpenUpload);
+    return () =>
+      window.removeEventListener("open-upload-wizard", handleOpenUpload);
   }, []);
 
   const handleLogout = () => {
@@ -144,8 +148,7 @@ export function MainLayout({ children }: MainLayoutProps) {
                 </div>
               </div>
             </div>
-            {/* Export button temporarily hidden - pending Lambda quota increase */}
-            {/* <div className="flex gap-2">
+            <div className="flex gap-2">
               <Button
                 variant="default"
                 size="sm"
@@ -154,7 +157,7 @@ export function MainLayout({ children }: MainLayoutProps) {
                 <Film className="h-4 w-4 mr-2" />
                 Export Video
               </Button>
-            </div> */}
+            </div>
           </>
         )}
 

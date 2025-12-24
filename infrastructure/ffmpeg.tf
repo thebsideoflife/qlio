@@ -98,6 +98,12 @@ data "aws_iam_policy_document" "stitch_lambda_policy" {
       "arn:aws:s3:::remotionlambda-*/*"
     ]
   }
+
+  # Remotion client needs to list buckets to find its bucket
+  statement {
+    actions   = ["s3:ListAllMyBuckets"]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_role_policy" "stitch_lambda_policy" {
@@ -132,7 +138,7 @@ resource "aws_lambda_function" "stitch_segments" {
     variables = {
       RENDER_JOBS_TABLE      = aws_dynamodb_table.render_jobs.name
       MEDIA_BUCKET           = aws_s3_bucket.media.id
-      REMOTION_SERVE_URL     = "https://remotionlambda-uswest2-x0ytc7m4sn.s3.us-west-2.amazonaws.com/sites/zeevee-renderer/index.html"
+      REMOTION_SERVE_URL     = "https://remotionlambda-uswest2-0g1upoverr.s3.us-west-2.amazonaws.com/sites/zeevee-renderer/index.html"
       REMOTION_FUNCTION_NAME = "remotion-render-4-0-387-mem2048mb-disk2048mb-240sec"
       AWS_REGION_NAME        = var.aws_region
     }

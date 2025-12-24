@@ -5,6 +5,7 @@ import {
   setProjectMetadata,
   setTranscriptWords,
   setCaptionSettings,
+  setGlobalFraming,
 } from "@/store/editorSlice";
 import { getProject } from "@/services/api";
 import type { CaptionWord } from "@/remotion/types";
@@ -33,6 +34,11 @@ export function useProjectData(projectId: string | undefined) {
       // Load caption settings if they exist
       if (project.captionSettings) {
         dispatch(setCaptionSettings(project.captionSettings));
+      }
+
+      // Load global framing settings if they exist
+      if (project.globalFraming) {
+        dispatch(setGlobalFraming(project.globalFraming));
       }
 
       dispatch(

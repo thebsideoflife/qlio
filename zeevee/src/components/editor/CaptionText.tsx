@@ -1,4 +1,4 @@
-import type { CaptionLine, CaptionStyle } from "@/remotion/types";
+import type { CaptionLine, CaptionStyle } from "../../remotion/types";
 
 interface CaptionTextProps {
   caption: CaptionLine;
@@ -57,4 +57,3 @@ export function CaptionText({ caption, style, currentTime }: CaptionTextProps) {
     </div>
   );
 }
-

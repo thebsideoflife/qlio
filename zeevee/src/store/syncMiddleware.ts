@@ -25,6 +25,7 @@ function startSyncInterval(store: StoreAPI) {
       projectTitle,
       segments,
       captionSettings,
+      globalFraming,
       localVersion,
       syncedVersion,
       isSyncing,
@@ -43,6 +44,7 @@ function startSyncInterval(store: StoreAPI) {
           title: projectTitle,
           segments,
           captionSettings,
+          globalFraming,
         });
         // Only mark the specific version as synced - if user made edits during sync,
         // localVersion will be higher and we'll sync again next interval
