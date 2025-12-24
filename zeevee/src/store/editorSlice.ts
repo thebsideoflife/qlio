@@ -46,6 +46,9 @@ interface EditorState {
   captionSettings: CaptionSettings;
   // Framing state
   globalFraming: GlobalFramingSettings;
+  // Last render - S3 URI for persistence, presigned URL for download
+  lastRenderS3Uri: string | null;
+  lastRenderUrl: string | null;
 }
 
 const initialState: EditorState = {
@@ -66,6 +69,16 @@ const initialState: EditorState = {
   captionSettings: DEFAULT_CAPTION_SETTINGS,
   // Framing state
   globalFraming: DEFAULT_GLOBAL_FRAMING,
+  // Last render
+  lastRenderS3Uri: null,
+  lastRenderUrl: null,
+};
+
+// Helper to mark state as edited (invalidates cached render)
+const markEdited = (state: EditorState) => {
+  state.localVersion++;
+  state.lastRenderS3Uri = null;
+  state.lastRenderUrl = null;
 };
 
 // Helper to merge overlapping segments - uses outermost coordinates (min start, max end)
@@ -131,7 +144,7 @@ export const editorSlice = createSlice({
     },
     updateProjectTitle: (state, action: PayloadAction<string>) => {
       state.projectTitle = action.payload;
-      state.localVersion++;
+      markEdited(state);
     },
     selectSegment: (state, action: PayloadAction<string | null>) => {
       state.selectedSegmentId = action.payload;
@@ -146,7 +159,7 @@ export const editorSlice = createSlice({
       if (segment) {
         segment.startTime = action.payload.start;
         segment.endTime = action.payload.end;
-        state.localVersion++;
+        markEdited(state);
         // Note: merging happens on finalizeSegmentEdit (mouse release)
       }
     },
@@ -209,7 +222,7 @@ export const editorSlice = createSlice({
         };
 
         state.segments.splice(index, 1, newSegment1, newSegment2);
-        state.localVersion++;
+        markEdited(state);
       }
     },
     addSegment: (state, action: PayloadAction<{ atTime: number }>) => {
@@ -243,7 +256,7 @@ export const editorSlice = createSlice({
         (s) => s.startTime <= atTime && s.endTime >= atTime
       );
       state.selectedSegmentId = containingSegment?.id || newSegment.id;
-      state.localVersion++;
+      markEdited(state);
     },
     deleteSegment: (state, action: PayloadAction<string>) => {
       const id = action.payload;
@@ -251,7 +264,7 @@ export const editorSlice = createSlice({
       if (state.selectedSegmentId === id) {
         state.selectedSegmentId = null;
       }
-      state.localVersion++;
+      markEdited(state);
     },
 
     // Sync state management
@@ -290,24 +303,24 @@ export const editorSlice = createSlice({
         ...state.captionSettings.style,
         ...action.payload,
       };
-      state.localVersion++;
+      markEdited(state);
     },
     setCaptionsEnabled: (state, action: PayloadAction<boolean>) => {
       state.captionSettings.enabled = action.payload;
-      state.localVersion++;
+      markEdited(state);
     },
     updateCaptionPosition: (
       state,
       action: PayloadAction<{ x: number; y: number }>
     ) => {
       state.captionSettings.style.position = action.payload;
-      state.localVersion++;
+      markEdited(state);
     },
 
     // Framing actions
     setGlobalFraming: (state, action: PayloadAction<GlobalFramingSettings>) => {
       state.globalFraming = action.payload;
-      state.localVersion++;
+      // Note: setGlobalFraming from API load should NOT set dirty
     },
     setGlobalAspectRatio: (state, action: PayloadAction<AspectRatio>) => {
       state.globalFraming.aspectRatio = action.payload;
@@ -322,11 +335,11 @@ export const editorSlice = createSlice({
           };
         }
       });
-      state.localVersion++;
+      markEdited(state);
     },
     setFramingEnabled: (state, action: PayloadAction<boolean>) => {
       state.globalFraming.enabled = action.payload;
-      state.localVersion++;
+      markEdited(state);
     },
     setSegmentFraming: (
       state,
@@ -337,7 +350,7 @@ export const editorSlice = createSlice({
       );
       if (segment) {
         segment.framing = action.payload.framing;
-        state.localVersion++;
+        markEdited(state);
       }
     },
     updateSegmentFraming: (
@@ -356,7 +369,7 @@ export const editorSlice = createSlice({
           ...action.payload.framing,
           isAiGenerated: false, // User is overriding
         };
-        state.localVersion++;
+        markEdited(state);
       }
     },
     updateSegmentFocusX: (
@@ -372,7 +385,7 @@ export const editorSlice = createSlice({
           focusX: action.payload.focusX,
           isAiGenerated: false,
         };
-        state.localVersion++;
+        markEdited(state);
       }
     },
     applyFramingToAllSegments: (
@@ -386,11 +399,24 @@ export const editorSlice = createSlice({
           isAiGenerated: false,
         };
       });
-      state.localVersion++;
+      markEdited(state);
     },
 
     // Reset state when leaving editor
     resetEditor: () => initialState,
+
+    // Render tracking
+    setLastRender: (
+      state,
+      action: PayloadAction<{ s3Uri: string; url: string }>
+    ) => {
+      state.lastRenderS3Uri = action.payload.s3Uri;
+      state.lastRenderUrl = action.payload.url;
+    },
+    // Called when loading project - only presigned URL available
+    setLastRenderUrl: (state, action: PayloadAction<string | null>) => {
+      state.lastRenderUrl = action.payload;
+    },
   },
 });
 
@@ -424,5 +450,8 @@ export const {
   updateSegmentFocusX,
   applyFramingToAllSegments,
   resetEditor,
+  // Render tracking
+  setLastRender,
+  setLastRenderUrl,
 } = editorSlice.actions;
 export default editorSlice.reducer;

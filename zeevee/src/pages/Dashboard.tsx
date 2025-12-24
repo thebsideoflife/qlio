@@ -88,13 +88,13 @@ export default function Dashboard() {
             )}
           </div>
 
-          {/* Other Assets - 2x2 Grid on the right */}
+          {/* Other Assets - Responsive Grid on the right */}
           {otherAssets.length > 0 && (
-            <div className="flex-1 max-w-xl">
+            <div className="flex-1 min-w-0">
               <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">
                 Other Assets
               </h3>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
                 {otherAssets.map((asset) => {
                   const originalIndex = assets.findIndex(
                     (a) => a.id === asset.id

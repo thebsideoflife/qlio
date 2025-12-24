@@ -32,11 +32,147 @@ const REMOTION_SERVE_URL = process.env.REMOTION_SERVE_URL;
 const REMOTION_FUNCTION_NAME = process.env.REMOTION_FUNCTION_NAME;
 const AWS_REGION_NAME = process.env.AWS_REGION_NAME;
 
+interface SegmentFraming {
+  aspectRatio: "9:16" | "1:1" | "16:9";
+  mode: "crop" | "fit";
+  focusX: number;
+  focusY: number;
+  aiReasoning?: string;
+  isAiGenerated: boolean;
+}
+
 interface Segment {
   id: string;
   startTime: number;
   endTime: number;
   title: string;
+  framing?: SegmentFraming;
+}
+
+interface CaptionWord {
+  start: number;
+  end: number;
+  value: string;
+}
+
+interface CaptionLine {
+  id: string;
+  startTime: number;
+  endTime: number;
+  text: string;
+  words: CaptionWord[];
+}
+
+/**
+ * Adjusts segment timings for the stitched video.
+ * When segments are extracted and concatenated, the new video starts at 0
+ * and each segment follows the previous one.
+ */
+function adjustSegmentsForStitchedVideo(segments: Segment[]): Segment[] {
+  if (!Array.isArray(segments) || segments.length === 0) {
+    return [];
+  }
+
+  let outputTime = 0;
+  return segments.map((segment) => {
+    const duration = segment.endTime - segment.startTime;
+    const adjustedSegment: Segment = {
+      ...segment,
+      startTime: outputTime,
+      endTime: outputTime + duration,
+      framing: segment.framing,
+    };
+    outputTime += duration;
+    return adjustedSegment;
+  });
+}
+
+/**
+ * Adjusts caption timings to match the stitched video.
+ *
+ * Example:
+ *   Original video: [0 -------- seg1(120-150) -------- seg2(200-230) -------- end]
+ *   Stitched video: [seg1(0-30)][seg2(30-60)]
+ *
+ *   Caption at 125s in original:
+ *     - Falls in seg1 (120-150)
+ *     - Offset within seg1: 125 - 120 = 5s
+ *     - Stitched video offset before seg1: 0s
+ *     - New time: 0 + 5 = 5s ✓
+ *
+ *   Caption at 210s in original:
+ *     - Falls in seg2 (200-230)
+ *     - Offset within seg2: 210 - 200 = 10s
+ *     - Stitched video offset before seg2: 30s (duration of seg1)
+ *     - New time: 30 + 10 = 40s ✓
+ */
+function adjustCaptionsForStitchedVideo(
+  captions: CaptionLine[],
+  originalSegments: Segment[]
+): CaptionLine[] {
+  if (!Array.isArray(captions) || !Array.isArray(originalSegments)) {
+    return [];
+  }
+  if (originalSegments.length === 0) return [];
+
+  // Build timeline: for each segment, track the cumulative duration before it
+  const timeline: Array<{
+    originalStart: number;
+    originalEnd: number;
+    stitchedOffset: number; // sum of all previous segment durations
+  }> = [];
+
+  let cumulativeDuration = 0;
+  for (const segment of originalSegments) {
+    timeline.push({
+      originalStart: segment.startTime,
+      originalEnd: segment.endTime,
+      stitchedOffset: cumulativeDuration,
+    });
+    cumulativeDuration += segment.endTime - segment.startTime;
+  }
+
+  // Adjust each caption
+  return captions
+    .map((caption) => {
+      // Find which segment this caption belongs to
+      for (const seg of timeline) {
+        if (
+          caption.startTime >= seg.originalStart &&
+          caption.startTime < seg.originalEnd
+        ) {
+          // Offset within this segment
+          const offsetInSegment = caption.startTime - seg.originalStart;
+          // New time = cumulative duration before this segment + offset within segment
+          const newStart = seg.stitchedOffset + offsetInSegment;
+
+          const captionDuration = caption.endTime - caption.startTime;
+          const maxDuration = seg.originalEnd - caption.startTime; // don't exceed segment
+          const newEnd = newStart + Math.min(captionDuration, maxDuration);
+
+          // Adjust each word the same way
+          const adjustedWords = (caption.words || []).map((word) => {
+            const wordOffsetInSegment = word.start - seg.originalStart;
+            const wordEndOffsetInSegment = word.end - seg.originalStart;
+            return {
+              ...word,
+              start: seg.stitchedOffset + wordOffsetInSegment,
+              end: seg.stitchedOffset + wordEndOffsetInSegment,
+            };
+          });
+
+          return {
+            ...caption,
+            startTime: newStart,
+            endTime: newEnd,
+            words: adjustedWords,
+          };
+        }
+      }
+      // Caption not in any segment - exclude
+      return null;
+    })
+    .filter((c): c is CaptionLine => c !== null);
 }
 
 /**
@@ -403,37 +539,54 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     // This allows ~6-8 parallel video renders without throttling
     const framesPerLambda = 150; // ~5 seconds per worker = massive parallelism
 
+    // Compute adjusted segments and captions here (don't rely on stored values)
+    // The original segments have timestamps from the source video
+    // After stitching, the video starts at 0 and segments are concatenated
+    const adjustedSegments = adjustSegmentsForStitchedVideo(segments);
+    const originalCaptions: CaptionLine[] =
+      updatedJob.inputProps?.captions || [];
+    const adjustedCaptions = adjustCaptionsForStitchedVideo(
+      originalCaptions,
+      segments
+    );
+
+    // Use the composition stored in the job (based on aspect ratio)
+    const compositionId = updatedJob.compositionId || "CaptionedVideoPortrait";
+
     console.log("Remotion render configuration:", {
       jobId,
       totalDuration,
       framesPerLambda,
       estimatedWorkers: Math.ceil((totalDuration * 30) / framesPerLambda),
       videoUrl: stitchedUrl.substring(0, 80) + "...",
+      compositionId,
+      originalSegmentsCount: segments.length,
+      adjustedSegmentsCount: adjustedSegments.length,
+      originalCaptionsCount: originalCaptions.length,
+      adjustedCaptionsCount: adjustedCaptions.length,
+      globalFraming: updatedJob.inputProps?.globalFraming,
     });
-
-    // Calculate actual frame count from stitched video duration
-    const totalFrames = Math.ceil(totalDuration * 30); // 30 fps
 
     const renderResponse = await renderMediaOnLambda({
       region: AWS_REGION_NAME as AwsRegion,
       functionName: REMOTION_FUNCTION_NAME,
       serveUrl: REMOTION_SERVE_URL,
-      composition: "CaptionedVideo",
+      composition: compositionId,
       inputProps: {
         videoUrl: stitchedUrl,
-        segments: [], // No segments - video is already stitched
-        captions: updatedJob.inputProps?.captions || [],
+        // Pass adjusted segments and captions (computed here, not from stored values)
+        segments: adjustedSegments,
+        captions: adjustedCaptions,
         captionSettings: updatedJob.inputProps?.captionSettings,
+        globalFraming: updatedJob.inputProps?.globalFraming,
       },
       codec: updatedJob.outputFormat === "webm" ? "vp8" : "h264",
       outName: `${jobId}.${updatedJob.outputFormat || "mp4"}`,
-      privacy: "no-acl", // Avoid S3 ACL issues - we generate presigned URLs for access
+      privacy: "no-acl",
       framesPerLambda,
-      frameRange: [0, totalFrames - 1], // Render only the actual video frames
-      // Speed optimizations
       imageFormat: "jpeg",
       jpegQuality: 80,
-      concurrencyPerLambda: 1, // Keep at 1 to avoid memory leaks and timeouts
+      concurrencyPerLambda: 1,
     });
 
     console.log("Remotion render started:", {

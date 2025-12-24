@@ -16,7 +16,6 @@ const docClient = DynamoDBDocumentClient.from(client);
 const s3Client = new S3Client({});
 
 const RENDER_JOBS_TABLE = process.env.RENDER_JOBS_TABLE!;
-const RENDERS_BUCKET = process.env.RENDERS_BUCKET!;
 const REMOTION_FUNCTION_NAME = process.env.REMOTION_FUNCTION_NAME;
 const AWS_REGION_NAME = process.env.AWS_REGION_NAME;
 
@@ -220,8 +219,9 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     }
   }
 
-  // Generate presigned download URL if completed
+  // Generate presigned download URL and S3 URI if completed
   let downloadUrl: string | undefined;
+  let outputS3Uri: string | undefined;
   if (job.status === "completed" && job.outputUrl) {
     // outputUrl from Remotion is already a full URL, but we should presign it
     // Extract bucket and key from the URL or use stored values
@@ -243,6 +243,8 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         downloadUrl = await getSignedUrl(s3Client, command, {
           expiresIn: 43200, // 12 hours - gives user time to download
         });
+        // Also return S3 URI for persistent storage
+        outputS3Uri = `s3://${job.bucketName}/${key}`;
         console.log(`Successfully generated presigned URL for job ${jobId}`);
       } catch (error) {
         console.error(
@@ -291,6 +293,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       completedAt: job.completedAt,
       error: job.error,
       downloadUrl,
+      outputS3Uri,
     }),
   };
 };

@@ -137,7 +137,7 @@ const PLATFORMS: SelectionOption[] = [
 const PURPOSES: SelectionOption[] = [
   {
     value: "binge",
-    label: "Binge",
+    label: "Full Length",
     icon: LayoutGrid,
     tooltip: "Split into episodes, keep all content for extended viewing",
   },
@@ -241,13 +241,23 @@ export function MicrodramaGenerator({
 
   // Set duration when purpose changes - default to Auto if supported
   const handlePurposeChange = (value: string) => {
-    const defaultDuration = value && supportsAutoDuration(value) ? AUTO_DURATION : "";
-    setSelections((prev) => ({ ...prev, purpose: value, duration: defaultDuration }));
+    const defaultDuration =
+      value && supportsAutoDuration(value) ? AUTO_DURATION : "";
+    setSelections((prev) => ({
+      ...prev,
+      purpose: value,
+      duration: defaultDuration,
+    }));
   };
 
-  const availableDurations = selections.purpose ? DURATIONS[selections.purpose] || [] : [];
-  const isComplete = STEPS.every((step) => selections[step.key]) && selections.duration;
-  const completedSteps = STEPS.filter((step) => selections[step.key]).length + (selections.duration ? 1 : 0);
+  const availableDurations = selections.purpose
+    ? DURATIONS[selections.purpose] || []
+    : [];
+  const isComplete =
+    STEPS.every((step) => selections[step.key]) && selections.duration;
+  const completedSteps =
+    STEPS.filter((step) => selections[step.key]).length +
+    (selections.duration ? 1 : 0);
   const totalSteps = STEPS.length + 1; // +1 for duration
 
   // Auto-scroll to bottom when step changes
@@ -378,7 +388,8 @@ function ChatView({
   availableDurations: string[];
   scrollRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  const showDurationStep = currentStep >= steps.length - 1 && selections.purpose;
+  const showDurationStep =
+    currentStep >= steps.length - 1 && selections.purpose;
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-4">
@@ -397,7 +408,9 @@ function ChatView({
             key={step.key}
             className={cn(
               "space-y-3 transition-all duration-300",
-              index === currentStep && !showDurationStep ? "opacity-100" : "opacity-70"
+              index === currentStep && !showDurationStep
+                ? "opacity-100"
+                : "opacity-70"
             )}
           >
             {/* Question bubble */}
@@ -406,17 +419,18 @@ function ChatView({
             </div>
 
             {/* Answer or Options */}
-            {isAnswered && (index < currentStep || (isPurposeStep && showDurationStep)) ? (
+            {isAnswered &&
+            (index < currentStep || (isPurposeStep && showDurationStep)) ? (
               // Show selected answer as a chat bubble
               <div className="flex justify-end">
                 <button
-                  onClick={() => isPurposeStep ? onPurposeChange("") : onSelect(step.key, "")}
+                  onClick={() =>
+                    isPurposeStep ? onPurposeChange("") : onSelect(step.key, "")
+                  }
                   className="bg-blue-500/90 text-white rounded-xl px-3 py-1.5 flex items-center gap-2 hover:bg-blue-600 transition-colors shadow-sm"
                 >
                   <selectedOption.icon className="h-3.5 w-3.5" />
-                  <span className="text-sm">
-                    {selectedOption.label}
-                  </span>
+                  <span className="text-sm">{selectedOption.label}</span>
                 </button>
               </div>
             ) : (
@@ -425,7 +439,11 @@ function ChatView({
                 <ChatOptionGrid
                   options={step.options}
                   selected={selections[step.key]}
-                  onSelect={(value) => isPurposeStep ? onPurposeChange(value) : onSelect(step.key, value)}
+                  onSelect={(value) =>
+                    isPurposeStep
+                      ? onPurposeChange(value)
+                      : onSelect(step.key, value)
+                  }
                 />
               </div>
             )}
@@ -437,7 +455,9 @@ function ChatView({
       {showDurationStep && (
         <div className="space-y-3 transition-all duration-300 opacity-100">
           <div className="bg-muted/30 rounded-xl px-3 py-2">
-            <p className="text-sm text-muted-foreground">How long should it be?</p>
+            <p className="text-sm text-muted-foreground">
+              How long should it be?
+            </p>
           </div>
           <div>
             <DurationPicker
@@ -499,7 +519,7 @@ function DurationPicker({
 }) {
   const [customValue, setCustomValue] = useState("");
   const [isEditingCustom, setIsEditingCustom] = useState(false);
-  
+
   // Check if current selection is a custom value (not a preset)
   const isCustomSelected = selected && !durations.includes(selected);
 
