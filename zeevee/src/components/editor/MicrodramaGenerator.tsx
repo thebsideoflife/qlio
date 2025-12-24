@@ -31,179 +31,135 @@ import { SiYoutubeshorts } from "react-icons/si";
 import { cn } from "@/lib/utils";
 import type { LucideIcon } from "lucide-react";
 import type { IconType } from "react-icons";
+import type { AspectRatio } from "@/remotion/types";
 
 interface MicrodramaGeneratorProps {
   onGenerate: (selections: any) => Promise<void>;
   isGenerating: boolean;
+  onAspectRatioChange?: (ratio: AspectRatio) => void;
 }
 
-type SelectionOption = {
+// Platform → Aspect Ratio mapping
+const PLATFORM_ASPECT_RATIOS: Record<string, AspectRatio> = {
+  mobile: "9:16",
+  tiktok: "9:16",
+  ig: "9:16",
+  shorts: "9:16",
+  facebook: "1:1",
+  youtube: "16:9",
+  tv: "16:9",
+  auto: "16:9",
+};
+
+type Option = {
   value: string;
   label: string;
   icon: LucideIcon | IconType;
   tooltip: string;
-  durations?: string[]; // Available durations for this purpose
 };
 
-type StepConfig = {
-  key: string;
-  question: string;
-  options: SelectionOption[];
-};
-
-// Duration options per purpose (auto = let agent decide)
-const AUTO_DURATION = "Auto";
-const DURATIONS: Record<string, string[]> = {
-  binge: ["3 min", "5 min", "10 min"], // No auto - it's the full video
-  highlights: [AUTO_DURATION, "15s", "30s", "60s", "90s"],
-  trailer: [AUTO_DURATION, "90s", "2 min", "2.5 min"],
-  tunein: [AUTO_DURATION, "15s", "30s"],
-  bridge: [AUTO_DURATION, "30s", "60s", "90s"],
-  episode_recap: [AUTO_DURATION, "60s", "90s", "2 min"],
-  season_recap: [AUTO_DURATION, "2 min", "3 min", "5 min"],
-  social_segment: [AUTO_DURATION, "15s", "30s", "60s"],
-};
-
-// Check if purpose supports auto duration
-const supportsAutoDuration = (purpose: string) => purpose !== "binge";
-
-const CONTENT_TYPES: SelectionOption[] = [
-  { value: "tv", label: "TV", icon: Tv, tooltip: "Television series content" },
-  {
-    value: "movie",
-    label: "Movie",
-    icon: Film,
-    tooltip: "Feature film content",
-  },
-  {
-    value: "ugc",
-    label: "UGC",
-    icon: Sparkles,
-    tooltip: "User-generated content",
-  },
+const CONTENT_TYPES: Option[] = [
+  { value: "tv", label: "TV", icon: Tv, tooltip: "Television series" },
+  { value: "movie", label: "Movie", icon: Film, tooltip: "Feature film" },
+  { value: "ugc", label: "UGC", icon: Sparkles, tooltip: "User-generated" },
 ];
 
-const PLATFORMS: SelectionOption[] = [
-  {
-    value: "mobile",
-    label: "Mobile",
-    icon: Smartphone,
-    tooltip: "Native mobile app delivery",
-  },
-  {
-    value: "tv",
-    label: "Smart TV",
-    icon: Tv,
-    tooltip: "Connected TV platforms",
-  },
-  {
-    value: "auto",
-    label: "Automotive",
-    icon: Car,
-    tooltip: "In-vehicle entertainment",
-  },
-  {
-    value: "tiktok",
-    label: "TikTok",
-    icon: FaTiktok,
-    tooltip: "TikTok vertical video",
-  },
+const PLATFORMS: Option[] = [
+  { value: "mobile", label: "Mobile", icon: Smartphone, tooltip: "Mobile app" },
+  { value: "tv", label: "Smart TV", icon: Tv, tooltip: "Connected TV" },
+  { value: "auto", label: "Auto", icon: Car, tooltip: "In-vehicle" },
+  { value: "tiktok", label: "TikTok", icon: FaTiktok, tooltip: "TikTok" },
   {
     value: "ig",
     label: "Reels",
     icon: FaInstagram,
-    tooltip: "Instagram Reels format",
+    tooltip: "Instagram Reels",
   },
   {
     value: "shorts",
-    label: "YT Shorts",
+    label: "Shorts",
     icon: SiYoutubeshorts,
-    tooltip: "YouTube Shorts format",
+    tooltip: "YouTube Shorts",
   },
   {
     value: "facebook",
     label: "Facebook",
     icon: FaFacebook,
-    tooltip: "Facebook video feed",
+    tooltip: "Facebook",
   },
-  {
-    value: "youtube",
-    label: "YouTube",
-    icon: FaYoutube,
-    tooltip: "Standard YouTube video",
-  },
+  { value: "youtube", label: "YouTube", icon: FaYoutube, tooltip: "YouTube" },
 ];
 
-const PURPOSES: SelectionOption[] = [
+const PURPOSES: Option[] = [
   {
     value: "binge",
-    label: "Full Length",
+    label: "Full Video",
     icon: LayoutGrid,
-    tooltip: "Split into episodes, keep all content for extended viewing",
+    tooltip: "Keep all content",
   },
   {
     value: "highlights",
     label: "Highlights",
     icon: Scissors,
-    tooltip: "Extract best moments, cut everything else",
+    tooltip: "Best moments",
   },
   {
     value: "trailer",
     label: "Trailer",
     icon: PlayCircle,
-    tooltip: "2-2.5 minute promotional preview",
+    tooltip: "Promo preview",
   },
   {
     value: "tunein",
     label: "Tune-In",
     icon: Clock,
-    tooltip: "Hero (30s) or Social (15s) tune-in spots",
+    tooltip: "Short promo spots",
   },
   {
     value: "bridge",
     label: "Bridge",
     icon: Share2,
-    tooltip: "Transitional content between releases",
+    tooltip: "Transitional content",
   },
   {
     value: "episode_recap",
-    label: "Episode Recap",
+    label: "Ep Recap",
     icon: Repeat,
-    tooltip: "Summary of a single episode",
+    tooltip: "Episode summary",
   },
   {
     value: "season_recap",
     label: "Season Recap",
     icon: ListVideo,
-    tooltip: "Summary of an entire season",
+    tooltip: "Season summary",
   },
   {
     value: "social_segment",
-    label: "Social Segment",
+    label: "Social",
     icon: Sparkles,
-    tooltip: "Shareable social media clip",
+    tooltip: "Social clip",
   },
 ];
 
-const STEPS: StepConfig[] = [
-  {
-    key: "type",
-    question: "What kind of content are we working with?",
-    options: CONTENT_TYPES,
-  },
-  {
-    key: "platform",
-    question: "Where should this live?",
-    options: PLATFORMS,
-  },
-  {
-    key: "purpose",
-    question: "What would you like to create?",
-    options: PURPOSES,
-  },
-];
+// Duration presets per purpose
+const DURATION_PRESETS: Record<string, [string, string]> = {
+  highlights: ["30s", "60s"],
+  trailer: ["90s", "2 min"],
+  tunein: ["15s", "30s"],
+  bridge: ["30s", "60s"],
+  episode_recap: ["60s", "90s"],
+  season_recap: ["2 min", "3 min"],
+  social_segment: ["15s", "30s"],
+};
 
-const DEFAULT_SELECTIONS = {
+type Selections = {
+  type: string;
+  platform: string;
+  purpose: string;
+  duration: string;
+};
+
+const INITIAL: Selections = {
   type: "",
   platform: "",
   purpose: "",
@@ -213,73 +169,62 @@ const DEFAULT_SELECTIONS = {
 export function MicrodramaGenerator({
   onGenerate,
   isGenerating,
+  onAspectRatioChange,
 }: MicrodramaGeneratorProps) {
-  const [selections, setSelections] =
-    useState<Record<string, string>>(DEFAULT_SELECTIONS);
+  const [selections, setSelections] = useState<Selections>(INITIAL);
   const [viewMode, setViewMode] = useState<"chat" | "compact">("chat");
-  const [currentStep, setCurrentStep] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const updateSelection = (key: string, value: string) => {
-    setSelections((prev) => ({ ...prev, [key]: value }));
-  };
-
-  const handleChatSelect = (key: string, value: string) => {
-    updateSelection(key, value);
-    // Auto-advance to next step after selection
-    setTimeout(() => {
-      if (currentStep < STEPS.length - 1) {
-        setCurrentStep((prev) => prev + 1);
-      }
-    }, 300);
-  };
-
-  const handleReset = () => {
-    setSelections(DEFAULT_SELECTIONS);
-    setCurrentStep(0);
-  };
-
-  // Set duration when purpose changes - default to Auto if supported
-  const handlePurposeChange = (value: string) => {
-    const defaultDuration =
-      value && supportsAutoDuration(value) ? AUTO_DURATION : "";
-    setSelections((prev) => ({
-      ...prev,
-      purpose: value,
-      duration: defaultDuration,
-    }));
-  };
-
-  const availableDurations = selections.purpose
-    ? DURATIONS[selections.purpose] || []
-    : [];
+  const needsDuration = selections.purpose && selections.purpose !== "binge";
   const isComplete =
-    STEPS.every((step) => selections[step.key]) && selections.duration;
-  const completedSteps =
-    STEPS.filter((step) => selections[step.key]).length +
-    (selections.duration ? 1 : 0);
-  const totalSteps = STEPS.length + 1; // +1 for duration
+    selections.type &&
+    selections.platform &&
+    selections.purpose &&
+    (selections.purpose === "binge" || selections.duration);
 
-  // Auto-scroll to bottom when step changes
+  // Auto-scroll when selections change
   useEffect(() => {
     if (viewMode === "chat" && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      setTimeout(() => {
+        scrollRef.current?.scrollTo({
+          top: scrollRef.current.scrollHeight,
+          behavior: "smooth",
+        });
+      }, 100);
     }
-  }, [currentStep, viewMode]);
+  }, [selections, viewMode]);
+
+  const select = (key: keyof Selections, value: string) => {
+    setSelections((prev) => {
+      const updated = { ...prev, [key]: value };
+
+      // Platform → aspect ratio
+      if (key === "platform" && onAspectRatioChange) {
+        const ratio = PLATFORM_ASPECT_RATIOS[value];
+        if (ratio) onAspectRatioChange(ratio);
+      }
+
+      // Purpose change → reset duration
+      if (key === "purpose") {
+        updated.duration = value === "binge" ? "" : "Auto";
+      }
+
+      return updated;
+    });
+  };
+
+  const reset = () => setSelections(INITIAL);
 
   return (
-    <TooltipProvider delayDuration={500}>
-      <div className="flex flex-col h-full">
+    <TooltipProvider delayDuration={300}>
+      <div className="flex flex-col h-full bg-background">
         {/* Header */}
-        <div className="flex items-center justify-between p-3 border-b">
+        <div className="flex items-center justify-between px-4 py-3 border-b bg-muted/50">
           <div className="flex items-center gap-2">
-            <Wand2 className="h-4 w-4 text-primary" />
-            <span className="font-semibold text-sm">IQ Director</span>
-            {viewMode === "chat" && (
-              <span className="text-xs text-muted-foreground">
-                Step {Math.min(currentStep + 1, totalSteps)} of {totalSteps}
-              </span>
-            )}
+            <div className="p-1.5 rounded-md bg-blue-500/10">
+              <Wand2 className="h-4 w-4 text-blue-500" />
+            </div>
+            <span className="font-semibold">IQ Director</span>
           </div>
           <div className="flex items-center gap-1">
             <Tooltip>
@@ -287,33 +232,33 @@ export function MicrodramaGenerator({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7"
-                  onClick={handleReset}
+                  className="h-8 w-8"
+                  onClick={reset}
                 >
-                  <RotateCcw className="h-3.5 w-3.5" />
+                  <RotateCcw className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Reset</TooltipContent>
+              <TooltipContent>Reset all</TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7"
+                  className="h-8 w-8"
                   onClick={() =>
                     setViewMode(viewMode === "chat" ? "compact" : "chat")
                   }
                 >
                   {viewMode === "chat" ? (
-                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                    <SlidersHorizontal className="h-4 w-4" />
                   ) : (
-                    <MessageSquare className="h-3.5 w-3.5" />
+                    <MessageSquare className="h-4 w-4" />
                   )}
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                {viewMode === "chat" ? "Compact view" : "Chat view"}
+                {viewMode === "chat" ? "Grid view" : "Chat view"}
               </TooltipContent>
             </Tooltip>
           </div>
@@ -321,40 +266,101 @@ export function MicrodramaGenerator({
 
         {/* Content */}
         {viewMode === "chat" ? (
-          <ChatView
-            steps={STEPS}
-            selections={selections}
-            currentStep={currentStep}
-            onSelect={handleChatSelect}
-            onPurposeChange={handlePurposeChange}
-            availableDurations={availableDurations}
-            scrollRef={scrollRef}
-          />
+          <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-5">
+            {/* Content Type */}
+            <ChatQuestion
+              question="What kind of content?"
+              options={CONTENT_TYPES}
+              selected={selections.type}
+              onSelect={(v) => select("type", v)}
+            />
+
+            {/* Platform */}
+            {selections.type && (
+              <ChatQuestion
+                question="Where will this live?"
+                options={PLATFORMS}
+                selected={selections.platform}
+                onSelect={(v) => select("platform", v)}
+              />
+            )}
+
+            {/* Purpose */}
+            {selections.type && selections.platform && (
+              <ChatQuestion
+                question="What do you want to create?"
+                options={PURPOSES}
+                selected={selections.purpose}
+                onSelect={(v) => select("purpose", v)}
+              />
+            )}
+
+            {/* Duration - only for non-binge */}
+            {selections.type && selections.platform && needsDuration && (
+              <div className="space-y-3">
+                <div className="inline-block bg-muted rounded-2xl rounded-bl-sm px-4 py-2.5 max-w-[85%]">
+                  <p className="text-sm font-medium">How long?</p>
+                </div>
+                <DurationPicker
+                  presets={DURATION_PRESETS[selections.purpose]}
+                  selected={selections.duration}
+                  onSelect={(v) => select("duration", v)}
+                />
+              </div>
+            )}
+          </div>
         ) : (
-          <CompactView
-            selections={selections}
-            onSelect={updateSelection}
-            onPurposeChange={handlePurposeChange}
-            availableDurations={availableDurations}
-          />
+          <div className="flex-1 overflow-y-auto p-4 space-y-5">
+            <GridSection label="Content Type">
+              <OptionGrid
+                options={CONTENT_TYPES}
+                selected={selections.type}
+                onSelect={(v) => select("type", v)}
+                columns={3}
+              />
+            </GridSection>
+
+            <GridSection label="Platform">
+              <OptionGrid
+                options={PLATFORMS}
+                selected={selections.platform}
+                onSelect={(v) => select("platform", v)}
+                columns={4}
+              />
+            </GridSection>
+
+            <GridSection label="Purpose">
+              <OptionGrid
+                options={PURPOSES}
+                selected={selections.purpose}
+                onSelect={(v) => select("purpose", v)}
+                columns={4}
+              />
+            </GridSection>
+
+            {needsDuration && (
+              <GridSection label="Duration">
+                <DurationPicker
+                  presets={DURATION_PRESETS[selections.purpose]}
+                  selected={selections.duration}
+                  onSelect={(v) => select("duration", v)}
+                />
+              </GridSection>
+            )}
+          </div>
         )}
 
         {/* Generate Button */}
-        <div className="p-3 border-t mt-auto">
+        <div className="p-4 border-t bg-muted/50">
           <Button
             onClick={() => onGenerate(selections)}
             disabled={isGenerating || !isComplete}
-            className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-lg disabled:opacity-50"
+            className="w-full h-11 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg disabled:opacity-40 font-semibold text-sm"
           >
             {isGenerating ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                 Analyzing Video...
-              </>
-            ) : !isComplete ? (
-              <>
-                <Sparkles className="w-4 h-4 mr-2" />
-                {completedSteps}/{totalSteps} Selected
               </>
             ) : (
               <>
@@ -369,277 +375,135 @@ export function MicrodramaGenerator({
   );
 }
 
-/* Chat View */
+/* ============ Chat View Components ============ */
 
-function ChatView({
-  steps,
-  selections,
-  currentStep,
-  onSelect,
-  onPurposeChange,
-  availableDurations,
-  scrollRef,
-}: {
-  steps: StepConfig[];
-  selections: Record<string, string>;
-  currentStep: number;
-  onSelect: (key: string, value: string) => void;
-  onPurposeChange: (value: string) => void;
-  availableDurations: string[];
-  scrollRef: React.RefObject<HTMLDivElement | null>;
-}) {
-  const showDurationStep =
-    currentStep >= steps.length - 1 && selections.purpose;
-
-  return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-4">
-      {steps.map((step, index) => {
-        const isVisible = index <= currentStep;
-        const selectedOption = step.options.find(
-          (o) => o.value === selections[step.key]
-        );
-        const isAnswered = !!selectedOption;
-        const isPurposeStep = step.key === "purpose";
-
-        if (!isVisible) return null;
-
-        return (
-          <div
-            key={step.key}
-            className={cn(
-              "space-y-3 transition-all duration-300",
-              index === currentStep && !showDurationStep
-                ? "opacity-100"
-                : "opacity-70"
-            )}
-          >
-            {/* Question bubble */}
-            <div className="bg-muted/30 rounded-xl px-3 py-2">
-              <p className="text-sm text-muted-foreground">{step.question}</p>
-            </div>
-
-            {/* Answer or Options */}
-            {isAnswered &&
-            (index < currentStep || (isPurposeStep && showDurationStep)) ? (
-              // Show selected answer as a chat bubble
-              <div className="flex justify-end">
-                <button
-                  onClick={() =>
-                    isPurposeStep ? onPurposeChange("") : onSelect(step.key, "")
-                  }
-                  className="bg-blue-500/90 text-white rounded-xl px-3 py-1.5 flex items-center gap-2 hover:bg-blue-600 transition-colors shadow-sm"
-                >
-                  <selectedOption.icon className="h-3.5 w-3.5" />
-                  <span className="text-sm">{selectedOption.label}</span>
-                </button>
-              </div>
-            ) : (
-              // Show options grid
-              <div>
-                <ChatOptionGrid
-                  options={step.options}
-                  selected={selections[step.key]}
-                  onSelect={(value) =>
-                    isPurposeStep
-                      ? onPurposeChange(value)
-                      : onSelect(step.key, value)
-                  }
-                />
-              </div>
-            )}
-          </div>
-        );
-      })}
-
-      {/* Duration Step */}
-      {showDurationStep && (
-        <div className="space-y-3 transition-all duration-300 opacity-100">
-          <div className="bg-muted/30 rounded-xl px-3 py-2">
-            <p className="text-sm text-muted-foreground">
-              How long should it be?
-            </p>
-          </div>
-          <div>
-            <DurationPicker
-              durations={availableDurations}
-              selected={selections.duration}
-              onSelect={(value) => onSelect("duration", value)}
-            />
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ChatOptionGrid({
+function ChatQuestion({
+  question,
   options,
   selected,
   onSelect,
 }: {
-  options: SelectionOption[];
+  question: string;
+  options: Option[];
   selected: string;
   onSelect: (value: string) => void;
 }) {
   return (
-    <div className="flex flex-wrap gap-1.5">
-      {options.map((opt) => (
-        <Tooltip key={opt.value}>
-          <TooltipTrigger asChild>
-            <button
-              onClick={() => onSelect(opt.value)}
-              className={cn(
-                "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-sm transition-all",
-                selected === opt.value
-                  ? "border-blue-400/50 bg-blue-500/10 text-blue-400"
-                  : "border-muted/50 hover:bg-muted/30 hover:border-muted"
-              )}
-            >
-              <opt.icon className="h-3.5 w-3.5" />
-              <span>{opt.label}</span>
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            <p>{opt.tooltip}</p>
-          </TooltipContent>
-        </Tooltip>
-      ))}
+    <div className="space-y-3">
+      {/* Question bubble */}
+      <div className="inline-block bg-muted rounded-2xl rounded-bl-sm px-4 py-2.5 max-w-[85%]">
+        <p className="text-sm font-medium">{question}</p>
+      </div>
+
+      {/* Options */}
+      <div className="flex flex-wrap gap-2 pl-1">
+        {options.map((opt) => {
+          const isSelected = selected === opt.value;
+          return (
+            <Tooltip key={opt.value}>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => onSelect(opt.value)}
+                  className={cn(
+                    "flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium transition-all",
+                    isSelected
+                      ? "bg-blue-600 text-white shadow-md"
+                      : "bg-card border-2 border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-foreground"
+                  )}
+                >
+                  <opt.icon
+                    className={cn(
+                      "h-4 w-4",
+                      isSelected ? "text-white" : "text-muted-foreground"
+                    )}
+                  />
+                  <span>{opt.label}</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{opt.tooltip}</TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
 function DurationPicker({
-  durations,
+  presets,
   selected,
   onSelect,
 }: {
-  durations: string[];
+  presets: [string, string];
   selected: string;
   onSelect: (value: string) => void;
 }) {
   const [customValue, setCustomValue] = useState("");
-  const [isEditingCustom, setIsEditingCustom] = useState(false);
+  const [editing, setEditing] = useState(false);
 
-  // Check if current selection is a custom value (not a preset)
-  const isCustomSelected = selected && !durations.includes(selected);
+  const options = ["Auto", presets[0], presets[1]];
+  const isCustom = selected && !options.includes(selected);
 
-  const handleCustomSubmit = () => {
-    if (customValue.trim()) {
-      onSelect(customValue.trim());
-    }
-    setIsEditingCustom(false);
-  };
-
-  const handleCustomClick = () => {
-    setCustomValue(isCustomSelected ? selected : "");
-    setIsEditingCustom(true);
+  const submitCustom = () => {
+    if (customValue.trim()) onSelect(customValue.trim());
+    setEditing(false);
   };
 
   return (
-    <div className="flex flex-wrap gap-1.5 items-center">
-      {durations.map((duration) => {
-        const isAuto = duration === AUTO_DURATION;
-        const isSelected = selected === duration;
-
+    <div className="flex flex-wrap gap-2 pl-1">
+      {options.map((opt) => {
+        const isSelected = selected === opt;
         return (
           <button
-            key={duration}
-            onClick={() => onSelect(duration)}
+            key={opt}
+            onClick={() => onSelect(opt)}
             className={cn(
-              "px-2.5 py-1 rounded-lg border text-xs font-medium transition-all",
+              "px-3 py-2 rounded-xl text-sm font-medium transition-all",
               isSelected
-                ? "border-blue-400/50 bg-blue-500/10 text-blue-400"
-                : "border-muted/50 hover:bg-muted/30 hover:border-muted",
-              isAuto && !isSelected && "border-dashed"
+                ? "bg-blue-600 text-white shadow-md"
+                : "bg-card border-2 border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-foreground",
+              opt === "Auto" && !isSelected && "border-dashed"
             )}
           >
-            {duration}
+            {opt}
           </button>
         );
       })}
 
-      {/* Custom duration input */}
-      {isEditingCustom ? (
+      {editing ? (
         <input
           type="text"
           value={customValue}
           onChange={(e) => setCustomValue(e.target.value)}
-          onBlur={handleCustomSubmit}
-          onKeyDown={(e) => e.key === "Enter" && handleCustomSubmit()}
+          onBlur={submitCustom}
+          onKeyDown={(e) => e.key === "Enter" && submitCustom()}
           placeholder="45s"
           autoFocus
-          className="w-14 px-2.5 py-1 rounded-lg border border-blue-400/50 bg-blue-500/10 text-xs font-medium text-center focus:outline-none text-blue-400"
+          className="w-16 px-3 py-2 rounded-xl text-sm font-medium text-center bg-blue-600 text-white border-2 border-blue-600 focus:outline-none"
         />
       ) : (
         <button
-          onClick={handleCustomClick}
+          onClick={() => {
+            setCustomValue(isCustom ? selected : "");
+            setEditing(true);
+          }}
           className={cn(
-            "px-2.5 py-1 rounded-lg border border-dashed text-xs font-medium transition-all",
-            isCustomSelected
-              ? "border-blue-400/50 bg-blue-500/10 text-blue-400"
-              : "border-muted/50 hover:bg-muted/30 text-muted-foreground"
+            "px-3 py-2 rounded-xl text-sm font-medium transition-all border-2 border-dashed",
+            isCustom
+              ? "bg-blue-600 text-white border-blue-600 shadow-md"
+              : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-muted-foreground"
           )}
         >
-          {isCustomSelected ? selected : "Other"}
+          {isCustom ? selected : "Other"}
         </button>
       )}
     </div>
   );
 }
 
-/* Compact View */
+/* ============ Grid View Components ============ */
 
-function CompactView({
-  selections,
-  onSelect,
-  onPurposeChange,
-  availableDurations,
-}: {
-  selections: Record<string, string>;
-  onSelect: (key: string, value: string) => void;
-  onPurposeChange: (value: string) => void;
-  availableDurations: string[];
-}) {
-  return (
-    <div className="flex-1 overflow-y-auto p-3 space-y-4">
-      <Section label="Content Type">
-        <CompactOptionGrid
-          options={CONTENT_TYPES}
-          selected={selections.type}
-          onSelect={(v) => onSelect("type", v)}
-        />
-      </Section>
-
-      <Section label="Target Platform">
-        <CompactOptionGrid
-          options={PLATFORMS}
-          selected={selections.platform}
-          onSelect={(v) => onSelect("platform", v)}
-        />
-      </Section>
-
-      <Section label="Purpose">
-        <CompactOptionGrid
-          options={PURPOSES}
-          selected={selections.purpose}
-          onSelect={onPurposeChange}
-        />
-      </Section>
-
-      {selections.purpose && availableDurations.length > 0 && (
-        <Section label="Duration">
-          <DurationPicker
-            durations={availableDurations}
-            selected={selections.duration}
-            onSelect={(v) => onSelect("duration", v)}
-          />
-        </Section>
-      )}
-    </div>
-  );
-}
-
-function Section({
+function GridSection({
   label,
   children,
 }: {
@@ -647,61 +511,65 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="space-y-2">
-      <Label className="text-xs font-medium text-muted-foreground">
+    <div className="space-y-2">
+      <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
         {label}
       </Label>
       {children}
-    </section>
+    </div>
   );
 }
 
-function CompactOptionGrid({
+function OptionGrid({
   options,
   selected,
   onSelect,
+  columns = 3,
 }: {
-  options: SelectionOption[];
+  options: Option[];
   selected: string;
   onSelect: (value: string) => void;
+  columns?: number;
 }) {
   return (
-    <div className="grid grid-cols-3 gap-1.5">
-      {options.map((opt) => (
-        <Tooltip key={opt.value}>
-          <TooltipTrigger asChild>
-            <div
-              onClick={() => onSelect(opt.value)}
-              className={cn(
-                "flex flex-col items-center justify-center gap-1 p-2 rounded-md border cursor-pointer transition-all hover:bg-accent/50",
-                selected === opt.value
-                  ? "border-blue-500 bg-blue-500/10"
-                  : "border-muted"
-              )}
-            >
-              <opt.icon
+    <div
+      className="grid gap-2"
+      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+    >
+      {options.map((opt) => {
+        const isSelected = selected === opt.value;
+        return (
+          <Tooltip key={opt.value}>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => onSelect(opt.value)}
                 className={cn(
-                  "h-4 w-4",
-                  selected === opt.value
-                    ? "text-blue-500"
-                    : "text-muted-foreground"
-                )}
-              />
-              <span
-                className={cn(
-                  "text-[10px] font-medium text-center leading-tight",
-                  selected === opt.value && "text-blue-500"
+                  "flex flex-col items-center gap-1 p-2.5 rounded-lg border-2 transition-all",
+                  isSelected
+                    ? "bg-blue-600 border-blue-600 text-white shadow-md"
+                    : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30"
                 )}
               >
-                {opt.label}
-              </span>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            <p>{opt.tooltip}</p>
-          </TooltipContent>
-        </Tooltip>
-      ))}
+                <opt.icon
+                  className={cn(
+                    "h-5 w-5",
+                    isSelected ? "text-white" : "text-muted-foreground"
+                  )}
+                />
+                <span
+                  className={cn(
+                    "text-[10px] font-semibold leading-tight text-center",
+                    isSelected ? "text-white" : "text-foreground"
+                  )}
+                >
+                  {opt.label}
+                </span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">{opt.tooltip}</TooltipContent>
+          </Tooltip>
+        );
+      })}
     </div>
   );
 }

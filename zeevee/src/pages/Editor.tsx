@@ -708,7 +708,7 @@ export default function Editor() {
         <div
           className={cn(
             "flex flex-col bg-card border-l overflow-hidden transition-all duration-200",
-            sidebarOpen ? "w-80" : "w-0"
+            sidebarOpen ? "w-96" : "w-0"
           )}
         >
           {sidebarOpen && (
@@ -757,6 +757,9 @@ export default function Editor() {
                   <MicrodramaGenerator
                     onGenerate={handleGenerateSegments}
                     isGenerating={isGenerating}
+                    onAspectRatioChange={(ratio) =>
+                      dispatch(setGlobalAspectRatio(ratio))
+                    }
                   />
                 )}
                 {activeTab === "captions" && <CaptionEditor />}
