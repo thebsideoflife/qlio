@@ -187,6 +187,8 @@ export const updateProject = async (
     title?: string;
     segments?: Segment[];
     captionSettings?: CaptionSettings;
+    globalFraming?: GlobalFramingSettings;
+    lastRenderS3Uri?: string;
   }
 ) => {
   const response = await axios.patch(`${API_URL}/projects/${projectId}`, data, {
@@ -230,31 +232,27 @@ export const deleteAsset = async (assetId: string) => {
 
 // ===== Render API =====
 
+// Framing types (used for sync, not render requests)
+export type AspectRatio = "9:16" | "1:1" | "16:9";
+export type FramingMode = "crop" | "fit";
+
+export interface SegmentFraming {
+  aspectRatio: AspectRatio;
+  mode: FramingMode;
+  focusX: number;
+  focusY: number;
+  aiReasoning?: string;
+  isAiGenerated: boolean;
+}
+
+export interface GlobalFramingSettings {
+  aspectRatio: AspectRatio;
+  enabled: boolean;
+}
+
+// Render request is minimal - all project data is read from DB by backend
+// This follows best practice: backend is source of truth
 export interface RenderRequest {
-  segments: Array<{
-    id: string;
-    startTime: number;
-    endTime: number;
-    title: string;
-  }>;
-  captions: Array<{
-    id: string;
-    startTime: number;
-    endTime: number;
-    text: string;
-    words: Array<{ start: number; end: number; value: string }>;
-  }>;
-  captionSettings: {
-    enabled: boolean;
-    style: {
-      fontSize: number;
-      fontFamily: string;
-      color: string;
-      backgroundColor: string;
-      position: { x: number; y: number };
-      maxWidth: number;
-    };
-  };
   outputFormat?: "mp4" | "webm";
   quality?: "draft" | "standard" | "high";
 }
@@ -268,6 +266,7 @@ export interface RenderJobResponse {
   completedAt?: string;
   error?: string;
   downloadUrl?: string;
+  outputS3Uri?: string;
 }
 
 export const startRender = async (

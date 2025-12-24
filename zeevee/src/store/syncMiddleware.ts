@@ -25,9 +25,11 @@ function startSyncInterval(store: StoreAPI) {
       projectTitle,
       segments,
       captionSettings,
+      globalFraming,
       localVersion,
       syncedVersion,
       isSyncing,
+      lastRenderS3Uri,
     } = state.editor;
 
     // Only sync if: we have a project, there are unsynced changes, and not already syncing
@@ -43,6 +45,8 @@ function startSyncInterval(store: StoreAPI) {
           title: projectTitle,
           segments,
           captionSettings,
+          globalFraming,
+          lastRenderS3Uri: lastRenderS3Uri || undefined,
         });
         // Only mark the specific version as synced - if user made edits during sync,
         // localVersion will be higher and we'll sync again next interval

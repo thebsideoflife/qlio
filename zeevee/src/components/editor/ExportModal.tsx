@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
-import { useSelector } from "react-redux";
+import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
+import { setLastRender } from "@/store/editorSlice";
 import {
   Dialog,
   DialogContent,
@@ -26,6 +27,8 @@ import {
   XCircle,
   Film,
   Captions as CaptionsIcon,
+  Crop,
+  RefreshCw,
 } from "lucide-react";
 
 interface ExportModalProps {
@@ -41,10 +44,17 @@ export function ExportModal({
   onOpenChange,
   projectId,
 }: ExportModalProps) {
+  const dispatch = useDispatch();
   const segments = useSelector((state: RootState) => state.editor.segments);
   const captions = useSelector((state: RootState) => state.editor.captions);
   const captionSettings = useSelector(
     (state: RootState) => state.editor.captionSettings
+  );
+  const globalFraming = useSelector(
+    (state: RootState) => state.editor.globalFraming
+  );
+  const lastRenderUrl = useSelector(
+    (state: RootState) => state.editor.lastRenderUrl
   );
 
   const [outputFormat, setOutputFormat] = useState<"mp4" | "webm">("mp4");
@@ -78,6 +88,10 @@ export function ExportModal({
         if (result.status === "completed") {
           setStatus("completed");
           setDownloadUrl(result.downloadUrl || null);
+          // Cache the render for reuse (S3 URI for persistence, URL for download)
+          if (result.downloadUrl && result.outputS3Uri) {
+            dispatch(setLastRender({ s3Uri: result.outputS3Uri, url: result.downloadUrl }));
+          }
           return; // Stop polling
         } else if (result.status === "failed") {
           setStatus("failed");
@@ -103,7 +117,7 @@ export function ExportModal({
     return () => {
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [jobId, status]);
+  }, [jobId, status, dispatch]);
 
   const handleStartRender = useCallback(async () => {
     setStatus("starting");
@@ -112,15 +126,9 @@ export function ExportModal({
     setDownloadUrl(null);
 
     try {
+      // Only send render options - all project data (segments, captions, framing)
+      // is read from the database by the backend for data integrity
       const result = await startRender(projectId, {
-        segments: segments.map((s) => ({
-          id: s.id,
-          startTime: s.startTime,
-          endTime: s.endTime,
-          title: s.title,
-        })),
-        captions,
-        captionSettings,
         outputFormat,
         quality,
       });
@@ -132,7 +140,7 @@ export function ExportModal({
       const error = err as { response?: { data?: { error?: string } } };
       setError(error.response?.data?.error || "Failed to start render");
     }
-  }, [projectId, segments, captions, captionSettings, outputFormat, quality]);
+  }, [projectId, outputFormat, quality]);
 
   const handleDownload = useCallback(() => {
     if (downloadUrl) {
@@ -193,6 +201,19 @@ export function ExportModal({
                   </>
                 ) : (
                   "Disabled"
+                )}
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-muted-foreground">Framing</span>
+              <span className="font-medium flex items-center gap-1">
+                {globalFraming.enabled ? (
+                  <>
+                    <Crop className="h-3 w-3" />
+                    {globalFraming.aspectRatio}
+                  </>
+                ) : (
+                  "Original"
                 )}
               </span>
             </div>
@@ -288,17 +309,35 @@ export function ExportModal({
 
         {/* Actions */}
         {status === "idle" && (
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={handleClose}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleStartRender}
-              disabled={segments.length === 0}
-            >
-              <Film className="h-4 w-4 mr-2" />
-              Start Render
-            </Button>
+          <div className="space-y-3">
+            {lastRenderUrl && (
+              <div className="flex items-center gap-2 p-3 bg-green-50 dark:bg-green-950 rounded-lg border border-green-200 dark:border-green-800">
+                <CheckCircle className="h-4 w-4 text-green-600" />
+                <span className="text-sm text-green-700 dark:text-green-300 flex-1">
+                  Previous render available
+                </span>
+                <Button
+                  size="sm"
+                  onClick={() => window.open(lastRenderUrl, "_blank")}
+                >
+                  <Download className="h-4 w-4 mr-1" />
+                  Download
+                </Button>
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={handleClose}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleStartRender}
+                disabled={segments.length === 0}
+                variant={lastRenderUrl ? "outline" : "default"}
+              >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                {lastRenderUrl ? "Re-render" : "Start Render"}
+              </Button>
+            </div>
           </div>
         )}
       </DialogContent>

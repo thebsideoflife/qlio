@@ -27,10 +27,17 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     }
 
     const body = JSON.parse(event.body || "{}");
-    const { title, segments, captionSettings } = body;
+    const { title, segments, captionSettings, globalFraming, lastRenderS3Uri } =
+      body;
 
     // Check if any updateable fields are provided
-    if (!title && !segments && !captionSettings) {
+    if (
+      !title &&
+      !segments &&
+      !captionSettings &&
+      !globalFraming &&
+      lastRenderS3Uri === undefined
+    ) {
       return {
         statusCode: 400,
         headers: {
@@ -69,6 +76,18 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       exprValues[":cs"] = captionSettings;
     }
 
+    if (globalFraming) {
+      updateParts.push("#globalFraming = :gf");
+      exprNames["#globalFraming"] = "globalFraming";
+      exprValues[":gf"] = globalFraming;
+    }
+
+    if (lastRenderS3Uri !== undefined) {
+      updateParts.push("#lastRenderS3Uri = :lr");
+      exprNames["#lastRenderS3Uri"] = "lastRenderS3Uri";
+      exprValues[":lr"] = lastRenderS3Uri;
+    }
+
     await docClient.send(
       new UpdateCommand({
         TableName: PROJECTS_TABLE,
@@ -86,7 +105,14 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
       },
-      body: JSON.stringify({ success: true, title, segments, captionSettings }),
+      body: JSON.stringify({
+        success: true,
+        title,
+        segments,
+        captionSettings,
+        globalFraming,
+        lastRenderS3Uri,
+      }),
     };
   } catch (error) {
     console.error("Error updating project:", error);

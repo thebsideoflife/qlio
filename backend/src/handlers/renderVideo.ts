@@ -13,202 +13,141 @@ import { renderMediaOnLambda } from "@remotion/lambda/client";
 import type { AwsRegion } from "@remotion/lambda";
 
 const client = new DynamoDBClient({});
-const docClient = DynamoDBDocumentClient.from(client);
+const docClient = DynamoDBDocumentClient.from(client, {
+  marshallOptions: { removeUndefinedValues: true },
+});
 const lambdaClient = new LambdaClient({});
 
 const RENDER_JOBS_TABLE = process.env.RENDER_JOBS_TABLE!;
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
-const MEDIA_BUCKET = process.env.MEDIA_BUCKET!;
 const REMOTION_SERVE_URL = process.env.REMOTION_SERVE_URL;
 const REMOTION_FUNCTION_NAME = process.env.REMOTION_FUNCTION_NAME;
 const STITCH_FUNCTION_NAME = process.env.STITCH_FUNCTION_NAME;
 
-interface RenderRequest {
-  segments: Array<{
-    id: string;
-    startTime: number;
-    endTime: number;
-    title: string;
-  }>;
-  captions: Array<{
-    id: string;
-    startTime: number;
-    endTime: number;
-    text: string;
-    words: Array<{ start: number; end: number; value: string }>;
-  }>;
-  captionSettings: {
-    enabled: boolean;
-    style: {
-      fontSize: number;
-      fontFamily: string;
-      color: string;
-      backgroundColor: string;
-      position: { x: number; y: number };
-      maxWidth: number;
-      highlightColor?: string;
-    };
+// Types
+type AspectRatio = "9:16" | "1:1" | "16:9";
+
+interface CaptionWord {
+  start: number;
+  end: number;
+  value: string;
+}
+
+interface CaptionLine {
+  id: string;
+  startTime: number;
+  endTime: number;
+  text: string;
+  words: CaptionWord[];
+}
+
+interface CaptionSettings {
+  enabled: boolean;
+  style: {
+    fontSize: number;
+    fontFamily: string;
+    color: string;
+    backgroundColor: string;
+    position: { x: number; y: number };
+    maxWidth: number;
+    highlightColor?: string;
   };
-  outputFormat?: "mp4" | "webm";
-  quality?: "draft" | "standard" | "high";
 }
 
-/**
- * Validates that a segment has required numeric properties.
- */
-function isValidSegment(
-  segment: unknown
-): segment is { startTime: number; endTime: number } {
-  if (!segment || typeof segment !== "object") return false;
-  const s = segment as Record<string, unknown>;
-  return (
-    typeof s.startTime === "number" &&
-    typeof s.endTime === "number" &&
-    !isNaN(s.startTime) &&
-    !isNaN(s.endTime) &&
-    s.endTime > s.startTime
-  );
+interface GlobalFramingSettings {
+  aspectRatio: AspectRatio;
+  enabled: boolean;
 }
 
-/**
- * Validates that a caption has required properties.
- */
-function isValidCaption(
-  caption: unknown
-): caption is RenderRequest["captions"][0] {
-  if (!caption || typeof caption !== "object") return false;
-  const c = caption as Record<string, unknown>;
-  return (
-    typeof c.startTime === "number" &&
-    typeof c.endTime === "number" &&
-    !isNaN(c.startTime) &&
-    !isNaN(c.endTime) &&
-    Array.isArray(c.words)
-  );
+interface Segment {
+  id: string;
+  startTime: number;
+  endTime: number;
+  title: string;
+  framing?: {
+    aspectRatio: AspectRatio;
+    mode: "crop" | "fit";
+    focusX: number;
+    focusY: number;
+    isAiGenerated: boolean;
+  };
 }
 
+const DEFAULT_CAPTION_SETTINGS: CaptionSettings = {
+  enabled: true,
+  style: {
+    fontSize: 2,
+    fontFamily: "Inter, system-ui, sans-serif",
+    color: "#ffffff",
+    backgroundColor: "rgba(0, 0, 0, 0.8)",
+    position: { x: 50, y: 85 },
+    maxWidth: 95,
+    highlightColor: "#fbbf24",
+  },
+};
+
+const DEFAULT_GLOBAL_FRAMING: GlobalFramingSettings = {
+  aspectRatio: "9:16",
+  enabled: true,
+};
+
 /**
- * Adjusts caption timings to match the stitched video.
- * When segments are extracted and concatenated, captions need to be
- * remapped from their original video timestamps to the new timeline.
+ * Groups word-level transcript into caption lines.
  */
-function adjustCaptionsForStitchedVideo(
-  captions: RenderRequest["captions"],
-  segments: RenderRequest["segments"]
-): RenderRequest["captions"] {
-  // Input validation
-  if (!Array.isArray(captions) || !Array.isArray(segments)) {
-    console.warn(
-      "[adjustCaptionsForStitchedVideo] Invalid input: captions or segments is not an array"
-    );
-    return [];
-  }
+function groupWordsIntoCaptions(words: CaptionWord[]): CaptionLine[] {
+  if (!words?.length) return [];
 
-  if (segments.length === 0) return captions;
+  const captions: CaptionLine[] = [];
+  let currentWords: CaptionWord[] = [];
+  let lineStartTime = words[0].start;
 
-  // Filter out invalid segments and log warnings
-  const validSegments = segments.filter((seg, idx) => {
-    if (!isValidSegment(seg)) {
-      console.warn(
-        `[adjustCaptionsForStitchedVideo] Skipping invalid segment at index ${idx}:`,
-        seg
-      );
-      return false;
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    const prevWord = i > 0 ? words[i - 1] : null;
+
+    // Break on: 8+ words, 3+ seconds, or pause > 0.3s
+    const shouldBreak =
+      currentWords.length >= 8 ||
+      (currentWords.length > 0 && word.end - lineStartTime > 3) ||
+      (prevWord && word.start - prevWord.end > 0.3);
+
+    if (shouldBreak && currentWords.length > 0) {
+      captions.push({
+        id: `caption-${captions.length}`,
+        startTime: lineStartTime,
+        endTime: currentWords[currentWords.length - 1].end,
+        text: currentWords.map((w) => w.value).join(" "),
+        words: [...currentWords],
+      });
+      currentWords = [];
+      lineStartTime = word.start;
     }
-    return true;
-  });
-
-  if (validSegments.length === 0) {
-    console.warn(
-      "[adjustCaptionsForStitchedVideo] No valid segments after validation"
-    );
-    return captions;
+    currentWords.push(word);
   }
 
-  // Build a timeline mapping: for each segment, track where it starts in the output
-  const timeline: Array<{
-    originalStart: number;
-    originalEnd: number;
-    outputStart: number;
-  }> = [];
-
-  let outputTime = 0;
-  for (const segment of validSegments) {
-    timeline.push({
-      originalStart: segment.startTime,
-      originalEnd: segment.endTime,
-      outputStart: outputTime,
+  if (currentWords.length > 0) {
+    captions.push({
+      id: `caption-${captions.length}`,
+      startTime: lineStartTime,
+      endTime: currentWords[currentWords.length - 1].end,
+      text: currentWords.map((w) => w.value).join(" "),
+      words: currentWords,
     });
-    outputTime += segment.endTime - segment.startTime;
   }
 
-  // Adjust each caption to the new timeline
-  return captions
-    .filter((caption, idx) => {
-      if (!isValidCaption(caption)) {
-        console.warn(
-          `[adjustCaptionsForStitchedVideo] Skipping invalid caption at index ${idx}:`,
-          caption
-        );
-        return false;
-      }
-      return true;
-    })
-    .map((caption) => {
-      // Find which segment(s) this caption belongs to
-      for (const seg of timeline) {
-        // Caption starts within this segment
-        if (
-          caption.startTime >= seg.originalStart &&
-          caption.startTime < seg.originalEnd
-        ) {
-          const offsetInSegment = caption.startTime - seg.originalStart;
-          const newStart = seg.outputStart + offsetInSegment;
+  return captions;
+}
 
-          // Calculate new end time (clamp to segment boundary)
-          const captionDuration = caption.endTime - caption.startTime;
-          const maxDurationInSegment = seg.originalEnd - caption.startTime;
-          const actualDuration = Math.min(
-            captionDuration,
-            maxDurationInSegment
-          );
-          const newEnd = newStart + actualDuration;
-
-          // Adjust word timings too (with validation)
-          const adjustedWords = (caption.words || [])
-            .filter((word) => {
-              if (
-                !word ||
-                typeof word.start !== "number" ||
-                typeof word.end !== "number"
-              ) {
-                return false;
-              }
-              return true;
-            })
-            .map((word) => ({
-              ...word,
-              start: newStart + (word.start - caption.startTime),
-              end: newStart + (word.end - caption.startTime),
-            }));
-
-          return {
-            ...caption,
-            startTime: newStart,
-            endTime: newEnd,
-            words: adjustedWords,
-          };
-        }
-      }
-      // Caption doesn't fall within any segment - exclude it
-      return null;
-    })
-    .filter((c): c is NonNullable<typeof c> => c !== null);
+function getCompositionId(aspectRatio: AspectRatio): string {
+  switch (aspectRatio) {
+    case "16:9": return "CaptionedVideo";
+    case "1:1": return "CaptionedVideoSquare";
+    default: return "CaptionedVideoPortrait";
+  }
 }
 
 export const handler: APIGatewayProxyHandler = async (event) => {
-  // Auth check
   const authResult = await checkAuth(event);
   if (authResult) return authResult;
 
@@ -216,386 +155,199 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   if (!projectId) {
     return {
       statusCode: 400,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       body: JSON.stringify({ error: "Missing projectId" }),
     };
   }
 
-  let body: RenderRequest;
+  let body: { outputFormat?: "mp4" | "webm"; quality?: string };
   try {
     body = JSON.parse(event.body || "{}");
   } catch {
     return {
       statusCode: 400,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       body: JSON.stringify({ error: "Invalid JSON body" }),
     };
   }
 
-  // Get project to find video URL
+  // Get project
   const projectResult = await docClient.send(
-    new GetCommand({
-      TableName: PROJECTS_TABLE,
-      Key: { projectId },
-    })
+    new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } })
   );
-
   if (!projectResult.Item) {
     return {
       statusCode: 404,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       body: JSON.stringify({ error: "Project not found" }),
     };
   }
 
   const project = projectResult.Item;
-
-  // Fetch the asset to get the video URL
   if (!project.assetId) {
     return {
       statusCode: 400,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       body: JSON.stringify({ error: "Project has no associated asset" }),
     };
   }
 
+  // Get asset
   const assetResult = await docClient.send(
-    new GetCommand({
-      TableName: ASSETS_TABLE,
-      Key: { assetId: project.assetId },
-    })
+    new GetCommand({ TableName: ASSETS_TABLE, Key: { assetId: project.assetId } })
   );
-
-  if (!assetResult.Item) {
+  if (!assetResult.Item?.s3VideoUrl) {
     return {
-      statusCode: 404,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: JSON.stringify({ error: "Asset not found" }),
+      statusCode: 400,
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ error: "Asset has no video file" }),
     };
   }
 
   const asset = assetResult.Item;
-
-  // Get presigned URL for the source video using the s3 utility
-  if (!asset.s3VideoUrl) {
-    console.error("Asset has no s3VideoUrl:", {
-      projectId,
-      assetId: project.assetId,
-      assetKeys: Object.keys(asset),
-    });
-    return {
-      statusCode: 400,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: JSON.stringify({
-        error: "Asset has no video file (s3VideoUrl missing)",
-      }),
-    };
-  }
-
   const { presignS3Uri } = await import("../utils/s3");
   const presignedVideoUrl = await presignS3Uri(asset.s3VideoUrl);
 
   if (!presignedVideoUrl) {
-    console.error("Failed to generate presigned URL for:", {
-      projectId,
-      assetId: project.assetId,
-      s3VideoUrl: asset.s3VideoUrl,
-    });
     return {
       statusCode: 500,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: JSON.stringify({
-        error: "Failed to generate video URL",
-        details: `Could not presign S3 URI: ${asset.s3VideoUrl}`,
-      }),
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ error: "Failed to generate video URL" }),
     };
   }
 
-  console.log("Generated presigned video URL for rendering:", {
-    projectId,
-    assetId: project.assetId,
-    s3Uri: asset.s3VideoUrl,
-    presignedUrlLength: presignedVideoUrl.length,
-    presignedUrlPrefix: presignedVideoUrl.substring(0, 50) + "...",
-  });
+  // Read project data
+  const segments: Segment[] = project.segments || [];
+  const captionSettings: CaptionSettings = project.captionSettings || DEFAULT_CAPTION_SETTINGS;
+  const globalFraming: GlobalFramingSettings = project.globalFraming || DEFAULT_GLOBAL_FRAMING;
 
-  // Create render job
-  const jobId = uuidv4();
-  const now = new Date().toISOString();
-  const expiresAt = Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60; // 7 days TTL
+  // Generate captions from transcription
+  let captions: CaptionLine[] = [];
+  if (asset.transcriptionUrl && captionSettings.enabled) {
+    try {
+      const transcriptionUrl = await presignS3Uri(asset.transcriptionUrl);
+      if (transcriptionUrl) {
+        const response = await fetch(transcriptionUrl);
+        const data = await response.json();
+        const jsonData = data as Record<string, unknown>;
+        const words: CaptionWord[] = Array.isArray(data) 
+          ? data as CaptionWord[]
+          : (jsonData.data as CaptionWord[]) || (jsonData.transcription as CaptionWord[]) || [];
+        captions = groupWordsIntoCaptions(words);
+        console.log(`Generated ${captions.length} caption lines`);
+      }
+    } catch (error) {
+      console.error("Failed to load transcription:", error);
+    }
+  }
 
-  // Calculate total duration from segments (or use full video duration)
-  const segments = body.segments || [];
-  const hasSegments = segments.length > 0;
-  const totalDuration = hasSegments
+  // Validate limits
+  const totalDuration = segments.length > 0
     ? segments.reduce((sum, s) => sum + (s.endTime - s.startTime), 0)
     : asset.duration || 0;
 
-  // Validate limits to prevent abuse
-  const MAX_SEGMENTS = 10;
-  const MAX_TOTAL_DURATION = 600;
-
-  if (segments.length > MAX_SEGMENTS) {
+  if (segments.length > 10) {
     return {
       statusCode: 400,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: JSON.stringify({
-        error: `Too many segments (max ${MAX_SEGMENTS})`,
-      }),
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ error: "Too many segments (max 10)" }),
+    };
+  }
+  if (totalDuration > 600) {
+    return {
+      statusCode: 400,
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ error: "Video too long (max 10 minutes)" }),
     };
   }
 
-  if (totalDuration > MAX_TOTAL_DURATION) {
-    return {
-      statusCode: 400,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: JSON.stringify({
-        error: `Video too long (max ${Math.floor(
-          MAX_TOTAL_DURATION / 60
-        )} minutes)`,
-      }),
-    };
-  }
-
-  const estimatedFrames = Math.round(totalDuration * 30); // 30 fps
-
-  // Determine if we need FFmpeg stitching
-  // Stitch if: we have segments AND the stitch function is configured
-  const needsStitching = hasSegments && STITCH_FUNCTION_NAME;
+  // Create render job
+  const jobId = uuidv4();
+  const needsStitching = segments.length > 0 && STITCH_FUNCTION_NAME;
+  const compositionId = getCompositionId(globalFraming.aspectRatio);
 
   const renderJob = {
     jobId,
     projectId,
     status: needsStitching ? "pending_stitch" : "pending",
-    createdAt: now,
-    updatedAt: now,
-    expiresAt,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    expiresAt: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60,
     progress: 0,
     totalDuration,
-    estimatedFrames,
-    needsStitching,
-    // Store original S3 URI for stitching Lambda
     sourceS3Uri: asset.s3VideoUrl,
-    inputProps: {
-      // For stitched videos, Remotion gets the stitched video with no segments
-      // For non-stitched, Remotion gets the original video with segments
-      videoUrl: presignedVideoUrl,
-      segments: needsStitching ? [] : segments, // Clear segments if stitching
-      captions: needsStitching
-        ? adjustCaptionsForStitchedVideo(body.captions || [], segments)
-        : body.captions || [],
-      captionSettings: body.captionSettings,
-    },
-    // Store original segments for stitching Lambda
     originalSegments: segments,
+    inputProps: {
+      videoUrl: presignedVideoUrl,
+      captions,
+      captionSettings,
+      globalFraming,
+    },
+    compositionId,
     outputFormat: body.outputFormat || "mp4",
-    quality: body.quality || "standard",
-    outputKey: `renders/${projectId}/${jobId}.${body.outputFormat || "mp4"}`,
   };
 
-  // Validate inputProps before storing
-  console.log("Render job configuration:", {
-    jobId,
-    needsStitching,
-    hasVideoUrl: !!renderJob.inputProps.videoUrl,
-    videoUrlLength: renderJob.inputProps.videoUrl?.length,
-    originalSegmentsCount: segments.length,
-    remotionSegmentsCount: renderJob.inputProps.segments.length,
-    captionsCount: renderJob.inputProps.captions.length,
-    captionSettingsEnabled: renderJob.inputProps.captionSettings?.enabled,
-    totalDuration,
-  });
+  await docClient.send(new PutCommand({ TableName: RENDER_JOBS_TABLE, Item: renderJob }));
 
-  // Store render job
-  await docClient.send(
-    new PutCommand({
-      TableName: RENDER_JOBS_TABLE,
-      Item: renderJob,
-    })
-  );
-
-  // If we need stitching, invoke the stitch Lambda asynchronously
-  if (needsStitching && STITCH_FUNCTION_NAME) {
+  // If stitching needed, invoke stitch Lambda
+  if (needsStitching) {
     console.log(`Invoking stitch Lambda for job ${jobId}`);
+    await lambdaClient.send(
+      new InvokeCommand({
+        FunctionName: STITCH_FUNCTION_NAME,
+        InvocationType: "Event",
+        Payload: JSON.stringify({ pathParameters: { jobId } }),
+      })
+    );
 
-    try {
-      await lambdaClient.send(
-        new InvokeCommand({
-          FunctionName: STITCH_FUNCTION_NAME,
-          InvocationType: "Event", // Async invocation
-          Payload: JSON.stringify({
-            pathParameters: { jobId },
-            headers: event.headers, // Pass auth headers
-          }),
-        })
-      );
-
-      console.log(`Stitch Lambda invoked for job ${jobId}`);
-
-      return {
-        statusCode: 202,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        },
-        body: JSON.stringify({
-          jobId,
-          status: "pending_stitch",
-          message:
-            "Render job created. Video segments are being stitched before caption rendering.",
-          totalDuration,
-          segmentCount: segments.length,
-        }),
-      };
-    } catch (error) {
-      console.error("Failed to invoke stitch Lambda:", error);
-      // Fall through to direct Remotion render as fallback
-      console.log("Falling back to direct Remotion render");
-    }
-  }
-
-  // Check if Remotion is configured
-  if (!REMOTION_SERVE_URL || !REMOTION_FUNCTION_NAME) {
-    console.log("Remotion not configured. Job created but not started:", jobId);
     return {
       statusCode: 202,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       body: JSON.stringify({
         jobId,
-        status: "pending",
-        message:
-          "Render job created. Remotion Lambda needs to be deployed to process renders.",
+        status: "pending_stitch",
+        message: "Stitching segments before rendering",
       }),
     };
   }
 
-  // Direct Remotion render (no stitching needed)
-  return await startRemotionRender(jobId, renderJob, body.outputFormat);
-};
-
-/**
- * Starts a Remotion Lambda render for the given job.
- * This is called either directly (no segments) or after stitching completes.
- */
-async function startRemotionRender(
-  jobId: string,
-  renderJob: {
-    inputProps: {
-      videoUrl: string;
-      segments: RenderRequest["segments"];
-      captions: RenderRequest["captions"];
-      captionSettings: RenderRequest["captionSettings"];
+  // No stitching - render directly
+  if (!REMOTION_SERVE_URL || !REMOTION_FUNCTION_NAME) {
+    return {
+      statusCode: 202,
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ jobId, status: "pending", message: "Remotion not configured" }),
     };
-    totalDuration: number;
-    estimatedFrames: number;
-  },
-  outputFormat?: "mp4" | "webm"
-) {
-  console.log("Starting Remotion Lambda render:", {
-    jobId,
-    composition: "CaptionedVideo",
-    functionName: REMOTION_FUNCTION_NAME,
-    serveUrl: REMOTION_SERVE_URL,
-    inputPropsPreview: {
-      videoUrl: renderJob.inputProps.videoUrl.substring(0, 80) + "...",
-      segmentsCount: renderJob.inputProps.segments.length,
-      captionsCount: renderJob.inputProps.captions.length,
-    },
-  });
+  }
 
   try {
-    // Final validation before sending to Remotion Lambda
-    if (
-      !renderJob.inputProps.videoUrl ||
-      renderJob.inputProps.videoUrl.trim() === ""
-    ) {
-      throw new Error(
-        "videoUrl is empty or undefined - cannot render without source video"
-      );
-    }
-
-    // Optimized framesPerLambda for speed (per Remotion best practices)
-    // 10 min video = 18,000 frames at 30fps
-    // With framesPerLambda=150, that's ~120 workers (fits in 1,000 concurrency limit)
-    // This allows ~6-8 parallel video renders without throttling
-    const framesPerLambda = 150; // ~5 seconds per worker = massive parallelism
-
-    console.log("Render configuration:", {
-      jobId,
-      framesPerLambda,
-      estimatedFrames: renderJob.estimatedFrames,
-      estimatedWorkers: Math.ceil(renderJob.estimatedFrames / framesPerLambda),
-      totalDuration: renderJob.totalDuration,
-    });
-
-    // Calculate actual frame count from video duration
-    const totalFrames = Math.ceil(renderJob.totalDuration * 30); // 30 fps
-
     const renderResponse = await renderMediaOnLambda({
       region: process.env.AWS_REGION_NAME as AwsRegion,
-      functionName: REMOTION_FUNCTION_NAME!,
-      serveUrl: REMOTION_SERVE_URL!,
-      composition: "CaptionedVideo",
-      inputProps: renderJob.inputProps,
-      codec: outputFormat === "webm" ? "vp8" : "h264",
-      outName: `${jobId}.${outputFormat || "mp4"}`,
-      privacy: "no-acl", // Avoid S3 ACL issues - we generate presigned URLs for access
-      framesPerLambda,
-      frameRange: [0, totalFrames - 1], // Render only the actual video frames
-      // Speed optimizations
+      functionName: REMOTION_FUNCTION_NAME,
+      serveUrl: REMOTION_SERVE_URL,
+      composition: compositionId,
+      inputProps: {
+        videoUrl: presignedVideoUrl,
+        segments: [],
+        captions,
+        captionSettings,
+        globalFraming,
+      },
+      codec: body.outputFormat === "webm" ? "vp8" : "h264",
+      outName: `${jobId}.${body.outputFormat || "mp4"}`,
+      privacy: "no-acl",
+      framesPerLambda: 150,
       imageFormat: "jpeg",
       jpegQuality: 80,
-      concurrencyPerLambda: 1, // Keep at 1 to avoid memory leaks and timeouts
+      concurrencyPerLambda: 1,
     });
 
-    console.log("Remotion render started:", {
-      jobId,
-      renderId: renderResponse.renderId,
-      bucketName: renderResponse.bucketName,
-      cloudWatchLogs: renderResponse.cloudWatchLogs,
-      folderInS3Console: renderResponse.folderInS3Console,
-    });
-
-    // Update job with rendering status and renderId for tracking
     await docClient.send(
       new UpdateCommand({
         TableName: RENDER_JOBS_TABLE,
         Key: { jobId },
-        UpdateExpression:
-          "SET #status = :status, renderId = :renderId, bucketName = :bucketName, updatedAt = :updatedAt",
-        ExpressionAttributeNames: {
-          "#status": "status",
-        },
+        UpdateExpression: "SET #status = :status, renderId = :renderId, bucketName = :bucketName, updatedAt = :updatedAt",
+        ExpressionAttributeNames: { "#status": "status" },
         ExpressionAttributeValues: {
           ":status": "rendering",
           ":renderId": renderResponse.renderId,
@@ -607,31 +359,17 @@ async function startRemotionRender(
 
     return {
       statusCode: 202,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: JSON.stringify({
-        jobId,
-        status: "rendering",
-        renderId: renderResponse.renderId,
-        message: "Render started successfully",
-      }),
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ jobId, status: "rendering", renderId: renderResponse.renderId }),
     };
   } catch (error) {
-    console.error("Remotion render failed:", error);
-
-    // Update job with failure status
+    console.error("Render failed:", error);
     await docClient.send(
       new UpdateCommand({
         TableName: RENDER_JOBS_TABLE,
         Key: { jobId },
-        UpdateExpression:
-          "SET #status = :status, #error = :error, updatedAt = :updatedAt",
-        ExpressionAttributeNames: {
-          "#status": "status",
-          "#error": "error",
-        },
+        UpdateExpression: "SET #status = :status, #error = :error, updatedAt = :updatedAt",
+        ExpressionAttributeNames: { "#status": "status", "#error": "error" },
         ExpressionAttributeValues: {
           ":status": "failed",
           ":error": error instanceof Error ? error.message : String(error),
@@ -642,14 +380,8 @@ async function startRemotionRender(
 
     return {
       statusCode: 500,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-      body: JSON.stringify({
-        error: "Render failed",
-        details: error instanceof Error ? error.message : String(error),
-      }),
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ error: "Render failed", details: error instanceof Error ? error.message : String(error) }),
     };
   }
-}
+};

@@ -119,6 +119,7 @@ data "aws_iam_policy_document" "remotion_lambda_policy" {
       "s3:CreateBucket",
       "s3:PutObject",
       "s3:GetObject",
+      "s3:DeleteObject",
       "s3:ListBucket",
       "s3:PutBucketPublicAccessBlock",
       "s3:PutBucketAcl"
@@ -240,7 +241,7 @@ resource "aws_lambda_function" "render_video" {
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
       AWS_REGION_NAME         = var.aws_region
       # These will be set after Remotion Lambda deployment
-      REMOTION_SERVE_URL      = "https://remotionlambda-uswest2-x0ytc7m4sn.s3.us-west-2.amazonaws.com/sites/zeevee-renderer/index.html"
+      REMOTION_SERVE_URL      = "https://remotionlambda-uswest2-0g1upoverr.s3.us-west-2.amazonaws.com/sites/zeevee-renderer/index.html"
       REMOTION_FUNCTION_NAME  = "remotion-render-4-0-387-mem2048mb-disk2048mb-240sec"
       # FFmpeg stitch Lambda for preprocessing segments
       STITCH_FUNCTION_NAME    = "${var.project_name}-stitch-segments"
