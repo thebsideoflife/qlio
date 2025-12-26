@@ -789,60 +789,60 @@ export function Timeline({
       className="w-full h-full bg-background border rounded-lg flex flex-col p-1.5 select-none"
     >
       {/* Toolbar */}
-      <div className="flex items-center gap-0.5 mb-1">
+      <div className="flex items-center gap-1 mb-1.5">
         {/* Segment editing tools */}
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           onClick={handleSplit}
           disabled={!canSplit}
-          className="h-6 w-6 p-0"
+          className="h-7 w-7 p-0"
           title="Split segment at playhead"
         >
-          <Scissors className="h-3 w-3" />
+          <Scissors className="h-3.5 w-3.5" />
         </Button>
         {!previewMode && (
           <Button
             size="sm"
-            variant="outline"
+            variant="secondary"
             onClick={handleAdd}
             disabled={!canAdd}
-            className="h-6 w-6 p-0"
+            className="h-7 w-7 p-0"
             title="Add segment at playhead"
           >
-            <Plus className="h-3 w-3" />
+            <Plus className="h-3.5 w-3.5" />
           </Button>
         )}
 
-        <div className="h-3 w-px bg-border mx-1" />
+        <div className="h-4 w-px bg-border mx-1.5" />
 
         {/* Zoom controls */}
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           onClick={handleZoomOut}
           disabled={zoom <= MIN_ZOOM}
-          className="h-6 w-6 p-0"
+          className="h-7 w-7 p-0"
           title="Zoom out"
         >
-          <ZoomOut className="h-3 w-3" />
+          <ZoomOut className="h-3.5 w-3.5" />
         </Button>
-        <span className="text-[10px] text-muted-foreground w-8 text-center">
+        <span className="text-xs text-foreground/70 font-medium w-9 text-center tabular-nums">
           {zoomPercent}%
         </span>
         <Button
           size="sm"
-          variant="outline"
+          variant="secondary"
           onClick={handleZoomIn}
           disabled={zoom >= MAX_ZOOM}
-          className="h-6 w-6 p-0"
+          className="h-7 w-7 p-0"
           title="Zoom in"
         >
-          <ZoomIn className="h-3 w-3" />
+          <ZoomIn className="h-3.5 w-3.5" />
         </Button>
 
         {/* Centered playback controls */}
-        <div className="flex-1 flex items-center justify-center gap-1.5">
+        <div className="flex-1 flex items-center justify-center gap-2">
           <Button
             size="sm"
             variant="default"
@@ -856,16 +856,16 @@ export function Timeline({
                 }
               }
             }}
-            className="h-6 w-6 p-0"
+            className="h-7 w-7 p-0"
             title={isPlaying ? "Pause (Space)" : "Play (Space)"}
           >
             {isPlaying ? (
-              <Pause className="h-3 w-3" />
+              <Pause className="h-3.5 w-3.5" />
             ) : (
-              <Play className="h-3 w-3 ml-0.5" />
+              <Play className="h-3.5 w-3.5 ml-0.5" />
             )}
           </Button>
-          <span className="text-[10px] text-muted-foreground font-mono">
+          <span className="text-xs text-foreground font-mono tabular-nums">
             {formatTime(effectiveCurrentTime)} / {formatTime(effectiveDuration)}
           </span>
         </div>
@@ -873,15 +873,15 @@ export function Timeline({
         {/* Preview mode toggle */}
         <Button
           size="sm"
-          variant={previewMode ? "default" : "ghost"}
+          variant={previewMode ? "default" : "secondary"}
           onClick={() => onPreviewModeChange(!previewMode)}
-          className="h-6 w-6 p-0"
+          className="h-7 w-7 p-0"
           title={previewMode ? "Exit preview mode" : "Preview final video"}
         >
           {previewMode ? (
-            <EyeOff className="h-3 w-3" />
+            <EyeOff className="h-3.5 w-3.5" />
           ) : (
-            <Eye className="h-3 w-3" />
+            <Eye className="h-3.5 w-3.5" />
           )}
         </Button>
 
@@ -891,10 +891,10 @@ export function Timeline({
           variant="ghost"
           onClick={handleDelete}
           disabled={!selectedId}
-          className="h-6 w-6 p-0 text-red-500 hover:text-red-400 hover:bg-red-500/10 disabled:text-muted-foreground/30"
+          className="h-7 w-7 p-0 text-red-500 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-30"
           title="Delete selected segment"
         >
-          <Trash2 className="h-3 w-3" />
+          <Trash2 className="h-3.5 w-3.5" />
         </Button>
       </div>
 
@@ -916,11 +916,11 @@ export function Timeline({
           style={{ width: `${trackWidth}px`, minWidth: "100%" }}
         >
           {/* Time markers */}
-          <div className="h-4 relative shrink-0">
+          <div className="h-5 relative shrink-0">
             {timeMarkers.map(({ time, px }) => (
               <span
                 key={time}
-                className="absolute text-[10px] text-muted-foreground -translate-x-1/2"
+                className="absolute text-[11px] text-foreground/60 font-medium -translate-x-1/2 tabular-nums"
                 style={{ left: `${px}px` }}
               >
                 {formatTime(time)}
@@ -930,14 +930,19 @@ export function Timeline({
 
           {/* Track */}
           <div
-            className="relative flex-1 bg-muted/30 rounded cursor-pointer min-h-0"
+            className="relative flex-1 rounded cursor-pointer min-h-0 overflow-hidden"
             onClick={handleTrackClick}
           >
+            {/* Base video layer - always visible, shows full duration */}
+            {!previewMode && (
+              <div className="absolute inset-y-1 inset-x-0 bg-zinc-700/60 rounded" />
+            )}
+
             {/* Time tick marks */}
             {timeMarkers.map(({ time, px }) => (
               <div
                 key={time}
-                className="absolute top-0 bottom-0 border-l border-muted-foreground/20 pointer-events-none"
+                className="absolute top-0 bottom-0 border-l border-white/10 pointer-events-none"
                 style={{ left: `${px}px` }}
               />
             ))}
@@ -957,10 +962,10 @@ export function Timeline({
                 <div
                   key={segment.id}
                   className={cn(
-                    "absolute top-1 bottom-1 rounded cursor-pointer transition-colors border-2",
+                    "absolute top-1 bottom-1 cursor-pointer transition-all",
                     selectedId === segment.id
-                      ? "bg-blue-600 border-white z-10"
-                      : "bg-blue-500/60 border-transparent hover:bg-blue-500/80"
+                      ? "bg-emerald-500 ring-2 ring-white ring-offset-1 ring-offset-background z-10 rounded-md"
+                      : "bg-emerald-600/80 hover:bg-emerald-500/90 rounded-sm"
                   )}
                   style={{ left: `${left}px`, width: `${width}px` }}
                   onClick={(e) => handleSegmentClick(e, segment.id)}
@@ -987,7 +992,7 @@ export function Timeline({
                   )}
 
                   {width > 40 && (
-                    <div className="px-3 py-0.5 text-[10px] text-white font-medium truncate pointer-events-none">
+                    <div className="px-2 py-0.5 text-[10px] text-white font-semibold truncate pointer-events-none drop-shadow-sm">
                       {segment.title}
                     </div>
                   )}

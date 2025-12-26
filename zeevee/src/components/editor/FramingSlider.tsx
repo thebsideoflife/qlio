@@ -59,28 +59,30 @@ export function FramingSlider({
           : "absolute right-3 top-1/2 -translate-y-1/2 pointer-events-auto"
       }
       onMouseDown={(e) => e.stopPropagation()}
-      title={`Drag to adjust ${isHorizontal ? "horizontal" : "vertical"} position\nDouble-click to center`}
+      title={`Drag to adjust ${
+        isHorizontal ? "horizontal" : "vertical"
+      } position\nDouble-click to center`}
     >
       <div
-        className={`bg-white/10 backdrop-blur-sm rounded-full relative hover:bg-white/15 transition-colors overflow-hidden ${
+        className={`bg-black/40 backdrop-blur-sm rounded-full relative hover:bg-black/50 transition-colors overflow-hidden shadow-lg ${
           isHorizontal
-            ? "w-48 h-3 cursor-ew-resize"
-            : "w-3 h-48 cursor-ns-resize"
+            ? "w-48 h-4 cursor-ew-resize"
+            : "w-4 h-48 cursor-ns-resize"
         }`}
         onMouseDown={handleMouseDown}
         onDoubleClick={handleDoubleClick}
       >
         {/* Center snap indicator line */}
         <div
-          className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white/40 ${
-            isHorizontal ? "w-px h-5" : "w-5 h-px"
+          className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white/50 ${
+            isHorizontal ? "w-px h-6" : "w-6 h-px"
           }`}
         />
 
         {/* Proportional block - represents the viewport window */}
         <div
-          className={`absolute bg-white/70 rounded-full ${
-            isHorizontal ? "top-0 bottom-0" : "left-0 right-0"
+          className={`absolute bg-white rounded-full shadow-md ${
+            isHorizontal ? "top-0.5 bottom-0.5" : "left-0.5 right-0.5"
           }`}
           style={
             isHorizontal
@@ -100,4 +102,3 @@ export function FramingSlider({
     </div>
   );
 }
-
