@@ -226,9 +226,12 @@ async function handleSingleVideoCompletion(
         videoId
       );
 
-      // Safely access duration
-      if ("metadata" in video && (video as any).metadata?.duration) {
-        videoDuration = (video as any).metadata.duration;
+      // Safely access duration - 12labs uses system_metadata.duration
+      const anyVideo = video as any;
+      if (anyVideo.system_metadata?.duration) {
+        videoDuration = anyVideo.system_metadata.duration;
+      } else if (anyVideo.metadata?.duration) {
+        videoDuration = anyVideo.metadata.duration;
       }
 
       console.log("12Labs video response:", JSON.stringify(video, null, 2));
@@ -365,6 +368,8 @@ async function handleChunkCompletion(
     );
     const apiKey = secretVal12Labs.SecretString;
 
+    let transcriptionUrl: string | null = null;
+
     if (apiKey) {
       // Calculate total duration from chunks
       totalDuration = chunks.reduce((max, c) => Math.max(max, c.endOffset), 0);
@@ -405,20 +410,33 @@ async function handleChunkCompletion(
         }
 
         if (allTranscriptions.length > 0) {
-          // Sort by start time and dedupe overlaps
+          // Sort by start time
           allTranscriptions.sort((a, b) => a.start - b.start);
+
+          // Remove duplicate segments from overlap regions (chunks overlap by 30s)
+          const dedupedTranscriptions: any[] = [];
+          for (const segment of allTranscriptions) {
+            const last =
+              dedupedTranscriptions[dedupedTranscriptions.length - 1];
+            // Skip if this segment overlaps significantly with the previous one
+            if (last && segment.start < last.end - 1) {
+              continue;
+            }
+            dedupedTranscriptions.push(segment);
+          }
 
           const key = `transcriptions/${assetId}.json`;
           await s3Client.send(
             new PutObjectCommand({
               Bucket: BUCKET_NAME,
               Key: key,
-              Body: JSON.stringify(allTranscriptions),
+              Body: JSON.stringify(dedupedTranscriptions),
               ContentType: "application/json",
             })
           );
+          transcriptionUrl = `s3://${BUCKET_NAME}/${key}`;
           console.log(
-            `Aggregated transcription stored at s3://${BUCKET_NAME}/${key}`
+            `Aggregated transcription stored at ${transcriptionUrl} (${dedupedTranscriptions.length} segments from ${allTranscriptions.length} raw)`
           );
         }
       } catch (err) {
@@ -426,13 +444,13 @@ async function handleChunkCompletion(
       }
     }
 
-    // Update asset as READY
+    // Update asset as READY with transcriptionUrl
     await docClient.send(
       new UpdateCommand({
         TableName: TABLE_NAME,
         Key: { assetId },
         UpdateExpression:
-          "SET #s = :status, chunks = :chunks, #dur = :dur, pendingChunks = :pending, updatedAt = :ua",
+          "SET #s = :status, chunks = :chunks, #dur = :dur, pendingChunks = :pending, transcriptionUrl = :trans, updatedAt = :ua",
         ExpressionAttributeNames: {
           "#s": "status",
           "#dur": "duration",
@@ -442,6 +460,7 @@ async function handleChunkCompletion(
           ":chunks": chunks,
           ":dur": totalDuration,
           ":pending": 0,
+          ":trans": transcriptionUrl,
           ":ua": new Date().toISOString(),
         },
       })

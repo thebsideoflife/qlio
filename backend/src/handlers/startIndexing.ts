@@ -28,8 +28,8 @@ const TWELVE_LABS_INDEX_ID = process.env.TWELVE_LABS_INDEX_ID!;
 const SPLIT_FUNCTION_NAME = process.env.SPLIT_FUNCTION_NAME;
 
 // 12labs max video duration is 60 minutes (3600 seconds)
-// We use 55 minutes as threshold to have some buffer
-const MAX_SINGLE_VIDEO_DURATION = 55 * 60;
+// Only split if video exceeds 60 minutes (splitting adds complexity)
+const MAX_SINGLE_VIDEO_DURATION = 60 * 60;
 
 interface ChunkInfo {
   chunkIndex: number;
@@ -61,8 +61,7 @@ async function indexVideo(
     { expiresIn: 3600 }
   );
 
-  const logPrefix =
-    chunkIndex !== undefined ? `chunk ${chunkIndex} of ` : "";
+  const logPrefix = chunkIndex !== undefined ? `chunk ${chunkIndex} of ` : "";
   console.log(`Starting indexing for ${logPrefix}${assetId}...`);
 
   const task = await client.tasks.create({
@@ -87,9 +86,7 @@ export const handler: Handler<S3Event> = async (event) => {
 
     for (const record of event.Records) {
       const bucket = record.s3.bucket.name;
-      const key = decodeURIComponent(
-        record.s3.object.key.replace(/\+/g, " ")
-      );
+      const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, " "));
 
       // Check if this is a chunk upload (chunks/{assetId}/chunk-N.mp4)
       // or a raw video upload (raw/{assetId}.mp4)
@@ -193,7 +190,9 @@ async function handleChunkIndexing(
     })
   );
 
-  console.log(`Started indexing task ${taskId} for chunk ${chunkIndex} of asset ${assetId}`);
+  console.log(
+    `Started indexing task ${taskId} for chunk ${chunkIndex} of asset ${assetId}`
+  );
 }
 
 /**
@@ -222,7 +221,9 @@ async function handleRawVideoUpload(
   const asset = assetRes.Item;
   const duration = asset?.duration || 0;
 
-  console.log(`Asset ${assetId} duration: ${duration}s (max single: ${MAX_SINGLE_VIDEO_DURATION}s)`);
+  console.log(
+    `Asset ${assetId} duration: ${duration}s (max single: ${MAX_SINGLE_VIDEO_DURATION}s)`
+  );
 
   // Check if video needs splitting
   if (duration > MAX_SINGLE_VIDEO_DURATION && SPLIT_FUNCTION_NAME) {
