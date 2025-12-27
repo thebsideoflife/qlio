@@ -62,6 +62,14 @@ export async function generateWithStoryIQ(
       goals.targetDuration || "auto"
     }s`
   );
+  if (goals.userInstructions) {
+    console.log(
+      `[StoryIQ] User instructions: "${goals.userInstructions.substring(
+        0,
+        100
+      )}..."`
+    );
+  }
 
   // Get video duration - prioritize input (from frontend/asset), then 12Labs, then transcript
   let videoDuration = input.videoDuration || 0;
@@ -171,11 +179,12 @@ async function generateSegmentProposals(
   understanding: VideoUnderstanding,
   goals: StoryIQGoals
 ): Promise<ProposedSegment[]> {
-  // Get the appropriate prompt for this purpose
+  // Get the appropriate prompt for this purpose (with optional user instructions)
   const prompt = getPlanningPrompt(
     goals.purpose,
     understanding,
-    goals.targetDuration
+    goals.targetDuration,
+    goals.userInstructions
   );
 
   // Determine max tokens based on purpose
@@ -275,14 +284,22 @@ export interface FrontendMetadata {
   purpose?: string; // "full_video" | "highlights" | etc.
   duration?: string; // "3 min" | "30s" | "Auto" - target duration selection
   videoDuration?: number; // Actual video duration in seconds (for reference)
+  userPrompt?: string; // Custom instructions from user
 }
 
+const MAX_USER_INSTRUCTIONS_LENGTH = 500;
+
 export function mapMetadataToGoals(metadata: FrontendMetadata): StoryIQGoals {
+  // Truncate user instructions to prevent overly long prompts
+  const userInstructions =
+    metadata.userPrompt?.slice(0, MAX_USER_INSTRUCTIONS_LENGTH) || undefined;
+
   return {
     purpose: (metadata.purpose as Purpose) || "highlights",
     contentType: (metadata.type as "tv" | "movie" | "ugc") || "tv",
     platform: (metadata.platform as any) || "mobile",
     targetDuration: parseDurationString(metadata.duration),
+    userInstructions,
   };
 }
 

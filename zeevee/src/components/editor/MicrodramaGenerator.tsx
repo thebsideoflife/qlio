@@ -166,6 +166,7 @@ type Selections = {
   platform: string;
   purpose: string;
   duration: string;
+  userPrompt: string;
 };
 
 const INITIAL: Selections = {
@@ -173,6 +174,7 @@ const INITIAL: Selections = {
   platform: "",
   purpose: "",
   duration: "",
+  userPrompt: "",
 };
 
 export function MicrodramaGenerator({
@@ -319,6 +321,15 @@ export function MicrodramaGenerator({
                 />
               </div>
             )}
+
+            {/* Optional User Prompt */}
+            {selections.type && selections.platform && selections.purpose && (
+              <UserPromptSection
+                value={selections.userPrompt}
+                onChange={(v) => select("userPrompt", v)}
+                viewMode="chat"
+              />
+            )}
           </div>
         ) : (
           <div className="flex-1 overflow-y-auto p-4 space-y-5">
@@ -357,6 +368,15 @@ export function MicrodramaGenerator({
                   onSelect={(v) => select("duration", v)}
                 />
               </GridSection>
+            )}
+
+            {/* Optional User Prompt */}
+            {selections.purpose && (
+              <UserPromptSection
+                value={selections.userPrompt}
+                onChange={(v) => select("userPrompt", v)}
+                viewMode="compact"
+              />
             )}
           </div>
         )}
@@ -591,5 +611,71 @@ function OptionGrid({
         );
       })}
     </div>
+  );
+}
+
+/* ============ User Prompt Section ============ */
+
+function UserPromptSection({
+  value,
+  onChange,
+  viewMode,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  viewMode: "chat" | "compact";
+}) {
+  const maxLength = 500;
+  const remaining = maxLength - value.length;
+
+  if (viewMode === "chat") {
+    return (
+      <div className="flex justify-end">
+        <div className="w-[85%] space-y-1">
+          <textarea
+            value={value}
+            onChange={(e) => onChange(e.target.value.slice(0, maxLength))}
+            maxLength={maxLength}
+            placeholder="Any special instructions? (optional)"
+            className="w-full h-16 px-3 py-2 text-sm rounded-2xl rounded-br-sm bg-blue-50 dark:bg-blue-950/30 border-2 border-blue-200 dark:border-blue-800 focus:border-blue-400 focus:outline-none resize-none placeholder:text-muted-foreground/50"
+          />
+          {value.length > 0 && (
+            <div
+              className={cn(
+                "text-xs text-right pr-1",
+                remaining < 50 ? "text-amber-500" : "text-muted-foreground/60"
+              )}
+            >
+              {remaining}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Compact view
+  return (
+    <GridSection label="Instructions (optional)">
+      <div className="space-y-1">
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value.slice(0, maxLength))}
+          maxLength={maxLength}
+          placeholder="e.g., Focus on the romantic subplot..."
+          className="w-full h-14 px-3 py-2 text-sm rounded-lg bg-card border-2 border-dashed border-border focus:border-blue-400 focus:border-solid focus:outline-none resize-none placeholder:text-muted-foreground/50"
+        />
+        {value.length > 0 && (
+          <div
+            className={cn(
+              "text-xs text-right",
+              remaining < 50 ? "text-amber-500" : "text-muted-foreground/60"
+            )}
+          >
+            {remaining}
+          </div>
+        )}
+      </div>
+    </GridSection>
   );
 }
