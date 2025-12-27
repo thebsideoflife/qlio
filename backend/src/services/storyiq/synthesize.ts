@@ -8,12 +8,6 @@
  */
 
 import {
-  BedrockRuntimeClient,
-  InvokeModelCommand,
-} from "@aws-sdk/client-bedrock-runtime";
-import {
-  MODEL_SONNET,
-  extractLLMContent,
   parseJSONFromLLM,
   type VideoUnderstanding,
   type SceneBreakdown,
@@ -23,10 +17,7 @@ import {
   type VisualNote,
   type StoryIQTools,
 } from "./types";
-
-const bedrock = new BedrockRuntimeClient({
-  region: process.env.AWS_REGION || "us-west-2",
-});
+import { callClaude } from "./claude-client";
 
 // ============================================================================
 // Synthesis Prompt
@@ -105,11 +96,34 @@ export async function synthesizeVideoUnderstanding(
     `  - Scenes: ${scenes.length}, Characters: ${characters.length}, Emotions: ${emotions.length}`
   );
 
-  // Synthesize high-level understanding
+  // Validate scene timestamps - filter out any that exceed video duration
+  // Allow 20% tolerance for minor timing discrepancies
+  const maxAllowedTime = duration * 1.2;
+  const validScenes = scenes.filter((scene) => {
+    if (scene.endTime > maxAllowedTime) {
+      console.warn(
+        `[StoryIQ Synthesize] Discarding scene "${scene.description?.slice(0, 50)}..." ` +
+          `(endTime ${scene.endTime}s > duration ${duration}s)`
+      );
+      return false;
+    }
+    return true;
+  });
+
+  if (validScenes.length < scenes.length) {
+    console.warn(
+      `[StoryIQ Synthesize] Filtered ${scenes.length - validScenes.length} scenes with invalid timestamps`
+    );
+  }
+
+  // Similarly validate emotional arc timestamps
+  const validEmotions = emotions.filter((e) => e.endTime <= maxAllowedTime);
+
+  // Synthesize high-level understanding (using validated data)
   const synthesis = await synthesizeHighLevel(
-    scenes,
+    validScenes,
     characters,
-    emotions,
+    validEmotions,
     visuals,
     transcript
   );
@@ -125,15 +139,15 @@ export async function synthesizeVideoUnderstanding(
     tone: synthesis.tone || "neutral",
     genre: synthesis.genre,
 
-    // Detailed (from tools)
-    scenes,
+    // Detailed (from tools) - use validated scenes/emotions
+    scenes: validScenes,
     characters,
-    emotionalArc: emotions,
+    emotionalArc: validEmotions,
     visualNotes: visuals,
     transcript,
 
     // Quick lookups
-    peakMoments: synthesis.peakMoments || extractPeakMoments(emotions),
+    peakMoments: synthesis.peakMoments || extractPeakMoments(validEmotions),
   };
 
   console.log(`[StoryIQ Synthesize] Complete in ${Date.now() - startTime}ms`);
@@ -216,25 +230,11 @@ async function synthesizeHighLevel(
     .replace("{transcript}", transcriptExcerpt || "No transcript");
 
   try {
-    const command = new InvokeModelCommand({
-      modelId: MODEL_SONNET,
-      contentType: "application/json",
-      accept: "application/json",
-      body: JSON.stringify({
-        anthropic_version: "bedrock-2023-05-31",
-        max_tokens: 1000,
-        messages: [
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-      }),
+    const content = await callClaude({
+      model: "sonnet",
+      maxTokens: 1000,
+      messages: [{ role: "user", content: prompt }],
     });
-
-    const response = await bedrock.send(command);
-    const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-    const content = extractLLMContent(responseBody);
 
     return parseJSONFromLLM(content);
   } catch (error) {

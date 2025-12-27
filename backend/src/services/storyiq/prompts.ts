@@ -10,7 +10,13 @@
  * 3. A revision prompt (fixing issues)
  */
 
-import type { Purpose, VideoUnderstanding, ProposedSegment, CoverageReport, SegmentContent } from "./types";
+import {
+  Purpose,
+  type VideoUnderstanding,
+  type ProposedSegment,
+  type CoverageReport,
+  type SegmentContent,
+} from "./types";
 
 // ============================================================================
 // Common Prompt Components
@@ -45,25 +51,49 @@ Quality Guidelines:
 // ============================================================================
 
 /**
- * C1.a - Binge: Full asset split into episodic chunks
+ * Full Video: Split entire asset into microdrama chapters
+ *
+ * This takes a longer piece of content (e.g., 50 min) and intelligently
+ * groups it into digestible chapters (e.g., 10 chapters of ~5 min each).
  */
-function getBingePrompt(understanding: VideoUnderstanding, targetSegmentMinutes: number): string {
-  return `You are StoryIQ, an expert video editor creating episodic content for binge viewing.
+function getFullVideoPrompt(
+  understanding: VideoUnderstanding,
+  targetSegmentMinutes: number
+): string {
+  const videoDurationSeconds = Math.round(understanding.duration);
+  const videoDurationMinutes = Math.round(understanding.duration / 60);
+  const expectedChapters = Math.ceil(
+    videoDurationMinutes / targetSegmentMinutes
+  );
+  const targetSeconds = targetSegmentMinutes * 60;
+
+  return `You are StoryIQ, an expert video editor reorganizing long-form content into bite-sized MICRODRAMA CHAPTERS for streaming consumption.
 
 VIDEO UNDERSTANDING:
 ${formatUnderstandingCompact(understanding)}
 
-TASK: Divide this ${Math.round(understanding.duration / 60)} minute video into episodes of approximately ${targetSegmentMinutes} minutes each.
+YOUR TASK:
+Take this ${videoDurationMinutes}-minute video and divide it into ${expectedChapters} chapters of approximately ${targetSegmentMinutes} minutes (~${targetSeconds} seconds) each.
 
-Requirements:
-- Include ALL content - every second of the video must be in exactly one segment
-- Find natural scene breaks near the target boundaries
-- Each episode should feel like a complete mini-chapter
-- Episode titles should be compelling and hint at the content
+Think of this like creating YouTube chapters or Netflix episode breaks - natural groupings that make a long piece of content easy to consume in short sessions.
 
-Use the scene breakdown to identify natural transition points. Don't cut mid-scene unless absolutely necessary.
+CONSTRAINTS:
+- Video is ${videoDurationSeconds} seconds total (timestamps must be 0 to ${videoDurationSeconds})
+- Create exactly ${expectedChapters} chapters (give or take 1-2 based on natural breaks)
+- Each chapter ~${targetSeconds} seconds (±60 seconds is fine for natural scene breaks)
+- ALL content must be included - no gaps, no overlaps
 
-Target: ~${targetSegmentMinutes} minute episodes (flexible - prioritize natural breaks)
+CHAPTER REQUIREMENTS:
+1. Find natural narrative break points (scene changes, topic shifts, dramatic beats)
+2. Each chapter should have a compelling, descriptive title (like a YouTube chapter)
+3. Titles should hint at the content without spoilers
+4. Prefer ending chapters on cliffhangers or natural pauses
+
+EXAMPLE for a 50-minute video with 5-minute chapters:
+- Chapter 1: 0-300s "The Beginning" 
+- Chapter 2: 300-600s "Rising Tension"
+- ... (10 total chapters)
+- Chapter 10: 2700-3000s "The Finale"
 
 ${QUALITY_GUIDELINES}
 ${OUTPUT_SCHEMA}`;
@@ -72,13 +102,18 @@ ${OUTPUT_SCHEMA}`;
 /**
  * C1.b - Highlights: Extract best moments
  */
-function getHighlightsPrompt(understanding: VideoUnderstanding, targetDurationSeconds: number): string {
+function getHighlightsPrompt(
+  understanding: VideoUnderstanding,
+  targetDurationSeconds: number
+): string {
   return `You are StoryIQ, an expert video editor extracting the most compelling moments.
 
 VIDEO UNDERSTANDING:
 ${formatUnderstandingCompact(understanding)}
 
-TASK: Select the best moments totaling approximately ${Math.round(targetDurationSeconds / 60)} minutes.
+TASK: Select the best moments totaling approximately ${Math.round(
+    targetDurationSeconds / 60
+  )} minutes.
 
 Selection Criteria (in order of importance):
 1. Emotional peaks - moments marked as "high" or "peak" intensity
@@ -93,7 +128,9 @@ Requirements:
 - You MAY exceed target duration by 20-30% if it significantly improves quality
 - Ensure narrative coherence - selections should tell a condensed story
 
-Target: ~${Math.round(targetDurationSeconds / 60)} minutes (advisory - quality over length)
+Target: ~${Math.round(
+    targetDurationSeconds / 60
+  )} minutes (advisory - quality over length)
 
 ${QUALITY_GUIDELINES}
 ${OUTPUT_SCHEMA}`;
@@ -135,26 +172,31 @@ ${OUTPUT_SCHEMA}`;
 /**
  * C3 - Tune-In: Short promotional spot
  */
-function getTuneInPrompt(understanding: VideoUnderstanding, targetSeconds: number): string {
+function getTuneInPrompt(
+  understanding: VideoUnderstanding,
+  targetSeconds: number
+): string {
   const is30s = targetSeconds >= 25;
-  
-  return `You are StoryIQ, creating a ${is30s ? '30' : '15'} second tune-in spot designed for conversion.
+
+  return `You are StoryIQ, creating a ${
+    is30s ? "30" : "15"
+  } second tune-in spot designed for conversion.
 
 VIDEO UNDERSTANDING:
 ${formatUnderstandingCompact(understanding)}
 
-TASK: Create a ${is30s ? '30' : '15'} second spot following this structure:
+TASK: Create a ${is30s ? "30" : "15"} second spot following this structure:
 
 1. COLD OPEN (0:00-0:05) - 5 seconds
    High-impact visual. Provocative one-liner. Stop the scroll.
    
-2. PREMISE (0:05-${is30s ? '0:20' : '0:10'}) - ${is30s ? '15' : '5'} seconds
+2. PREMISE (0:05-${is30s ? "0:20" : "0:10"}) - ${is30s ? "15" : "5"} seconds
    Fast-paced montage. Establish genre and conflict instantly.
    
-3. SELL (${is30s ? '0:20-0:25' : '0:10-0:13'}) - ${is30s ? '5' : '3'} seconds
+3. SELL (${is30s ? "0:20-0:25" : "0:10-0:13"}) - ${is30s ? "5" : "3"} seconds
    Final escalation. Best joke or action peak. The hook.
    
-4. END CARD (${is30s ? '0:25-0:30' : '0:13-0:15'}) - 5 seconds
+4. END CARD (${is30s ? "0:25-0:30" : "0:13-0:15"}) - 5 seconds
    Logo moment. Clear call-to-action.
 
 Mark each segment with its section name.
@@ -166,13 +208,18 @@ ${OUTPUT_SCHEMA}`;
 /**
  * C4 - Bridge: Recap & Tease
  */
-function getBridgePrompt(understanding: VideoUnderstanding, targetSeconds: number): string {
+function getBridgePrompt(
+  understanding: VideoUnderstanding,
+  targetSeconds: number
+): string {
   return `You are StoryIQ, creating a recap video that reactivates interest and teases what's ahead.
 
 VIDEO UNDERSTANDING:
 ${formatUnderstandingCompact(understanding)}
 
-TASK: Create a ${Math.round(targetSeconds / 60)}-minute recap following this structure:
+TASK: Create a ${Math.round(
+    targetSeconds / 60
+  )}-minute recap following this structure:
 
 1. ANCHOR (first 15% of duration)
    The single most shocking or emotional moment. Puts viewer back in the moment.
@@ -198,13 +245,18 @@ ${OUTPUT_SCHEMA}`;
 /**
  * C5 - Episode Recap: "Previously on..." style
  */
-function getEpisodeRecapPrompt(understanding: VideoUnderstanding, targetSeconds: number): string {
+function getEpisodeRecapPrompt(
+  understanding: VideoUnderstanding,
+  targetSeconds: number
+): string {
   return `You are StoryIQ, creating a "Previously on..." episode recap.
 
 VIDEO UNDERSTANDING:
 ${formatUnderstandingCompact(understanding)}
 
-TASK: Create a ${Math.round(targetSeconds)} second recap following this structure:
+TASK: Create a ${Math.round(
+    targetSeconds
+  )} second recap following this structure:
 
 1. TRIGGER (0:00-0:03) - 3 seconds
    Opening beat. Mode switch signal.
@@ -230,13 +282,18 @@ ${OUTPUT_SCHEMA}`;
 /**
  * C6 - Season Recap: Full season summary
  */
-function getSeasonRecapPrompt(understanding: VideoUnderstanding, targetSeconds: number): string {
+function getSeasonRecapPrompt(
+  understanding: VideoUnderstanding,
+  targetSeconds: number
+): string {
   return `You are StoryIQ, creating a comprehensive season recap.
 
 VIDEO UNDERSTANDING:
 ${formatUnderstandingCompact(understanding)}
 
-TASK: Create a ${Math.round(targetSeconds / 60)} minute season recap following this structure:
+TASK: Create a ${Math.round(
+    targetSeconds / 60
+  )} minute season recap following this structure:
 
 1. RE-INTRODUCTION (first 15% of duration)
    Establish the world. Quick character portraits of main cast.
@@ -265,7 +322,10 @@ ${OUTPUT_SCHEMA}`;
 /**
  * C7 - Social Segment: Retention-optimized clip
  */
-function getSocialSegmentPrompt(understanding: VideoUnderstanding, targetSeconds: number): string {
+function getSocialSegmentPrompt(
+  understanding: VideoUnderstanding,
+  targetSeconds: number
+): string {
   return `You are StoryIQ, creating a social media clip optimized for retention and engagement.
 
 VIDEO UNDERSTANDING:
@@ -280,10 +340,14 @@ TASK: Create a ${targetSeconds} second social clip following this structure:
 2. CONTEXT (0:03-0:10) - 7 seconds
    Compressed setup. Focus on faces. Dialogue starts immediately.
    
-3. MEAT (0:10-0:${Math.round(targetSeconds * 0.7)}) - ${Math.round(targetSeconds * 0.5)} seconds
+3. MEAT (0:10-0:${Math.round(targetSeconds * 0.7)}) - ${Math.round(
+    targetSeconds * 0.5
+  )} seconds
    The scene. Rapid cuts. Keep viewer from scrolling.
    
-4. PAYOFF (0:${Math.round(targetSeconds * 0.7)}-0:${Math.round(targetSeconds * 0.9)}) - ${Math.round(targetSeconds * 0.2)} seconds
+4. PAYOFF (0:${Math.round(targetSeconds * 0.7)}-0:${Math.round(
+    targetSeconds * 0.9
+  )}) - ${Math.round(targetSeconds * 0.2)} seconds
    The dopamine hit. Punchline, kiss, kill, or mic drop.
    
 5. LOOP (final 5 seconds)
@@ -305,19 +369,23 @@ export function getReviewPrompt(
   coverage: CoverageReport,
   purpose: Purpose
 ): string {
-  const segmentDetails = segments.map((seg, i) => {
-    const content = segmentContent[i];
-    return `
+  const segmentDetails = segments
+    .map((seg, i) => {
+      const content = segmentContent[i];
+      return `
 SEGMENT ${i + 1}: "${seg.title}"
-  Time: ${seg.startTime}s - ${seg.endTime}s (${Math.round(seg.endTime - seg.startTime)}s)
-  Section: ${seg.section || 'N/A'}
+  Time: ${seg.startTime}s - ${seg.endTime}s (${Math.round(
+        seg.endTime - seg.startTime
+      )}s)
+  Section: ${seg.section || "N/A"}
   Your reasoning: ${seg.reasoning}
   
   ACTUAL CONTENT:
-  ${content?.transcript?.substring(0, 500) || 'No transcript available'}
-  ${content?.sceneDescriptions?.[0]?.substring(0, 300) || ''}
+  ${content?.transcript?.substring(0, 500) || "No transcript available"}
+  ${content?.sceneDescriptions?.[0]?.substring(0, 300) || ""}
 `;
-  }).join('\n---\n');
+    })
+    .join("\n---\n");
 
   return `You are reviewing your own segment selections. Be critical but fair.
 
@@ -328,10 +396,24 @@ ${segmentDetails}
 
 COVERAGE REPORT:
 - Total duration: ${Math.round(coverage.totalDuration)}s
-- Target duration: ${coverage.targetDuration ? Math.round(coverage.targetDuration) + 's' : 'N/A'}
-${coverage.gaps?.length ? `- GAPS FOUND: ${coverage.gaps.map(g => `${g.start}s-${g.end}s`).join(', ')}` : '- No gaps'}
-- Emotional peaks covered: ${coverage.emotionalCoverage.peaksCovered}/${coverage.emotionalCoverage.peaksTotal}
-${coverage.issues.length > 0 ? `- ISSUES: ${coverage.issues.join('; ')}` : '- No issues detected'}
+- Target duration: ${
+    coverage.targetDuration ? Math.round(coverage.targetDuration) + "s" : "N/A"
+  }
+${
+  coverage.gaps?.length
+    ? `- GAPS FOUND: ${coverage.gaps
+        .map((g) => `${g.start}s-${g.end}s`)
+        .join(", ")}`
+    : "- No gaps"
+}
+- Emotional peaks covered: ${coverage.emotionalCoverage.peaksCovered}/${
+    coverage.emotionalCoverage.peaksTotal
+  }
+${
+  coverage.issues.length > 0
+    ? `- ISSUES: ${coverage.issues.join("; ")}`
+    : "- No issues detected"
+}
 
 EVALUATE:
 1. Does each segment deliver on its title and reasoning?
@@ -357,10 +439,12 @@ export function getRevisionPrompt(
   return `You are revising your segment selections based on identified issues.
 
 ORIGINAL SEGMENTS:
-${originalSegments.map(s => `- "${s.title}" [${s.startTime}-${s.endTime}s]: ${s.reasoning}`).join('\n')}
+${originalSegments
+  .map((s) => `- "${s.title}" [${s.startTime}-${s.endTime}s]: ${s.reasoning}`)
+  .join("\n")}
 
 ISSUES TO FIX:
-${issues.map(i => `- ${i}`).join('\n')}
+${issues.map((i) => `- ${i}`).join("\n")}
 
 VIDEO UNDERSTANDING:
 ${formatUnderstandingCompact(understanding)}
@@ -383,46 +467,46 @@ export function getPlanningPrompt(
 ): string {
   // Default durations if not specified
   const duration = understanding.duration;
-  
+
   switch (purpose) {
-    case "binge":
-      // Default to 5 minute segments
+    case Purpose.FULL_VIDEO:
+      // Default to 5 minute chapters for microdramas
       const segmentMinutes = targetDuration ? targetDuration / 60 : 5;
-      return getBingePrompt(understanding, segmentMinutes);
-      
-    case "highlights":
+      return getFullVideoPrompt(understanding, segmentMinutes);
+
+    case Purpose.HIGHLIGHTS:
       // Default to 60 seconds
       const highlightSeconds = targetDuration || 60;
       return getHighlightsPrompt(understanding, highlightSeconds);
-      
-    case "trailer":
+
+    case Purpose.TRAILER:
       return getTrailerPrompt(understanding);
-      
-    case "tunein":
+
+    case Purpose.TUNEIN:
       // Default to 30 seconds
       const tuneInSeconds = targetDuration || 30;
       return getTuneInPrompt(understanding, tuneInSeconds);
-      
-    case "bridge":
+
+    case Purpose.BRIDGE:
       // Default to 90 seconds
       const bridgeSeconds = targetDuration || 90;
       return getBridgePrompt(understanding, bridgeSeconds);
-      
-    case "episode_recap":
+
+    case Purpose.EPISODE_RECAP:
       // Default to 60 seconds
       const episodeRecapSeconds = targetDuration || 60;
       return getEpisodeRecapPrompt(understanding, episodeRecapSeconds);
-      
-    case "season_recap":
+
+    case Purpose.SEASON_RECAP:
       // Default to 3 minutes
       const seasonRecapSeconds = targetDuration || 180;
       return getSeasonRecapPrompt(understanding, seasonRecapSeconds);
-      
-    case "social_segment":
+
+    case Purpose.SOCIAL_SEGMENT:
       // Default to 30 seconds
       const socialSeconds = targetDuration || 30;
       return getSocialSegmentPrompt(understanding, socialSeconds);
-      
+
     default:
       // Fallback to highlights
       return getHighlightsPrompt(understanding, 60);
@@ -437,15 +521,24 @@ function formatUnderstandingCompact(understanding: VideoUnderstanding): string {
   const parts: string[] = [];
 
   parts.push(`TITLE: ${understanding.title}`);
-  parts.push(`DURATION: ${Math.round(understanding.duration)}s (${Math.round(understanding.duration / 60)} min)`);
+  parts.push(
+    `DURATION: ${Math.round(understanding.duration)}s (${Math.round(
+      understanding.duration / 60
+    )} min)`
+  );
   parts.push(`LOGLINE: ${understanding.logline}`);
-  parts.push(`TONE: ${understanding.tone} | THEMES: ${understanding.themes.join(", ")}`);
+  parts.push(
+    `TONE: ${understanding.tone} | THEMES: ${understanding.themes.join(", ")}`
+  );
   parts.push("");
 
   parts.push("SCENES:");
   for (const scene of understanding.scenes.slice(0, 30)) {
-    const chars = scene.characters.length > 0 ? ` [${scene.characters.join(", ")}]` : "";
-    parts.push(`  [${scene.startTime}-${scene.endTime}s] ${scene.location}${chars}`);
+    const chars =
+      scene.characters.length > 0 ? ` [${scene.characters.join(", ")}]` : "";
+    parts.push(
+      `  [${scene.startTime}-${scene.endTime}s] ${scene.location}${chars}`
+    );
     parts.push(`    ${scene.description}`);
   }
   if (understanding.scenes.length > 30) {
@@ -463,8 +556,11 @@ function formatUnderstandingCompact(understanding: VideoUnderstanding): string {
 
   parts.push("EMOTIONAL ARC:");
   for (const beat of understanding.emotionalArc) {
-    const marker = beat.intensity === "peak" ? "★★" : beat.intensity === "high" ? "★" : "•";
-    parts.push(`  ${marker} [${beat.startTime}-${beat.endTime}s] ${beat.emotion} (${beat.intensity})`);
+    const marker =
+      beat.intensity === "peak" ? "★★" : beat.intensity === "high" ? "★" : "•";
+    parts.push(
+      `  ${marker} [${beat.startTime}-${beat.endTime}s] ${beat.emotion} (${beat.intensity})`
+    );
   }
   parts.push("");
 
@@ -477,4 +573,3 @@ function formatUnderstandingCompact(understanding: VideoUnderstanding): string {
 
   return parts.join("\n");
 }
-

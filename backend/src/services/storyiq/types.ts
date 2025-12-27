@@ -95,15 +95,28 @@ export interface VideoUnderstanding {
 // Purpose & Goal Types
 // ============================================================================
 
-export type Purpose =
-  | "binge" // C1.a - Full asset microdrama
-  | "highlights" // C1.b - Condensed asset microdrama
-  | "trailer" // C2 - Movie trailer
-  | "tunein" // C3 - Tune-in spot
-  | "bridge" // C4 - Recap & tease
-  | "episode_recap" // C5 - Episode recap
-  | "season_recap" // C6 - Season recap
-  | "social_segment"; // C7 - Social segment
+/**
+ * Content generation purposes.
+ * Each maps to a specific prompt template and output format.
+ */
+export enum Purpose {
+  /** Full video split into microdrama chapters (5-10 min each) */
+  FULL_VIDEO = "full_video",
+  /** Condensed highlights reel */
+  HIGHLIGHTS = "highlights",
+  /** Movie-style trailer (2-2.5 min) */
+  TRAILER = "trailer",
+  /** Short tune-in promotional spot (15-30s) */
+  TUNEIN = "tunein",
+  /** Recap & tease bridge content */
+  BRIDGE = "bridge",
+  /** "Previously on..." episode recap */
+  EPISODE_RECAP = "episode_recap",
+  /** Full season recap */
+  SEASON_RECAP = "season_recap",
+  /** Social media optimized clip */
+  SOCIAL_SEGMENT = "social_segment",
+}
 
 export type ContentType = "tv" | "movie" | "ugc";
 
@@ -149,7 +162,7 @@ export interface SegmentContent {
 export interface CoverageReport {
   totalDuration: number;
   targetDuration?: number;
-  gaps?: Array<{ start: number; end: number }>; // For binge mode
+  gaps?: Array<{ start: number; end: number }>; // For full_video mode
   emotionalCoverage: {
     peaksCovered: number;
     peaksTotal: number;
@@ -220,6 +233,8 @@ export interface StoryIQInput {
   videoUnderstanding?: VideoUnderstanding;
   // Optional: S3 URI for cached transcript (faster than re-fetching from 12Labs)
   transcriptS3Uri?: string;
+  // Optional: video duration in seconds (from frontend or asset record)
+  videoDuration?: number;
 }
 
 export interface StoryIQOutput {

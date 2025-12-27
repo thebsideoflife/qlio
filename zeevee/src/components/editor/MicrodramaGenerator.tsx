@@ -33,9 +33,18 @@ import type { LucideIcon } from "lucide-react";
 import type { IconType } from "react-icons";
 import type { AspectRatio } from "@/remotion/types";
 
+interface GenerationStatus {
+  status: "pending" | "generating" | "completed" | "failed";
+  jobId: string;
+  startedAt: string;
+  completedAt?: string;
+  error?: string;
+}
+
 interface MicrodramaGeneratorProps {
   onGenerate: (selections: any) => Promise<void>;
   isGenerating: boolean;
+  generationStatus?: GenerationStatus | null;
   onAspectRatioChange?: (ratio: AspectRatio) => void;
 }
 
@@ -92,10 +101,10 @@ const PLATFORMS: Option[] = [
 
 const PURPOSES: Option[] = [
   {
-    value: "binge",
+    value: "full_video",
     label: "Full Video",
     icon: LayoutGrid,
-    tooltip: "Keep all content",
+    tooltip: "Split into microdrama chapters",
   },
   {
     value: "highlights",
@@ -169,18 +178,20 @@ const INITIAL: Selections = {
 export function MicrodramaGenerator({
   onGenerate,
   isGenerating,
+  generationStatus,
   onAspectRatioChange,
 }: MicrodramaGeneratorProps) {
   const [selections, setSelections] = useState<Selections>(INITIAL);
   const [viewMode, setViewMode] = useState<"chat" | "compact">("chat");
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const needsDuration = selections.purpose && selections.purpose !== "binge";
+  const needsDuration =
+    selections.purpose && selections.purpose !== "full_video";
   const isComplete =
     selections.type &&
     selections.platform &&
     selections.purpose &&
-    (selections.purpose === "binge" || selections.duration);
+    (selections.purpose === "full_video" || selections.duration);
 
   // Auto-scroll when selections change
   useEffect(() => {
@@ -206,7 +217,7 @@ export function MicrodramaGenerator({
 
       // Purpose change → reset duration
       if (key === "purpose") {
-        updated.duration = value === "binge" ? "" : "Auto";
+        updated.duration = value === "full_video" ? "" : "Auto";
       }
 
       return updated;
@@ -224,7 +235,7 @@ export function MicrodramaGenerator({
             <div className="p-1.5 rounded-md bg-blue-500/10">
               <Wand2 className="h-4 w-4 text-blue-500" />
             </div>
-            <span className="font-semibold">IQ Director</span>
+            <span className="font-semibold">IQ Editor</span>
           </div>
           <div className="flex items-center gap-1">
             <Tooltip>
@@ -295,7 +306,7 @@ export function MicrodramaGenerator({
               />
             )}
 
-            {/* Duration - only for non-binge */}
+            {/* Duration - only when not full_video */}
             {selections.type && selections.platform && needsDuration && (
               <div className="space-y-3">
                 <div className="inline-block bg-muted rounded-2xl rounded-bl-sm px-4 py-2.5 max-w-[85%]">
@@ -360,7 +371,11 @@ export function MicrodramaGenerator({
             {isGenerating ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Analyzing Video...
+                {generationStatus?.status === "pending" &&
+                  "Starting Analysis..."}
+                {generationStatus?.status === "generating" &&
+                  "Generating Segments..."}
+                {!generationStatus && "Analyzing Video..."}
               </>
             ) : (
               <>
@@ -369,6 +384,11 @@ export function MicrodramaGenerator({
               </>
             )}
           </Button>
+          {isGenerating && generationStatus && (
+            <p className="text-xs text-muted-foreground text-center mt-2">
+              This may take 1-2 minutes for longer videos
+            </p>
+          )}
         </div>
       </div>
     </TooltipProvider>

@@ -81,43 +81,8 @@ const markEdited = (state: EditorState) => {
   state.lastRenderUrl = null;
 };
 
-// Helper to merge overlapping segments - uses outermost coordinates (min start, max end)
-// Only merges when segments actually overlap (endTime > startTime), not when they just touch
-const mergeOverlappingSegments = (segments: Segment[]): Segment[] => {
-  if (segments.length <= 1) return segments;
-
-  // Sort by start time
-  const sorted = [...segments].sort((a, b) => a.startTime - b.startTime);
-  const result: Segment[] = [{ ...sorted[0] }];
-
-  for (let i = 1; i < sorted.length; i++) {
-    const current = sorted[i];
-    const last = result[result.length - 1];
-
-    // Only merge if segments actually overlap (not just touching)
-    if (last.endTime > current.startTime) {
-      // Merge: use outermost coordinates (min start, max end)
-      last.startTime = Math.min(last.startTime, current.startTime);
-      last.endTime = Math.max(last.endTime, current.endTime);
-      // Combine titles if different
-      if (last.title !== current.title && !last.title.includes(current.title)) {
-        last.title = `${last.title} + ${current.title}`;
-      }
-      // Merge other metadata
-      last.description = last.description || current.description;
-      last.characters = [
-        ...new Set([...last.characters, ...current.characters]),
-      ];
-      last.sceneTags = [...new Set([...last.sceneTags, ...current.sceneTags])];
-      last.keyDialogue = last.keyDialogue || current.keyDialogue;
-      last.confidence = Math.min(last.confidence, current.confidence);
-    } else {
-      result.push({ ...current });
-    }
-  }
-
-  return result;
-};
+// Minimum segment duration (100ms)
+const MIN_SEGMENT_DURATION = 0.1;
 
 export const editorSlice = createSlice({
   name: "editor",
@@ -150,44 +115,95 @@ export const editorSlice = createSlice({
       state.selectedSegmentId = action.payload;
     },
 
-    // Segment editing (all set isDirty)
+    // Segment editing with push behavior - adjacent segments contract when one expands
     updateSegmentTime: (
       state,
       action: PayloadAction<{ id: string; start: number; end: number }>
     ) => {
-      const segment = state.segments.find((s) => s.id === action.payload.id);
-      if (segment) {
-        segment.startTime = action.payload.start;
-        segment.endTime = action.payload.end;
-        markEdited(state);
-        // Note: merging happens on finalizeSegmentEdit (mouse release)
+      const { id, start, end } = action.payload;
+      const segmentIndex = state.segments.findIndex((s) => s.id === id);
+      if (segmentIndex === -1) return;
+
+      const segment = state.segments[segmentIndex];
+      const oldStart = segment.startTime;
+      const oldEnd = segment.endTime;
+
+      // Sort segments by start time to find neighbors
+      const sorted = [...state.segments].sort(
+        (a, b) => a.startTime - b.startTime
+      );
+      const sortedIndex = sorted.findIndex((s) => s.id === id);
+
+      let newStart = start;
+      let newEnd = end;
+
+      // Handle left edge expansion (start moved earlier)
+      if (newStart < oldStart) {
+        // Find segments that would overlap with the new start
+        for (let i = sortedIndex - 1; i >= 0; i--) {
+          const prev = sorted[i];
+          if (prev.endTime > newStart) {
+            // Push the previous segment's end to match our new start
+            const prevSegInState = state.segments.find((s) => s.id === prev.id);
+            if (prevSegInState) {
+              const newPrevEnd = newStart;
+              // Don't let the pushed segment become too small
+              if (
+                newPrevEnd - prevSegInState.startTime >=
+                MIN_SEGMENT_DURATION
+              ) {
+                prevSegInState.endTime = newPrevEnd;
+              } else {
+                // Limit our expansion to not squeeze the neighbor below min
+                newStart = prevSegInState.startTime + MIN_SEGMENT_DURATION;
+              }
+            }
+          }
+        }
       }
+
+      // Handle left edge contraction (start moved later) - no push needed
+
+      // Handle right edge expansion (end moved later)
+      if (newEnd > oldEnd) {
+        // Find segments that would overlap with the new end
+        for (let i = sortedIndex + 1; i < sorted.length; i++) {
+          const next = sorted[i];
+          if (next.startTime < newEnd) {
+            // Push the next segment's start to match our new end
+            const nextSegInState = state.segments.find((s) => s.id === next.id);
+            if (nextSegInState) {
+              const newNextStart = newEnd;
+              // Don't let the pushed segment become too small
+              if (
+                nextSegInState.endTime - newNextStart >=
+                MIN_SEGMENT_DURATION
+              ) {
+                nextSegInState.startTime = newNextStart;
+              } else {
+                // Limit our expansion to not squeeze the neighbor below min
+                newEnd = nextSegInState.endTime - MIN_SEGMENT_DURATION;
+              }
+            }
+          }
+        }
+      }
+
+      // Handle right edge contraction (end moved earlier) - no push needed
+
+      // Apply the new times to the segment being edited
+      segment.startTime = Math.max(0, newStart);
+      segment.endTime = Math.min(state.duration, newEnd);
+
+      markEdited(state);
     },
 
-    // Called on mouse release to merge any overlapping segments
+    // Called on mouse release - no merging needed with push behavior
     finalizeSegmentEdit: (state) => {
-      // Find the currently selected segment before merge
-      const selectedSeg = state.selectedSegmentId
-        ? state.segments.find((s) => s.id === state.selectedSegmentId)
-        : null;
-
-      const merged = mergeOverlappingSegments(state.segments);
-
-      // Update selection if the segment was merged away
-      if (
-        selectedSeg &&
-        !merged.find((s) => s.id === state.selectedSegmentId)
-      ) {
-        // Find the merged segment that contains the original segment's time
-        const containingSegment = merged.find(
-          (s) =>
-            s.startTime <= selectedSeg.startTime &&
-            s.endTime >= selectedSeg.endTime
-        );
-        state.selectedSegmentId = containingSegment?.id || null;
-      }
-
-      state.segments = merged;
+      // Just ensure segments are valid (no-op now, but kept for API compatibility)
+      state.segments = state.segments.filter(
+        (s) => s.endTime - s.startTime >= MIN_SEGMENT_DURATION
+      );
     },
     splitSegment: (
       state,
@@ -228,14 +244,44 @@ export const editorSlice = createSlice({
     addSegment: (state, action: PayloadAction<{ atTime: number }>) => {
       const { atTime } = action.payload;
       const defaultDuration = 60;
+      const startTime = atTime;
       const endTime = Math.min(atTime + defaultDuration, state.duration);
 
       // Don't add if it would be zero-length
-      if (endTime <= atTime) return;
+      if (endTime <= startTime) return;
+
+      // Push existing segments out of the way
+      const sorted = [...state.segments].sort(
+        (a, b) => a.startTime - b.startTime
+      );
+
+      for (const seg of sorted) {
+        const segInState = state.segments.find((s) => s.id === seg.id);
+        if (!segInState) continue;
+
+        // If new segment overlaps with existing segment
+        if (startTime < seg.endTime && endTime > seg.startTime) {
+          // Push the existing segment's edge that's closer to the new segment center
+          const newCenter = (startTime + endTime) / 2;
+          if (newCenter > (seg.startTime + seg.endTime) / 2) {
+            // New segment is to the right, push existing segment left
+            const newEnd = startTime;
+            if (newEnd - segInState.startTime >= MIN_SEGMENT_DURATION) {
+              segInState.endTime = newEnd;
+            }
+          } else {
+            // New segment is to the left, push existing segment right
+            const newStart = endTime;
+            if (segInState.endTime - newStart >= MIN_SEGMENT_DURATION) {
+              segInState.startTime = newStart;
+            }
+          }
+        }
+      }
 
       const newSegment: Segment = {
         id: `seg-${Date.now()}`,
-        startTime: atTime,
+        startTime,
         endTime,
         title: "New Segment",
         description: "",
@@ -246,16 +292,7 @@ export const editorSlice = createSlice({
       };
 
       state.segments.push(newSegment);
-
-      // Merge any overlapping segments
-      const merged = mergeOverlappingSegments(state.segments);
-      state.segments = merged;
-
-      // Select the segment containing the new time range
-      const containingSegment = merged.find(
-        (s) => s.startTime <= atTime && s.endTime >= atTime
-      );
-      state.selectedSegmentId = containingSegment?.id || newSegment.id;
+      state.selectedSegmentId = newSegment.id;
       markEdited(state);
     },
     deleteSegment: (state, action: PayloadAction<string>) => {

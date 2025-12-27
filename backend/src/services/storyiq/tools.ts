@@ -10,18 +10,16 @@
  */
 
 import {
-  BedrockRuntimeClient,
-  InvokeModelCommand,
-} from "@aws-sdk/client-bedrock-runtime";
-import {
   S3Client,
   GetObjectCommand,
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
-import { TwelveLabsWrapper } from "../twelvelabs";
 import {
-  MODEL_HAIKU,
-  extractLLMContent,
+  TwelveLabsWrapper,
+  type ChapterSegment,
+  type HighlightSegment,
+} from "../twelvelabs";
+import {
   type SceneBreakdown,
   type TranscriptSegment,
   type CharacterInfo,
@@ -30,182 +28,158 @@ import {
   type SegmentContent,
   type CoverageReport,
   type TimeRange,
-  type Purpose,
+  Purpose,
   type StoryIQTools,
 } from "./types";
-
-const bedrock = new BedrockRuntimeClient({
-  region: process.env.AWS_REGION || "us-west-2",
-});
+// callClaude import removed - no longer needed after removing analyze API
 
 const s3Client = new S3Client({});
 
 // S3 bucket for caching (same as assets bucket)
 const CACHE_BUCKET = process.env.ASSETS_BUCKET || process.env.S3_BUCKET;
 
-// ============================================================================
-// 12Labs Query Prompts (what we ask 12Labs)
-// ============================================================================
-
-const SCENE_BREAKDOWN_PROMPT = `Provide a detailed scene-by-scene breakdown of this video.
-
-For each distinct scene, provide:
-1. Scene number
-2. Start time (in seconds)
-3. End time (in seconds)
-4. Location/setting
-5. Characters present
-6. What happens (2-3 sentences)
-7. Key actions or events
-8. Notable dialogue (if any)
-
-Format as a numbered list. Be precise with timestamps.`;
-
-const CHARACTER_ANALYSIS_PROMPT = `Identify all characters/people in this video.
-
-For each character:
-1. Name or description (e.g., "Main character", "Woman in red dress")
-2. Physical description
-3. First appearance timestamp (in seconds)
-4. Key moments featuring them (with timestamps)
-5. Relationships with other characters
-
-Focus on characters with significant screen time.`;
-
-const EMOTIONAL_BEATS_PROMPT = `Map the emotional intensity throughout this video.
-
-Identify distinct emotional segments and for each provide:
-1. Start time (in seconds)
-2. End time (in seconds)
-3. Emotional intensity: low, medium, high, or peak
-4. Primary emotion (tension, joy, sadness, excitement, fear, anger, surprise, etc.)
-5. Brief description of what creates this emotion
-
-Pay special attention to:
-- Peak emotional moments (mark as "peak")
-- Dramatic shifts in tone
-- Climactic scenes`;
-
-const VISUAL_STYLE_PROMPT = `Analyze the visual style and pacing of this video.
-
-For distinct visual sections, provide:
-1. Start time (in seconds)
-2. End time (in seconds)
-3. Shot style (close-up, wide shot, montage, tracking, etc.)
-4. Pacing (slow, medium, fast)
-5. Notable cinematography or visual elements
-
-Note any significant changes in visual approach.`;
+// NOTE: analyze API prompts removed - they were causing timeouts on long videos.
+// Now we only use 12Labs summarize API (chapters/highlights) which returns structured data directly.
 
 // ============================================================================
-// LLM Cleaning Prompts (how we structure 12Labs output)
+// Helper Functions for Parsing 12Labs Summarize Output
 // ============================================================================
 
-const CLEAN_SCENES_PROMPT = `Parse this raw scene analysis into structured JSON.
+/**
+ * Extract location from chapter title/summary
+ */
+function extractLocation(title: string, summary: string): string {
+  // Try to find location-like phrases
+  const combined = `${title} ${summary}`;
 
-Raw analysis:
-{raw}
+  // Common location patterns
+  const locationPatterns = [
+    /(?:at|in|inside|outside|near|by|on)\s+(?:the\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/,
+    /(?:^|\.\s+)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:scene|setting|location)/i,
+  ];
 
-Output a JSON array of scenes. Each scene must have:
-- sceneNumber: number
-- startTime: number (seconds)
-- endTime: number (seconds)
-- location: string
-- characters: string[]
-- description: string
-- keyActions: string[]
-- dialogue: string (optional, empty string if none)
-
-Fix any timestamp inconsistencies. Ensure scenes don't overlap.
-Output ONLY valid JSON array, no explanation.`;
-
-const CLEAN_CHARACTERS_PROMPT = `Parse this raw character analysis into structured JSON.
-
-Raw analysis:
-{raw}
-
-Output a JSON array of characters. Each character must have:
-- name: string
-- description: string
-- firstAppearance: number (timestamp in seconds)
-- keyMoments: array of { timestamp: number, description: string }
-- relationships: string[] (optional)
-
-Output ONLY valid JSON array, no explanation.`;
-
-const CLEAN_EMOTIONS_PROMPT = `Parse this raw emotional analysis into structured JSON.
-
-Raw analysis:
-{raw}
-
-Output a JSON array of emotional beats. Each beat must have:
-- startTime: number (seconds)
-- endTime: number (seconds)
-- intensity: "low" | "medium" | "high" | "peak"
-- emotion: string
-- description: string
-
-Ensure beats cover the full video without gaps.
-Output ONLY valid JSON array, no explanation.`;
-
-const CLEAN_VISUALS_PROMPT = `Parse this raw visual analysis into structured JSON.
-
-Raw analysis:
-{raw}
-
-Output a JSON array of visual notes. Each note must have:
-- startTime: number (seconds)
-- endTime: number (seconds)
-- style: string
-- pacing: "slow" | "medium" | "fast"
-- notes: string
-
-Output ONLY valid JSON array, no explanation.`;
-
-// ============================================================================
-// Helper: Call LLM to clean/structure data (uses Haiku for speed/cost)
-// ============================================================================
-
-async function cleanWithLLM<T>(
-  rawData: string,
-  cleaningPrompt: string
-): Promise<T> {
-  const prompt = cleaningPrompt.replace("{raw}", rawData);
-
-  // Use Haiku for cleaning tasks - faster and cheaper for JSON extraction
-  const command = new InvokeModelCommand({
-    modelId: MODEL_HAIKU,
-    contentType: "application/json",
-    accept: "application/json",
-    body: JSON.stringify({
-      anthropic_version: "bedrock-2023-05-31",
-      max_tokens: 4000,
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-    }),
-  });
-
-  const response = await bedrock.send(command);
-  const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-  const content = extractLLMContent(responseBody);
-
-  // Extract JSON array from response
-  const jsonMatch = content.match(/\[[\s\S]*\]/);
-  if (jsonMatch) {
-    return JSON.parse(jsonMatch[0]);
+  for (const pattern of locationPatterns) {
+    const match = combined.match(pattern);
+    if (match && match[1]) {
+      return match[1];
+    }
   }
 
-  // Try parsing as-is
-  return JSON.parse(content);
+  // Fallback: use first capitalized phrase from title
+  const titleWords = title.split(/\s+/);
+  return titleWords[0] || "Unknown";
+}
+
+/**
+ * Extract character names from text
+ */
+function extractCharacters(text: string): string[] {
+  const characters: string[] = [];
+
+  // Look for capitalized names (simple heuristic)
+  const namePattern = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/g;
+  let match;
+
+  while ((match = namePattern.exec(text)) !== null) {
+    const name = match[1];
+    // Filter out common non-name words
+    const nonNames = [
+      "The",
+      "This",
+      "That",
+      "When",
+      "What",
+      "Where",
+      "How",
+      "Why",
+      "And",
+      "But",
+      "Then",
+    ];
+    if (!nonNames.includes(name) && !characters.includes(name)) {
+      characters.push(name);
+    }
+  }
+
+  return characters.slice(0, 5); // Limit to 5 characters
+}
+
+/**
+ * Extract key actions from summary text
+ */
+function extractKeyActions(summary: string): string[] {
+  // Split into sentences and take first 3 as key actions
+  const sentences = summary.split(/[.!?]+/).filter((s) => s.trim().length > 10);
+  return sentences.slice(0, 3).map((s) => s.trim());
+}
+
+/**
+ * Detect primary emotion from highlight text
+ */
+function detectEmotion(highlight: string, summary: string): string {
+  const combined = (highlight + " " + summary).toLowerCase();
+
+  const emotionKeywords: Record<string, string[]> = {
+    tension: [
+      "tension",
+      "suspense",
+      "tense",
+      "nervous",
+      "anxious",
+      "confrontation",
+    ],
+    excitement: [
+      "exciting",
+      "thrill",
+      "action",
+      "chase",
+      "fight",
+      "battle",
+      "victory",
+    ],
+    sadness: [
+      "sad",
+      "tragic",
+      "loss",
+      "death",
+      "cry",
+      "tear",
+      "grief",
+      "mourn",
+    ],
+    joy: ["happy", "joy", "celebrate", "laugh", "love", "reunion", "smile"],
+    fear: ["fear", "scary", "horror", "terrif", "frighten", "panic"],
+    surprise: [
+      "surprise",
+      "shock",
+      "unexpected",
+      "reveal",
+      "twist",
+      "discover",
+    ],
+    anger: ["angry", "rage", "fury", "fight", "conflict", "argument"],
+  };
+
+  for (const [emotion, keywords] of Object.entries(emotionKeywords)) {
+    if (keywords.some((kw) => combined.includes(kw))) {
+      return emotion;
+    }
+  }
+
+  return "dramatic"; // Default emotion
 }
 
 // ============================================================================
 // S3 Cache Helpers
 // ============================================================================
+
+// Cache TTL: 7 days in milliseconds
+const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface CacheWrapper<T> {
+  data: T;
+  cachedAt: string;
+}
 
 /**
  * Get cache key for a tool result
@@ -215,11 +189,15 @@ function getCacheKey(assetId: string, toolName: string): string {
 }
 
 /**
- * Try to fetch cached result from S3
+ * Try to fetch cached result from S3.
+ * Validates:
+ * - TTL (7 days)
+ * - Scene timestamps don't exceed video duration (if provided)
  */
 async function getFromCache<T>(
   assetId: string,
-  toolName: string
+  toolName: string,
+  videoDuration?: number
 ): Promise<T | null> {
   if (!CACHE_BUCKET) return null;
 
@@ -228,10 +206,51 @@ async function getFromCache<T>(
     const command = new GetObjectCommand({ Bucket: CACHE_BUCKET, Key: key });
     const response = await s3Client.send(command);
     const bodyString = await response.Body?.transformToString();
-    if (bodyString) {
+
+    if (!bodyString) return null;
+
+    const parsed = JSON.parse(bodyString);
+
+    // Check if this is the new wrapper format with TTL
+    if (parsed.cachedAt && parsed.data) {
+      const wrapper = parsed as CacheWrapper<T>;
+      const cacheAge = Date.now() - new Date(wrapper.cachedAt).getTime();
+
+      // TTL check
+      if (cacheAge > CACHE_TTL_MS) {
+        console.log(
+          `[StoryIQ Tools] Cache expired for ${toolName} (age: ${Math.round(
+            cacheAge / 1000 / 60 / 60
+          )}h)`
+        );
+        return null;
+      }
+
+      // Validate scene timestamps if this is scene data and we have duration
+      if (
+        toolName === "scenes" &&
+        videoDuration &&
+        Array.isArray(wrapper.data)
+      ) {
+        const scenes = wrapper.data as any[];
+        const maxEndTime = Math.max(...scenes.map((s) => s.endTime || 0));
+
+        // If max timestamp exceeds duration by more than 50%, cache is bad
+        if (maxEndTime > videoDuration * 1.5) {
+          console.warn(
+            `[StoryIQ Tools] Invalidating bad scene cache: maxEndTime ${maxEndTime}s > duration ${videoDuration}s`
+          );
+          return null;
+        }
+      }
+
       console.log(`[StoryIQ Tools] Cache hit for ${toolName}`);
-      return JSON.parse(bodyString);
+      return wrapper.data;
     }
+
+    // Legacy format (no wrapper) - return as-is but log warning
+    console.log(`[StoryIQ Tools] Cache hit for ${toolName} (legacy format)`);
+    return parsed as T;
   } catch (err: any) {
     // NoSuchKey is expected for cache miss
     if (err.name !== "NoSuchKey") {
@@ -245,7 +264,7 @@ async function getFromCache<T>(
 }
 
 /**
- * Save result to S3 cache
+ * Save result to S3 cache with timestamp for TTL
  */
 async function saveToCache<T>(
   assetId: string,
@@ -256,10 +275,14 @@ async function saveToCache<T>(
 
   try {
     const key = getCacheKey(assetId, toolName);
+    const wrapper: CacheWrapper<T> = {
+      data,
+      cachedAt: new Date().toISOString(),
+    };
     const command = new PutObjectCommand({
       Bucket: CACHE_BUCKET,
       Key: key,
-      Body: JSON.stringify(data),
+      Body: JSON.stringify(wrapper),
       ContentType: "application/json",
     });
     await s3Client.send(command);
@@ -316,6 +339,8 @@ async function fetchTranscriptFromS3(
 export interface CreateToolsOptions {
   /** S3 URI for cached transcript (from asset.transcriptionUrl) */
   transcriptS3Uri?: string;
+  /** Video duration in seconds (for cache validation) */
+  videoDuration?: number;
 }
 
 /**
@@ -324,6 +349,7 @@ export interface CreateToolsOptions {
  *
  * @param transcriptS3Uri - If provided, transcript is fetched from S3 (faster).
  *                          Otherwise falls back to 12Labs API.
+ * @param videoDuration - If provided, used to validate cached scene timestamps.
  */
 export function createStoryIQTools(
   twelvelabs: TwelveLabsWrapper,
@@ -336,30 +362,61 @@ export function createStoryIQTools(
   return {
     /**
      * Get detailed scene-by-scene breakdown of the video.
+     *
+     * OPTIMIZED: Uses 12Labs summarize API with type="chapter" which returns
+     * timestamped chapters directly, reducing LLM calls and improving accuracy.
+     *
      * Results are cached in S3 for subsequent calls.
      */
     async read_scene_breakdown(): Promise<SceneBreakdown[]> {
-      // Check S3 cache first
-      const cached = await getFromCache<SceneBreakdown[]>(assetId, "scenes");
+      // Check S3 cache first (with duration validation)
+      const cached = await getFromCache<SceneBreakdown[]>(
+        assetId,
+        "scenes",
+        options.videoDuration
+      );
       if (cached) return cached;
 
-      console.log("[StoryIQ Tools] Reading scene breakdown...");
-
-      const raw = await twelvelabs.analyze(assetId, {
-        prompt: SCENE_BREAKDOWN_PROMPT,
-      });
-
-      const cleaned = await cleanWithLLM<SceneBreakdown[]>(
-        raw.data,
-        CLEAN_SCENES_PROMPT
+      console.log(
+        "[StoryIQ Tools] Reading scene breakdown via chapters API..."
       );
 
-      console.log(`[StoryIQ Tools] Found ${cleaned.length} scenes`);
+      try {
+        // Use 12Labs summarize API with chapters - returns timestamped data directly!
+        const chaptersResult = await twelvelabs.summarize(assetId, {
+          type: "chapter",
+          prompt:
+            "Provide detailed chapter breakdowns including location and key actions.",
+        });
 
-      // Cache for next time
-      await saveToCache(assetId, "scenes", cleaned);
+        if (chaptersResult.chapters && chaptersResult.chapters.length > 0) {
+          // Convert chapters to SceneBreakdown format
+          const scenes: SceneBreakdown[] = chaptersResult.chapters.map(
+            (ch: ChapterSegment) => ({
+              sceneNumber: ch.chapterNumber,
+              startTime: ch.start,
+              endTime: ch.end,
+              location: extractLocation(ch.chapterTitle, ch.chapterSummary),
+              characters: extractCharacters(ch.chapterSummary),
+              description: ch.chapterSummary,
+              keyActions: extractKeyActions(ch.chapterSummary),
+              dialogue: "",
+            })
+          );
 
-      return cleaned;
+          console.log(
+            `[StoryIQ Tools] Found ${scenes.length} scenes via chapters API`
+          );
+          await saveToCache(assetId, "scenes", scenes);
+          return scenes;
+        }
+      } catch (err) {
+        console.warn("[StoryIQ Tools] Chapters API failed:", err);
+        // Don't fallback to analyze - it times out on long videos
+        return [];
+      }
+
+      return []; // No chapters found
     },
 
     /**
@@ -409,92 +466,80 @@ export function createStoryIQTools(
     },
 
     /**
-     * Get character analysis with appearances and relationships.
-     * Results are cached in S3 for subsequent calls.
+     * Get character analysis.
+     * DISABLED: 12Labs analyze API is unreliable/slow for long videos.
+     * Characters are extracted from scene descriptions instead.
      */
     async read_character_analysis(): Promise<CharacterInfo[]> {
       // Check S3 cache first
       const cached = await getFromCache<CharacterInfo[]>(assetId, "characters");
       if (cached) return cached;
 
-      console.log("[StoryIQ Tools] Reading character analysis...");
-
-      const raw = await twelvelabs.analyze(assetId, {
-        prompt: CHARACTER_ANALYSIS_PROMPT,
-      });
-
-      const cleaned = await cleanWithLLM<CharacterInfo[]>(
-        raw.data,
-        CLEAN_CHARACTERS_PROMPT
-      );
-
-      console.log(`[StoryIQ Tools] Found ${cleaned.length} characters`);
-
-      // Cache for next time
-      await saveToCache(assetId, "characters", cleaned);
-
-      return cleaned;
+      // Don't call analyze API - it times out on long videos
+      // Characters will be extracted from scene descriptions by LLM
+      console.log("[StoryIQ Tools] Skipping character analysis (disabled)");
+      return [];
     },
 
     /**
-     * Get emotional intensity mapping across the video.
-     * Results are cached in S3 for subsequent calls.
+     * Get emotional beats via 12Labs highlights API only.
+     * analyze API is disabled due to timeouts on long videos.
      */
     async read_emotional_beats(): Promise<EmotionalBeat[]> {
-      // Check S3 cache first
       const cached = await getFromCache<EmotionalBeat[]>(assetId, "emotions");
       if (cached) return cached;
 
-      console.log("[StoryIQ Tools] Reading emotional beats...");
+      console.log("[StoryIQ Tools] Reading emotional beats via highlights API...");
 
-      const raw = await twelvelabs.analyze(assetId, {
-        prompt: EMOTIONAL_BEATS_PROMPT,
-      });
+      try {
+        const result = await twelvelabs.summarize(assetId, {
+          type: "highlight",
+          prompt: "Identify the most emotionally impactful and dramatic moments.",
+        });
 
-      const cleaned = await cleanWithLLM<EmotionalBeat[]>(
-        raw.data,
-        CLEAN_EMOTIONS_PROMPT
-      );
+        const emotionalBeats: EmotionalBeat[] = (result?.highlights || []).map(
+          (h: HighlightSegment) => ({
+            startTime: h.start,
+            endTime: h.end,
+            intensity: "peak" as const,
+            emotion: detectEmotion(h.highlight, h.highlightSummary || ""),
+            description: h.highlight + (h.highlightSummary ? `: ${h.highlightSummary}` : ""),
+          })
+        );
 
-      console.log(`[StoryIQ Tools] Found ${cleaned.length} emotional beats`);
-
-      // Cache for next time
-      await saveToCache(assetId, "emotions", cleaned);
-
-      return cleaned;
+        emotionalBeats.sort((a, b) => a.startTime - b.startTime);
+        console.log(`[StoryIQ Tools] Found ${emotionalBeats.length} emotional beats`);
+        
+        await saveToCache(assetId, "emotions", emotionalBeats);
+        return emotionalBeats;
+      } catch (err) {
+        console.warn("[StoryIQ Tools] Highlights API failed:", err);
+        return [];
+      }
     },
 
     /**
      * Get visual style and pacing notes.
      * Results are cached in S3 for subsequent calls.
      */
+    /**
+     * Get visual style and pacing notes.
+     * DISABLED: 12Labs analyze API is unreliable/slow for long videos.
+     */
     async read_visual_style_notes(): Promise<VisualNote[]> {
       // Check S3 cache first
       const cached = await getFromCache<VisualNote[]>(assetId, "visuals");
       if (cached) return cached;
 
-      console.log("[StoryIQ Tools] Reading visual style notes...");
-
-      const raw = await twelvelabs.analyze(assetId, {
-        prompt: VISUAL_STYLE_PROMPT,
-      });
-
-      const cleaned = await cleanWithLLM<VisualNote[]>(
-        raw.data,
-        CLEAN_VISUALS_PROMPT
-      );
-
-      console.log(`[StoryIQ Tools] Found ${cleaned.length} visual notes`);
-
-      // Cache for next time
-      await saveToCache(assetId, "visuals", cleaned);
-
-      return cleaned;
+      // Don't call analyze API - it times out on long videos
+      console.log("[StoryIQ Tools] Skipping visual style analysis (disabled)");
+      return [];
     },
 
     /**
      * Get detailed content for specific segments (for verification).
-     * Uses cached transcript to avoid re-fetching.
+     * Uses ONLY cached data to avoid slow 12Labs API calls during verification.
+     * Scene descriptions are derived from cached scene breakdown, not re-queried.
      */
     async read_transcript_for_segments(
       segments: TimeRange[]
@@ -506,17 +551,14 @@ export function createStoryIQTools(
       // Use cached transcript (will fetch if not cached)
       const fullTranscript = await this.read_full_transcript();
 
-      // Get scene descriptions for context
-      const scenePrompt = `For the time ranges provided, describe what happens visually.
-Time ranges: ${segments.map((s) => `${s.start}s-${s.end}s`).join(", ")}
+      // Use cached scene breakdown for descriptions (no new 12Labs calls!)
+      const cachedScenes = await getFromCache<SceneBreakdown[]>(
+        assetId,
+        "scenes",
+        options.videoDuration
+      );
 
-For each range, provide a brief description of the visual content.`;
-
-      const sceneDescriptions = await twelvelabs.analyze(assetId, {
-        prompt: scenePrompt,
-      });
-
-      // Build segment content
+      // Build segment content using only cached data
       const results: SegmentContent[] = segments.map((seg) => {
         // Filter transcript to this segment
         const segmentTranscript = fullTranscript
@@ -524,11 +566,20 @@ For each range, provide a brief description of the visual content.`;
           .map((t) => t.text)
           .join(" ");
 
+        // Get scene descriptions that overlap with this segment (from cache)
+        const overlappingScenes = (cachedScenes || []).filter(
+          (scene) => scene.startTime < seg.end && scene.endTime > seg.start
+        );
+        const sceneDescriptions = overlappingScenes.map((s) => s.description);
+
         return {
           startTime: seg.start,
           endTime: seg.end,
           transcript: segmentTranscript,
-          sceneDescriptions: [sceneDescriptions.data], // Simplified for now
+          sceneDescriptions:
+            sceneDescriptions.length > 0
+              ? sceneDescriptions
+              : ["No cached scene data available"],
         };
       });
 
@@ -555,9 +606,9 @@ For each range, provide a brief description of the visual content.`;
         0
       );
 
-      // For binge mode: check for gaps
+      // For full_video mode: check for gaps (all content must be covered)
       let gaps: Array<{ start: number; end: number }> | undefined;
-      if (purpose === "binge") {
+      if (purpose === Purpose.FULL_VIDEO) {
         gaps = [];
         const sorted = [...segments].sort((a, b) => a.start - b.start);
 

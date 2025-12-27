@@ -98,7 +98,8 @@ data "aws_iam_policy_document" "lambda_policy" {
     resources = [
       aws_secretsmanager_secret.twelve_labs_key.arn,
       aws_secretsmanager_secret.api_password.arn,
-      aws_secretsmanager_secret.twelve_labs_signing_secret.arn
+      aws_secretsmanager_secret.twelve_labs_signing_secret.arn,
+      data.aws_secretsmanager_secret.anthropic_api_key.arn
     ]
   }
   statement {
@@ -457,7 +458,7 @@ resource "aws_lambda_function" "generate_segments" {
   handler          = "generateSegments.handler"
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.generate_segments_zip.output_base64sha256
-  timeout          = 300
+  timeout          = 600  # 10 minutes - chunked videos take longer
 
   environment {
     variables = {

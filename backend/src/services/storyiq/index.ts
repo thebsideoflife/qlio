@@ -17,10 +17,6 @@
  * - Small, focused operations
  */
 
-import {
-  BedrockRuntimeClient,
-  InvokeModelCommand,
-} from "@aws-sdk/client-bedrock-runtime";
 import { TwelveLabsWrapper } from "../twelvelabs";
 import { createStoryIQTools } from "./tools";
 import { synthesizeVideoUnderstanding } from "./synthesize";
@@ -31,20 +27,15 @@ import {
   resolveOverlaps,
 } from "./verify";
 import {
-  MODEL_SONNET,
-  extractLLMContent,
   parseJSONFromLLM,
+  Purpose,
   type StoryIQInput,
   type StoryIQOutput,
   type StoryIQGoals,
   type ProposedSegment,
   type VideoUnderstanding,
-  type Purpose,
 } from "./types";
-
-const bedrock = new BedrockRuntimeClient({
-  region: process.env.AWS_REGION || "us-west-2",
-});
+import { callClaude } from "./claude-client";
 
 // ============================================================================
 // Main Entry Point
@@ -72,9 +63,38 @@ export async function generateWithStoryIQ(
     }s`
   );
 
-  // Create tools bound to this asset (with S3 transcript if available)
+  // Get video duration - prioritize input (from frontend/asset), then 12Labs, then transcript
+  let videoDuration = input.videoDuration || 0;
+
+  if (videoDuration > 0) {
+    console.log(`[StoryIQ] Using provided video duration: ${videoDuration}s`);
+  } else {
+    // Try 12Labs metadata
+    try {
+      const metadata = await twelvelabs.getVideoMetadata(assetId);
+      videoDuration = metadata.duration || 0;
+      if (videoDuration > 0) {
+        console.log(`[StoryIQ] Got duration from 12Labs: ${videoDuration}s`);
+      }
+    } catch (err) {
+      console.warn("[StoryIQ] Failed to get metadata from 12Labs");
+    }
+  }
+
+  // FAIL FAST: If we still don't have a valid duration, we can't proceed
+  if (videoDuration <= 0) {
+    throw new Error(
+      `Cannot generate segments: Video duration is ${videoDuration}s. ` +
+        `Asset may not have been properly indexed. Please re-upload or manually set the duration.`
+    );
+  }
+
+  console.log(`[StoryIQ] Video duration: ${videoDuration}s`);
+
+  // Create tools with duration for cache validation
   const tools = createStoryIQTools(twelvelabs, assetId, {
     transcriptS3Uri: input.transcriptS3Uri,
+    videoDuration,
   });
 
   // Phase 1 & 2: Build video understanding (or use provided)
@@ -84,11 +104,10 @@ export async function generateWithStoryIQ(
     understanding = input.videoUnderstanding;
   } else {
     console.log("[StoryIQ] Phase 1-2: Building VideoUnderstanding...");
-    const metadata = await twelvelabs.getVideoMetadata(assetId);
 
     understanding = await synthesizeVideoUnderstanding({
       assetId,
-      duration: metadata.duration,
+      duration: videoDuration,
       tools,
     });
   }
@@ -160,29 +179,15 @@ async function generateSegmentProposals(
   );
 
   // Determine max tokens based on purpose
-  // Binge mode may need many segments
-  const maxTokens = goals.purpose === "binge" ? 4000 : 2000;
+  // Full video mode may need many segments
+  const maxTokens = goals.purpose === Purpose.FULL_VIDEO ? 4000 : 2000;
 
   try {
-    const command = new InvokeModelCommand({
-      modelId: MODEL_SONNET,
-      contentType: "application/json",
-      accept: "application/json",
-      body: JSON.stringify({
-        anthropic_version: "bedrock-2023-05-31",
-        max_tokens: maxTokens,
-        messages: [
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-      }),
+    const content = await callClaude({
+      model: "sonnet",
+      maxTokens,
+      messages: [{ role: "user", content: prompt }],
     });
-
-    const response = await bedrock.send(command);
-    const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-    const content = extractLLMContent(responseBody);
 
     // Parse JSON response
     const parsed = parseJSONFromLLM<{ plan?: ProposedSegment[] }>(content);
@@ -267,7 +272,7 @@ export function parseDurationString(
 export interface FrontendMetadata {
   type?: string; // "tv" | "movie" | "ugc"
   platform?: string; // "mobile" | "tiktok" | etc.
-  purpose?: string; // "binge" | "highlights" | etc.
+  purpose?: string; // "full_video" | "highlights" | etc.
   duration?: string; // "3 min" | "30s" | "Auto" - target duration selection
   videoDuration?: number; // Actual video duration in seconds (for reference)
 }

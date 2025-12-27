@@ -23,7 +23,12 @@ import { useRef, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useProjectData } from "@/hooks/useProjectData";
 import { useSeamlessPlayback } from "@/hooks/useSeamlessPlayback";
-import { generateSegments, analyzeSegmentFraming } from "@/services/api";
+import {
+  generateSegments,
+  pollGenerationStatus,
+  analyzeSegmentFraming,
+  type GenerationJob,
+} from "@/services/api";
 import {
   FileText,
   Wand2,
@@ -361,9 +366,14 @@ export default function Editor() {
     }
   };
 
+  // Track generation status for UI feedback
+  const [generationStatus, setGenerationStatus] =
+    useState<GenerationJob | null>(null);
+
   const handleGenerateSegments = async (selections: any) => {
     if (!projectId) return;
     setIsGenerating(true);
+    setGenerationStatus(null);
 
     // Pass current video duration as separate field (don't overwrite duration selection)
     const videoDuration = videoRef.current
@@ -372,51 +382,38 @@ export default function Editor() {
     const metadata = { ...selections, videoDuration };
 
     try {
-      const result = await generateSegments(projectId, metadata);
-      if (result.segments) {
+      // Start async generation job
+      const { jobId } = await generateSegments(projectId, metadata);
+      console.log(`[Editor] Started generation job: ${jobId}`);
+
+      setGenerationStatus({
+        status: "pending",
+        jobId,
+        startedAt: new Date().toISOString(),
+      });
+
+      // Poll for completion (30s initial delay, then 10s intervals)
+      const result = await pollGenerationStatus(projectId, {
+        onProgress: (job) => {
+          console.log(`[Editor] Generation status: ${job.status}`);
+          setGenerationStatus(job);
+        },
+      });
+
+      if (result.segments.length > 0) {
         dispatch(setSegments(result.segments));
+        console.log(
+          `[Editor] Generation complete: ${result.segments.length} segments`
+        );
       }
+
       setIsGenerating(false);
+      setGenerationStatus(null);
     } catch (error: any) {
       console.error("Failed to generate segments:", error);
-
-      // If status is 503/504, it might be a gateway timeout while Lambda continues.
-      if (error.response?.status === 503 || error.response?.status === 504) {
-        console.log("Gateway timeout detected. Polling for results...");
-
-        let attempts = 0;
-        const maxAttempts = 60; // 5 minutes (5s interval)
-
-        const pollInterval = setInterval(async () => {
-          attempts++;
-          try {
-            // Import getProject dynamically or use the hook's data if we can force refresh
-            // Better to use direct API call here
-            const { getProject } = await import("@/services/api");
-            const projectData = await getProject(projectId);
-
-            if (projectData.segments && projectData.segments.length > 0) {
-              dispatch(setSegments(projectData.segments));
-              clearInterval(pollInterval);
-              setIsGenerating(false);
-              // Maybe switch tab?
-              // setActiveTab("transcript");
-            } else if (attempts >= maxAttempts) {
-              clearInterval(pollInterval);
-              setIsGenerating(false);
-              alert("Generation timed out. Please try again.");
-            }
-          } catch (e) {
-            console.warn("Polling error:", e);
-          }
-        }, 5000);
-
-        // Return early to keep isGenerating true until polling finishes
-        return;
-      }
-
-      alert("Failed to generate segments. Please try again.");
+      alert(error.message || "Failed to generate segments. Please try again.");
       setIsGenerating(false);
+      setGenerationStatus(null);
     }
   };
 
@@ -757,6 +754,7 @@ export default function Editor() {
                   <MicrodramaGenerator
                     onGenerate={handleGenerateSegments}
                     isGenerating={isGenerating}
+                    generationStatus={generationStatus}
                     onAspectRatioChange={(ratio) =>
                       dispatch(setGlobalAspectRatio(ratio))
                     }

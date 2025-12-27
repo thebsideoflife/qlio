@@ -212,7 +212,27 @@ export const listProjects = async (assetId?: string) => {
   return response.data;
 };
 
-export const generateSegments = async (projectId: string, metadata: any) => {
+// ===== Segment Generation API (Async) =====
+
+export interface GenerationJob {
+  status: "pending" | "generating" | "completed" | "failed";
+  jobId: string;
+  startedAt: string;
+  completedAt?: string;
+  error?: string;
+  segmentCount?: number;
+}
+
+export interface GenerateSegmentsResponse {
+  message: string;
+  jobId: string;
+  status: "pending";
+}
+
+export const generateSegments = async (
+  projectId: string,
+  metadata: any
+): Promise<GenerateSegmentsResponse> => {
   const response = await axios.post(
     `${API_URL}/projects/${projectId}/generate`,
     { metadata },
@@ -221,6 +241,60 @@ export const generateSegments = async (projectId: string, metadata: any) => {
     }
   );
   return response.data;
+};
+
+/**
+ * Poll for generation job completion.
+ * Returns the project data when job is complete or throws on failure.
+ *
+ * Default timing:
+ * - 30s initial delay (generation takes at least 30s)
+ * - 10s poll interval thereafter
+ * - 5 min max wait
+ */
+export const pollGenerationStatus = async (
+  projectId: string,
+  options: {
+    onProgress?: (status: GenerationJob) => void;
+    initialDelayMs?: number;
+    pollIntervalMs?: number;
+    maxWaitMs?: number;
+  } = {}
+): Promise<{ segments: Segment[]; job: GenerationJob }> => {
+  const {
+    onProgress,
+    initialDelayMs = 30000, // Wait 30s before first poll
+    pollIntervalMs = 10000, // Poll every 10s
+    maxWaitMs = 300000, // 5 min max
+  } = options;
+  const startTime = Date.now();
+
+  // Initial delay - generation takes at least 30 seconds
+  await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
+
+  while (Date.now() - startTime < maxWaitMs) {
+    const project = await getProject(projectId);
+    const job: GenerationJob | undefined = project.generationJob;
+
+    if (!job) {
+      throw new Error("No generation job found for this project");
+    }
+
+    onProgress?.(job);
+
+    if (job.status === "completed") {
+      return { segments: project.segments || [], job };
+    }
+
+    if (job.status === "failed") {
+      throw new Error(job.error || "Generation failed");
+    }
+
+    // Wait before next poll
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+
+  throw new Error("Generation timed out");
 };
 
 export const deleteAsset = async (assetId: string) => {
