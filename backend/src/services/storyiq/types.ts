@@ -135,7 +135,7 @@ export interface StoryIQGoals {
   contentType: ContentType;
   platform: Platform;
   targetDuration?: number; // Advisory, in seconds
-  additionalContext?: string; // User notes
+  userInstructions?: string; // Custom instructions from user
 }
 
 // ============================================================================

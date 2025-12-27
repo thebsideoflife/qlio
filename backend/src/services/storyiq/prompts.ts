@@ -100,37 +100,54 @@ ${OUTPUT_SCHEMA}`;
 }
 
 /**
- * C1.b - Highlights: Extract best moments
+ * C1.b - Highlights: Extract best moments with narrative flow
  */
 function getHighlightsPrompt(
   understanding: VideoUnderstanding,
   targetDurationSeconds: number
 ): string {
-  return `You are StoryIQ, an expert video editor extracting the most compelling moments.
+  // Determine content style for format-aware guidance
+  const isSerialFormat =
+    understanding.genre?.toLowerCase().includes("reality") ||
+    understanding.genre?.toLowerCase().includes("competition") ||
+    understanding.logline?.toLowerCase().includes("island") ||
+    understanding.logline?.toLowerCase().includes("contestants");
+
+  const narrativeGuidance = isSerialFormat
+    ? `This appears to be episodic/reality content. Focus on the key dramatic beats and character moments that define THIS episode. The viewer should understand what happened and why it matters.`
+    : `This appears to be narrative/scripted content. Create a condensed story that has a beginning, middle, and end. The viewer should feel like they watched a complete mini-story, not just random clips.`;
+
+  return `You are StoryIQ, an expert video editor creating a compelling HIGHLIGHTS REEL.
 
 VIDEO UNDERSTANDING:
 ${formatUnderstandingCompact(understanding)}
 
-TASK: Select the best moments totaling approximately ${Math.round(
+TASK: Create a ${Math.round(
     targetDurationSeconds / 60
-  )} minutes.
+  )}-minute highlights package that tells a complete story.
 
-Selection Criteria (in order of importance):
-1. Emotional peaks - moments marked as "high" or "peak" intensity
-2. Character-defining moments - key scenes for main characters
-3. Narrative pivots - plot twists, revelations, confrontations
-4. Visual spectacle - visually striking sequences
-5. Memorable dialogue - quotable or impactful lines
+${narrativeGuidance}
+
+STRUCTURE YOUR HIGHLIGHTS LIKE A MINI-STORY:
+1. HOOK (first 10-15s): Start with something that grabs attention and sets up the stakes
+2. RISING ACTION: Build through key moments that escalate tension or interest  
+3. CLIMAX: Include the biggest emotional peak or revelation
+4. RESOLUTION: End with a satisfying conclusion or cliffhanger
+
+Selection Criteria:
+- Emotional peaks marked as "high" or "peak" intensity
+- Moments that CONNECT to each other narratively (cause → effect)
+- Character-defining scenes that show growth or conflict
+- Visual spectacle and memorable dialogue
 
 Requirements:
-- Maintain chronological order
-- Each segment should stand alone as compelling content
-- You MAY exceed target duration by 20-30% if it significantly improves quality
-- Ensure narrative coherence - selections should tell a condensed story
+- MUST feel like a complete viewing experience, not choppy clips
+- Transitions should feel natural (avoid jarring jumps in story)
+- Each segment should build toward the next
+- The ending should feel intentional, not abrupt
+- You may exceed target by 20-30% if it completes the story better
 
-Target: ~${Math.round(
-    targetDurationSeconds / 60
-  )} minutes (advisory - quality over length)
+Target: ~${Math.round(targetDurationSeconds / 60)} minutes
 
 ${QUALITY_GUIDELINES}
 ${OUTPUT_SCHEMA}`;
@@ -460,57 +477,84 @@ ${OUTPUT_SCHEMA}`;
 // Prompt Selector
 // ============================================================================
 
+export interface PlanningPromptOptions {
+  purpose: Purpose;
+  understanding: VideoUnderstanding;
+  targetDuration?: number;
+  userInstructions?: string;
+}
+
 export function getPlanningPrompt(
   purpose: Purpose,
   understanding: VideoUnderstanding,
-  targetDuration?: number
+  targetDuration?: number,
+  userInstructions?: string
 ): string {
-  // Default durations if not specified
-  const duration = understanding.duration;
+  let basePrompt: string;
 
   switch (purpose) {
     case Purpose.FULL_VIDEO:
       // Default to 5 minute chapters for microdramas
       const segmentMinutes = targetDuration ? targetDuration / 60 : 5;
-      return getFullVideoPrompt(understanding, segmentMinutes);
+      basePrompt = getFullVideoPrompt(understanding, segmentMinutes);
+      break;
 
     case Purpose.HIGHLIGHTS:
       // Default to 60 seconds
       const highlightSeconds = targetDuration || 60;
-      return getHighlightsPrompt(understanding, highlightSeconds);
+      basePrompt = getHighlightsPrompt(understanding, highlightSeconds);
+      break;
 
     case Purpose.TRAILER:
-      return getTrailerPrompt(understanding);
+      basePrompt = getTrailerPrompt(understanding);
+      break;
 
     case Purpose.TUNEIN:
       // Default to 30 seconds
       const tuneInSeconds = targetDuration || 30;
-      return getTuneInPrompt(understanding, tuneInSeconds);
+      basePrompt = getTuneInPrompt(understanding, tuneInSeconds);
+      break;
 
     case Purpose.BRIDGE:
       // Default to 90 seconds
       const bridgeSeconds = targetDuration || 90;
-      return getBridgePrompt(understanding, bridgeSeconds);
+      basePrompt = getBridgePrompt(understanding, bridgeSeconds);
+      break;
 
     case Purpose.EPISODE_RECAP:
       // Default to 60 seconds
       const episodeRecapSeconds = targetDuration || 60;
-      return getEpisodeRecapPrompt(understanding, episodeRecapSeconds);
+      basePrompt = getEpisodeRecapPrompt(understanding, episodeRecapSeconds);
+      break;
 
     case Purpose.SEASON_RECAP:
       // Default to 3 minutes
       const seasonRecapSeconds = targetDuration || 180;
-      return getSeasonRecapPrompt(understanding, seasonRecapSeconds);
+      basePrompt = getSeasonRecapPrompt(understanding, seasonRecapSeconds);
+      break;
 
     case Purpose.SOCIAL_SEGMENT:
       // Default to 30 seconds
       const socialSeconds = targetDuration || 30;
-      return getSocialSegmentPrompt(understanding, socialSeconds);
+      basePrompt = getSocialSegmentPrompt(understanding, socialSeconds);
+      break;
 
     default:
       // Fallback to highlights
-      return getHighlightsPrompt(understanding, 60);
+      basePrompt = getHighlightsPrompt(understanding, 60);
   }
+
+  // Inject user instructions if provided
+  if (userInstructions?.trim()) {
+    return `${basePrompt}
+
+---
+USER INSTRUCTIONS (from the editor - incorporate these preferences):
+${userInstructions.trim()}
+---`;
+  }
+
+  return basePrompt;
 }
 
 // ============================================================================
