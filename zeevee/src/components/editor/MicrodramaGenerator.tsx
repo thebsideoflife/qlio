@@ -25,9 +25,6 @@ import {
   RotateCcw,
   MessageSquare,
   SlidersHorizontal,
-  ChevronDown,
-  ChevronUp,
-  Pencil,
 } from "lucide-react";
 import { FaTiktok, FaInstagram, FaYoutube, FaFacebook } from "react-icons/fa";
 import { SiYoutubeshorts } from "react-icons/si";
@@ -188,7 +185,6 @@ export function MicrodramaGenerator({
 }: MicrodramaGeneratorProps) {
   const [selections, setSelections] = useState<Selections>(INITIAL);
   const [viewMode, setViewMode] = useState<"chat" | "compact">("chat");
-  const [showPrompt, setShowPrompt] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const needsDuration =
@@ -329,8 +325,6 @@ export function MicrodramaGenerator({
             {/* Optional User Prompt */}
             {selections.type && selections.platform && selections.purpose && (
               <UserPromptSection
-                showPrompt={showPrompt}
-                setShowPrompt={setShowPrompt}
                 value={selections.userPrompt}
                 onChange={(v) => select("userPrompt", v)}
                 viewMode="chat"
@@ -379,8 +373,6 @@ export function MicrodramaGenerator({
             {/* Optional User Prompt */}
             {selections.purpose && (
               <UserPromptSection
-                showPrompt={showPrompt}
-                setShowPrompt={setShowPrompt}
                 value={selections.userPrompt}
                 onChange={(v) => select("userPrompt", v)}
                 viewMode="compact"
@@ -625,14 +617,10 @@ function OptionGrid({
 /* ============ User Prompt Section ============ */
 
 function UserPromptSection({
-  showPrompt,
-  setShowPrompt,
   value,
   onChange,
   viewMode,
 }: {
-  showPrompt: boolean;
-  setShowPrompt: (show: boolean) => void;
   value: string;
   onChange: (value: string) => void;
   viewMode: "chat" | "compact";
@@ -642,83 +630,52 @@ function UserPromptSection({
 
   if (viewMode === "chat") {
     return (
-      <div className="space-y-3">
-        <button
-          onClick={() => setShowPrompt(!showPrompt)}
-          className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <Pencil className="h-3.5 w-3.5" />
-          <span>{showPrompt ? "Hide" : "Add"} custom instructions</span>
-          {showPrompt ? (
-            <ChevronUp className="h-3.5 w-3.5" />
-          ) : (
-            <ChevronDown className="h-3.5 w-3.5" />
-          )}
-        </button>
-
-        {showPrompt && (
-          <div className="pl-1 space-y-1">
-            <textarea
-              value={value}
-              onChange={(e) => onChange(e.target.value.slice(0, maxLength))}
-              maxLength={maxLength}
-              placeholder="e.g., Focus on the romantic subplot, avoid spoilers for the ending..."
-              className="w-full h-20 px-3 py-2 text-sm rounded-xl bg-card border-2 border-border focus:border-blue-400 focus:outline-none resize-none placeholder:text-muted-foreground/60"
-            />
+      <div className="flex justify-end">
+        <div className="w-[85%] space-y-1">
+          <textarea
+            value={value}
+            onChange={(e) => onChange(e.target.value.slice(0, maxLength))}
+            maxLength={maxLength}
+            placeholder="Any special instructions? (optional)"
+            className="w-full h-16 px-3 py-2 text-sm rounded-2xl rounded-br-sm bg-blue-50 dark:bg-blue-950/30 border-2 border-blue-200 dark:border-blue-800 focus:border-blue-400 focus:outline-none resize-none placeholder:text-muted-foreground/50"
+          />
+          {value.length > 0 && (
             <div
               className={cn(
-                "text-xs text-right",
-                remaining < 50 ? "text-amber-500" : "text-muted-foreground"
+                "text-xs text-right pr-1",
+                remaining < 50 ? "text-amber-500" : "text-muted-foreground/60"
               )}
             >
-              {remaining} characters left
+              {remaining}
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     );
   }
 
   // Compact view
   return (
-    <div className="space-y-2">
-      <button
-        onClick={() => setShowPrompt(!showPrompt)}
-        className="flex items-center gap-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors"
-      >
-        <Pencil className="h-3 w-3" />
-        <span>Custom Instructions</span>
-        {showPrompt ? (
-          <ChevronUp className="h-3 w-3" />
-        ) : (
-          <ChevronDown className="h-3 w-3" />
-        )}
-        {value && !showPrompt && (
-          <span className="ml-1 px-1.5 py-0.5 text-[10px] bg-blue-500/20 text-blue-600 rounded">
-            Active
-          </span>
-        )}
-      </button>
-
-      {showPrompt && (
-        <div className="space-y-1">
-          <textarea
-            value={value}
-            onChange={(e) => onChange(e.target.value.slice(0, maxLength))}
-            maxLength={maxLength}
-            placeholder="e.g., Focus on the romantic subplot, avoid spoilers..."
-            className="w-full h-16 px-3 py-2 text-sm rounded-lg bg-card border-2 border-border focus:border-blue-400 focus:outline-none resize-none placeholder:text-muted-foreground/60"
-          />
+    <GridSection label="Instructions (optional)">
+      <div className="space-y-1">
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value.slice(0, maxLength))}
+          maxLength={maxLength}
+          placeholder="e.g., Focus on the romantic subplot..."
+          className="w-full h-14 px-3 py-2 text-sm rounded-lg bg-card border-2 border-dashed border-border focus:border-blue-400 focus:border-solid focus:outline-none resize-none placeholder:text-muted-foreground/50"
+        />
+        {value.length > 0 && (
           <div
             className={cn(
               "text-xs text-right",
-              remaining < 50 ? "text-amber-500" : "text-muted-foreground"
+              remaining < 50 ? "text-amber-500" : "text-muted-foreground/60"
             )}
           >
             {remaining}
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </GridSection>
   );
 }
