@@ -226,15 +226,21 @@ async function handleSingleVideoCompletion(
         videoId
       );
 
-      // Safely access duration - 12labs uses system_metadata.duration
+      // 12Labs stores duration in various places depending on API version
       const anyVideo = video as any;
-      if (anyVideo.system_metadata?.duration) {
-        videoDuration = anyVideo.system_metadata.duration;
-      } else if (anyVideo.metadata?.duration) {
-        videoDuration = anyVideo.metadata.duration;
-      }
+      videoDuration =
+        anyVideo.system_metadata?.duration ||
+        anyVideo.metadata?.duration ||
+        anyVideo.hls?.duration ||
+        anyVideo.duration ||
+        0;
 
-      console.log("12Labs video response:", JSON.stringify(video, null, 2));
+      console.log(
+        "12Labs video duration:",
+        videoDuration,
+        "from response:",
+        JSON.stringify(video, null, 2).slice(0, 500)
+      );
     } catch (err) {
       console.error("Failed to fetch video metadata from 12 Labs", err);
     }
@@ -269,6 +275,18 @@ async function handleSingleVideoCompletion(
 
         transcriptionUrl = `s3://${BUCKET_NAME}/${key}`;
         console.log("Transcription stored at", transcriptionUrl);
+
+        // Fallback: If duration is 0, estimate from last transcript segment
+        if (videoDuration === 0 && transcriptionData.length > 0) {
+          const lastSegment = transcriptionData[transcriptionData.length - 1];
+          const estimatedDuration = lastSegment.end || lastSegment.endTime || 0;
+          if (estimatedDuration > 0) {
+            videoDuration = estimatedDuration;
+            console.log(
+              `Duration estimated from transcript: ${videoDuration}s`
+            );
+          }
+        }
       } else {
         console.warn("No transcription data found in response", data);
       }

@@ -1,4 +1,5 @@
 import { useRef, useState, useCallback, useEffect, useMemo } from "react";
+import { flushSync } from "react-dom";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
 import {
@@ -32,19 +33,19 @@ interface TimelineProps {
 
 type DragMode = "playhead" | "left" | "right" | null;
 
-interface DragState {
+// Zoom: 1 = fit to container, higher = zoomed in
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 20;
+const DEFAULT_ZOOM = 1;
+
+// Drag state stored in ref for immediate updates without re-render
+interface DragInfo {
   mode: DragMode;
   segmentId: string | null;
   startX: number;
   initialStart: number;
   initialEnd: number;
-  scrollLeft: number;
 }
-
-// Zoom: 1 = fit to container, higher = zoomed in
-const MIN_ZOOM = 1;
-const MAX_ZOOM = 20;
-const DEFAULT_ZOOM = 1;
 
 export function Timeline({
   videoRef,
@@ -63,10 +64,17 @@ export function Timeline({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [dragState, setDragState] = useState<DragState | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragRef = useRef<DragInfo | null>(null);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [containerWidth, setContainerWidth] = useState(800);
   const [isPlaying, setIsPlaying] = useState(false);
+
+  // Track zoom in ref for event handlers
+  const zoomRef = useRef(zoom);
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
 
   // Track pinch/gesture state with refs to avoid stale closures
   const pinchStateRef = useRef<{
@@ -358,14 +366,15 @@ export function Timeline({
   // Handle playhead drag start
   const handlePlayheadMouseDown = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setDragState({
+    e.preventDefault();
+    dragRef.current = {
       mode: "playhead",
       segmentId: null,
       startX: e.clientX,
       initialStart: currentTime,
       initialEnd: 0,
-      scrollLeft: scrollRef.current?.scrollLeft || 0,
-    });
+    };
+    setIsDragging(true);
   };
 
   // Handle segment resize start (disabled in preview mode)
@@ -377,19 +386,20 @@ export function Timeline({
     if (previewMode) return; // No resizing in preview mode
 
     e.stopPropagation();
+    e.preventDefault();
     const segment = segments.find((s) => s.id === segmentId);
     if (!segment) return;
 
     dispatch(selectSegment(segmentId));
 
-    setDragState({
+    dragRef.current = {
       mode,
       segmentId,
       startX: e.clientX,
       initialStart: segment.startTime,
       initialEnd: segment.endTime,
-      scrollLeft: scrollRef.current?.scrollLeft || 0,
-    });
+    };
+    setIsDragging(true);
   };
 
   // Convert click position to time - handles scroll offset correctly
@@ -433,7 +443,7 @@ export function Timeline({
 
   // Handle track click to seek
   const handleTrackClick = (e: React.MouseEvent) => {
-    if (dragState) return;
+    if (isDragging) return;
 
     const time = getTimeFromClickEvent(e);
     if (videoRef.current) {
@@ -445,57 +455,65 @@ export function Timeline({
     dispatch(selectSegment(null));
   };
 
-  // Mouse move handler for dragging
+  // Mouse move handler for dragging - direct Redux updates with flushSync
   useEffect(() => {
-    if (!dragState) return;
+    if (!isDragging) return;
 
     const handleMouseMove = (e: MouseEvent) => {
-      const deltaX = e.clientX - dragState.startX;
+      const drag = dragRef.current;
+      if (!drag) return;
+
+      const deltaX = e.clientX - drag.startX;
       const deltaTime = pxToTime(deltaX);
 
-      if (dragState.mode === "playhead") {
-        const rawTime = clampTime(dragState.initialStart + deltaTime);
-        // Snap playhead to segment edges in edit mode
+      if (drag.mode === "playhead") {
+        const rawTime = clampTime(drag.initialStart + deltaTime);
         const newTime = snapToSegmentEdge(rawTime);
         if (videoRef.current) {
           videoRef.current.currentTime = newTime;
         }
         dispatch(setCurrentTime(newTime));
-      } else if (dragState.mode === "left" && dragState.segmentId) {
+      } else if (drag.mode === "left" && drag.segmentId) {
         const newStart = clampTime(
-          dragState.initialStart + deltaTime,
+          drag.initialStart + deltaTime,
           0,
-          dragState.initialEnd - 0.1
+          drag.initialEnd - 0.1
         );
-        dispatch(
-          updateSegmentTime({
-            id: dragState.segmentId,
-            start: newStart,
-            end: dragState.initialEnd,
-          })
-        );
-      } else if (dragState.mode === "right" && dragState.segmentId) {
+        // Direct Redux update - flushSync ensures immediate DOM update
+        flushSync(() => {
+          dispatch(
+            updateSegmentTime({
+              id: drag.segmentId!,
+              start: newStart,
+              end: drag.initialEnd,
+            })
+          );
+        });
+      } else if (drag.mode === "right" && drag.segmentId) {
         const newEnd = clampTime(
-          dragState.initialEnd + deltaTime,
-          dragState.initialStart + 0.1,
+          drag.initialEnd + deltaTime,
+          drag.initialStart + 0.1,
           totalDuration
         );
-        dispatch(
-          updateSegmentTime({
-            id: dragState.segmentId,
-            start: dragState.initialStart,
-            end: newEnd,
-          })
-        );
+        flushSync(() => {
+          dispatch(
+            updateSegmentTime({
+              id: drag.segmentId!,
+              start: drag.initialStart,
+              end: newEnd,
+            })
+          );
+        });
       }
     };
 
     const handleMouseUp = () => {
-      // If we were resizing a segment, finalize (merge overlapping segments)
-      if (dragState.mode === "left" || dragState.mode === "right") {
+      const drag = dragRef.current;
+      if (drag && (drag.mode === "left" || drag.mode === "right")) {
         dispatch(finalizeSegmentEdit());
       }
-      setDragState(null);
+      dragRef.current = null;
+      setIsDragging(false);
     };
 
     document.addEventListener("mousemove", handleMouseMove);
@@ -506,7 +524,7 @@ export function Timeline({
       document.removeEventListener("mouseup", handleMouseUp);
     };
   }, [
-    dragState,
+    isDragging,
     pxToTime,
     clampTime,
     totalDuration,
@@ -546,29 +564,27 @@ export function Timeline({
   };
 
   // Touch-based pinch zoom (mobile)
-  const handleTouchStart = useCallback(
-    (e: React.TouchEvent) => {
-      if (e.touches.length === 2) {
-        e.preventDefault();
-        const dx = e.touches[0].clientX - e.touches[1].clientX;
-        const dy = e.touches[0].clientY - e.touches[1].clientY;
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const currentZoom = zoomRef.current;
 
-        const scrollContainer = scrollRef.current;
-        if (scrollContainer) {
-          const rect = scrollContainer.getBoundingClientRect();
-          const centerX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const scrollContainer = scrollRef.current;
+      if (scrollContainer) {
+        const rect = scrollContainer.getBoundingClientRect();
+        const centerX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
 
-          pinchStateRef.current = {
-            initialDistance: Math.hypot(dx, dy),
-            initialZoom: zoom,
-            centerX: centerX - rect.left,
-            scrollLeft: scrollContainer.scrollLeft,
-          };
-        }
+        pinchStateRef.current = {
+          initialDistance: Math.hypot(dx, dy),
+          initialZoom: currentZoom,
+          centerX: centerX - rect.left,
+          scrollLeft: scrollContainer.scrollLeft,
+        };
       }
-    },
-    [zoom]
-  );
+    }
+  }, []);
 
   const handleTouchMove = useCallback(
     (e: React.TouchEvent) => {
@@ -577,35 +593,41 @@ export function Timeline({
         pinchStateRef.current.initialDistance !== null
       ) {
         e.preventDefault();
+        const scrollContainer = scrollRef.current;
+        if (!scrollContainer) return;
 
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
         const currentDistance = Math.hypot(dx, dy);
 
-        const scale = currentDistance / pinchStateRef.current.initialDistance;
+        const scaleRatio =
+          currentDistance / pinchStateRef.current.initialDistance;
         const newZoom = Math.max(
           MIN_ZOOM,
-          Math.min(MAX_ZOOM, pinchStateRef.current.initialZoom * scale)
+          Math.min(MAX_ZOOM, pinchStateRef.current.initialZoom * scaleRatio)
         );
 
-        // Zoom toward pinch center
-        const scrollContainer = scrollRef.current;
-        if (scrollContainer) {
-          const oldPps =
-            (containerWidth * pinchStateRef.current.initialZoom) /
-            effectiveDuration;
-          const newPps = (containerWidth * newZoom) / effectiveDuration;
+        const initialPps =
+          effectiveDuration > 0
+            ? (containerWidth * pinchStateRef.current.initialZoom) /
+              effectiveDuration
+            : 1;
+        const centerPxInTrack =
+          pinchStateRef.current.centerX + pinchStateRef.current.scrollLeft;
+        const timeAtCenter = centerPxInTrack / initialPps;
 
-          const centerPxInTrack =
-            pinchStateRef.current.centerX + pinchStateRef.current.scrollLeft;
-          const timeAtCenter = centerPxInTrack / oldPps;
-          const newCenterPx = timeAtCenter * newPps;
-          const newScrollLeft = newCenterPx - pinchStateRef.current.centerX;
+        const newPps =
+          effectiveDuration > 0
+            ? (containerWidth * newZoom) / effectiveDuration
+            : 1;
+        const newScroll = Math.max(
+          0,
+          timeAtCenter * newPps - pinchStateRef.current.centerX
+        );
 
-          scrollContainer.scrollLeft = Math.max(0, newScrollLeft);
-        }
-
-        setZoom(newZoom);
+        zoomRef.current = newZoom;
+        flushSync(() => setZoom(newZoom));
+        scrollContainer.scrollLeft = newScroll;
       }
     },
     [containerWidth, effectiveDuration]
@@ -615,17 +637,15 @@ export function Timeline({
     pinchStateRef.current.initialDistance = null;
   }, []);
 
-  // Wheel event handler - must use native listener with passive:false to prevent default
-  // React synthetic events can't prevent default on passive listeners
+  // Simple wheel handler - just update zoom and scroll
   useEffect(() => {
     const scrollContainer = scrollRef.current;
     if (!scrollContainer) return;
 
     const handleWheel = (e: WheelEvent) => {
-      // Skip if Safari gesture is in progress
       if (gestureStateRef.current.isGesturing) return;
 
-      // Ctrl/Cmd + wheel = zoom (also handles trackpad pinch on Chrome/Firefox/Edge)
+      // Ctrl/Cmd + wheel = zoom
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -633,44 +653,43 @@ export function Timeline({
         const rect = scrollContainer.getBoundingClientRect();
         const cursorX = e.clientX - rect.left;
         const scrollLeft = scrollContainer.scrollLeft;
+        const currentZoom = zoomRef.current;
 
-        const cursorPxInTrack = cursorX + scrollLeft;
-        const timeAtCursor = cursorPxInTrack / pixelsPerSecond;
+        // Time at cursor
+        const pps =
+          effectiveDuration > 0
+            ? (containerWidth * currentZoom) / effectiveDuration
+            : 1;
+        const timeAtCursor = (cursorX + scrollLeft) / pps;
 
+        // New zoom
         const zoomDelta = -e.deltaY * 0.01;
         const newZoom = Math.max(
           MIN_ZOOM,
-          Math.min(MAX_ZOOM, zoom * (1 + zoomDelta))
+          Math.min(MAX_ZOOM, currentZoom * (1 + zoomDelta))
         );
 
-        const newPixelsPerSecond =
-          (containerWidth * newZoom) / effectiveDuration;
-        const newCursorPxInTrack = timeAtCursor * newPixelsPerSecond;
-        const newScrollLeft = newCursorPxInTrack - cursorX;
+        // New scroll to keep cursor over same time
+        const newPps =
+          effectiveDuration > 0
+            ? (containerWidth * newZoom) / effectiveDuration
+            : 1;
+        const newScroll = Math.max(0, timeAtCursor * newPps - cursorX);
 
-        setZoom(newZoom);
-        requestAnimationFrame(() => {
-          scrollContainer.scrollLeft = Math.max(0, newScrollLeft);
-        });
+        // Update synchronously
+        zoomRef.current = newZoom;
+        flushSync(() => setZoom(newZoom));
+        scrollContainer.scrollLeft = newScroll;
       } else {
         // Plain wheel = horizontal scroll
         e.preventDefault();
-
-        if (e.deltaX !== 0) {
-          scrollContainer.scrollLeft += e.deltaX;
-        } else if (e.deltaY !== 0) {
-          scrollContainer.scrollLeft += e.deltaY;
-        }
+        scrollContainer.scrollLeft += e.deltaX || e.deltaY;
       }
     };
 
-    // MUST use passive:false to allow preventDefault
     scrollContainer.addEventListener("wheel", handleWheel, { passive: false });
-
-    return () => {
-      scrollContainer.removeEventListener("wheel", handleWheel);
-    };
-  }, [zoom, pixelsPerSecond, containerWidth, effectiveDuration]);
+    return () => scrollContainer.removeEventListener("wheel", handleWheel);
+  }, [containerWidth, effectiveDuration]);
 
   // Safari gesture events (only needs useEffect for non-React events)
   useEffect(() => {
@@ -682,7 +701,7 @@ export function Timeline({
       e.preventDefault();
       gestureStateRef.current = {
         isGesturing: true,
-        initialZoom: zoom,
+        initialZoom: zoomRef.current,
         centerX: scrollContainer.clientWidth / 2,
         scrollLeft: scrollContainer.scrollLeft,
       };
@@ -699,19 +718,27 @@ export function Timeline({
         )
       );
 
-      const oldPps =
-        (containerWidth * gestureStateRef.current.initialZoom) /
-        effectiveDuration;
-      const newPps = (containerWidth * newZoom) / effectiveDuration;
-
+      const initialPps =
+        effectiveDuration > 0
+          ? (containerWidth * gestureStateRef.current.initialZoom) /
+            effectiveDuration
+          : 1;
       const centerPxInTrack =
         gestureStateRef.current.centerX + gestureStateRef.current.scrollLeft;
-      const timeAtCenter = centerPxInTrack / oldPps;
-      const newCenterPx = timeAtCenter * newPps;
-      const newScrollLeft = newCenterPx - gestureStateRef.current.centerX;
+      const timeAtCenter = centerPxInTrack / initialPps;
 
-      scrollContainer.scrollLeft = Math.max(0, newScrollLeft);
-      setZoom(newZoom);
+      const newPps =
+        effectiveDuration > 0
+          ? (containerWidth * newZoom) / effectiveDuration
+          : 1;
+      const newScroll = Math.max(
+        0,
+        timeAtCenter * newPps - gestureStateRef.current.centerX
+      );
+
+      zoomRef.current = newZoom;
+      flushSync(() => setZoom(newZoom));
+      scrollContainer.scrollLeft = newScroll;
     };
 
     const handleGestureEnd = (e: Event) => {
@@ -719,7 +746,6 @@ export function Timeline({
       gestureStateRef.current.isGesturing = false;
     };
 
-    // Safari gesture events don't have React equivalents
     container.addEventListener("gesturestart", handleGestureStart, {
       passive: false,
     });
@@ -735,7 +761,7 @@ export function Timeline({
       container.removeEventListener("gesturechange", handleGestureChange);
       container.removeEventListener("gestureend", handleGestureEnd);
     };
-  }, [containerWidth, effectiveDuration, zoom]);
+  }, [containerWidth, effectiveDuration]);
 
   // Check if split is possible (segment selected AND playhead inside that segment)
   // Memoized to avoid recalculating on every render
@@ -962,7 +988,7 @@ export function Timeline({
                 <div
                   key={segment.id}
                   className={cn(
-                    "absolute top-1 bottom-1 cursor-pointer transition-all",
+                    "absolute top-1 bottom-1 cursor-pointer",
                     selectedId === segment.id
                       ? "bg-emerald-500 ring-2 ring-white ring-offset-1 ring-offset-background z-10 rounded-md"
                       : "bg-emerald-600/80 hover:bg-emerald-500/90 rounded-sm"
