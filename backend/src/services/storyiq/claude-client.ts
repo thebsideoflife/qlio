@@ -30,8 +30,8 @@ import { MODEL_SONNET, MODEL_HAIKU, extractLLMContent } from "./types";
 export const USE_ANTHROPIC_API = true;
 
 // Anthropic API model IDs (different from Bedrock model IDs)
-const ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-20250514";
-const ANTHROPIC_MODEL_HAIKU = "claude-3-5-haiku-20241022"; // Claude 3.5 Haiku (Haiku 4 not yet available)
+const ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-5-20250929";
+const ANTHROPIC_MODEL_HAIKU = "claude-haiku-4-5-20251001";
 
 // ============================================================================
 // Clients (lazy initialized)
@@ -126,7 +126,8 @@ async function callClaudeViaAnthropic(
   messages: ClaudeMessage[]
 ): Promise<string> {
   const client = await getAnthropicClient();
-  const modelId = model === "sonnet" ? ANTHROPIC_MODEL_SONNET : ANTHROPIC_MODEL_HAIKU;
+  const modelId =
+    model === "sonnet" ? ANTHROPIC_MODEL_SONNET : ANTHROPIC_MODEL_HAIKU;
 
   console.log(`[Claude] Using Anthropic API with model: ${modelId}`);
 
@@ -181,4 +182,3 @@ async function callClaudeViaBedrock(
 
   return extractLLMContent(responseBody);
 }
-

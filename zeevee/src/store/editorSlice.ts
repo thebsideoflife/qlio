@@ -361,14 +361,21 @@ export const editorSlice = createSlice({
     },
     setGlobalAspectRatio: (state, action: PayloadAction<AspectRatio>) => {
       state.globalFraming.aspectRatio = action.payload;
+      // Default to crop mode for mobile aspect ratios (9:16)
+      const isMobile = action.payload === "9:16";
       // Apply to all segments
       state.segments.forEach((segment) => {
         if (segment.framing) {
           segment.framing.aspectRatio = action.payload;
+          // Also set mode to crop for mobile
+          if (isMobile) {
+            segment.framing.mode = "crop";
+          }
         } else {
           segment.framing = {
             ...DEFAULT_SEGMENT_FRAMING,
             aspectRatio: action.payload,
+            ...(isMobile && { mode: "crop" }),
           };
         }
       });
