@@ -55,13 +55,13 @@ export function CaptionEditor() {
   const highlightColor = style.highlightColor || "#fbbf24";
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="p-5 space-y-5">
       {/* Toggle */}
-      <div className="flex items-center justify-between">
-        <div className="space-y-0.5">
-          <Label htmlFor="captions-toggle">Show Captions</Label>
+      <div className="flex items-center justify-between p-4 bg-muted/40 rounded-xl border-2 border-border">
+        <div className="space-y-1">
+          <Label htmlFor="captions-toggle" className="font-bold">Show Captions</Label>
           {captionCount > 0 && (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-muted-foreground font-medium">
               {captionCount} lines from transcript
             </p>
           )}
@@ -76,9 +76,9 @@ export function CaptionEditor() {
       {enabled && (
         <>
           {/* Position */}
-          <div className="space-y-2">
-            <Label className="text-xs font-medium">Position</Label>
-            <div className="grid grid-cols-3 gap-1.5">
+          <div className="space-y-3">
+            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Position</Label>
+            <div className="grid grid-cols-3 gap-2">
               {SNAP_POSITIONS.map((pos) => {
                 const active =
                   Math.abs(style.position.x - pos.x) < 3 &&
@@ -86,9 +86,9 @@ export function CaptionEditor() {
                 return (
                   <Button
                     key={pos.label}
-                    variant={active ? "secondary" : "outline"}
+                    variant={active ? "default" : "outline"}
                     size="sm"
-                    className="text-xs h-7"
+                    className="text-xs h-9 font-semibold"
                     onClick={() =>
                       dispatch(updateCaptionPosition({ x: pos.x, y: pos.y }))
                     }
@@ -98,22 +98,22 @@ export function CaptionEditor() {
                 );
               })}
             </div>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-muted-foreground font-medium">
               Drag captions on video to reposition
             </p>
           </div>
 
           {/* Font & Size */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label className="text-xs font-medium">Font</Label>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Font</Label>
               <Select
                 value={style.fontFamily}
                 onValueChange={(v) =>
                   dispatch(updateCaptionStyle({ fontFamily: v }))
                 }
               >
-                <SelectTrigger className="h-8 text-xs">
+                <SelectTrigger className="h-10 text-sm font-semibold border-2 border-border">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -121,7 +121,7 @@ export function CaptionEditor() {
                     <SelectItem
                       key={f.value}
                       value={f.value}
-                      className="text-xs"
+                      className="text-sm font-medium"
                     >
                       {f.label}
                     </SelectItem>
@@ -129,15 +129,15 @@ export function CaptionEditor() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs font-medium">Size</Label>
+            <div className="space-y-2">
+              <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Size</Label>
               <Select
                 value={String(Math.round(style.fontSize))}
                 onValueChange={(v) =>
                   dispatch(updateCaptionStyle({ fontSize: Number(v) }))
                 }
               >
-                <SelectTrigger className="h-8 text-xs">
+                <SelectTrigger className="h-10 text-sm font-semibold border-2 border-border">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -145,7 +145,7 @@ export function CaptionEditor() {
                     <SelectItem
                       key={s.value}
                       value={s.value}
-                      className="text-xs"
+                      className="text-sm font-medium"
                     >
                       {s.label}
                     </SelectItem>
@@ -156,17 +156,17 @@ export function CaptionEditor() {
           </div>
 
           {/* Background */}
-          <div className="space-y-1.5">
-            <Label className="text-xs font-medium">Background</Label>
-            <div className="flex gap-1.5">
+          <div className="space-y-3">
+            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Background</Label>
+            <div className="flex gap-2">
               {BACKGROUNDS.map((bg) => (
                 <Button
                   key={bg.value}
                   variant={
-                    style.backgroundColor === bg.value ? "secondary" : "outline"
+                    style.backgroundColor === bg.value ? "default" : "outline"
                   }
                   size="sm"
-                  className="flex-1 h-7 text-xs"
+                  className="flex-1 h-9 text-xs font-semibold"
                   onClick={() =>
                     dispatch(updateCaptionStyle({ backgroundColor: bg.value }))
                   }
@@ -178,17 +178,17 @@ export function CaptionEditor() {
           </div>
 
           {/* Highlight Color */}
-          <div className="space-y-1.5">
-            <Label className="text-xs font-medium">Word Highlight</Label>
-            <div className="flex gap-1.5">
+          <div className="space-y-3">
+            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Word Highlight</Label>
+            <div className="flex gap-2">
               {HIGHLIGHT_COLORS.map((color) => (
                 <Button
                   key={color.value}
                   variant={
-                    highlightColor === color.value ? "secondary" : "outline"
+                    highlightColor === color.value ? "default" : "outline"
                   }
                   size="sm"
-                  className="flex-1 h-7 text-xs"
+                  className="flex-1 h-9 text-xs font-semibold"
                   onClick={() =>
                     dispatch(
                       updateCaptionStyle({ highlightColor: color.value })

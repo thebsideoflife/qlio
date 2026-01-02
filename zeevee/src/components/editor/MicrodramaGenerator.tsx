@@ -152,6 +152,7 @@ const PURPOSES: Option[] = [
 
 // Duration presets per purpose
 const DURATION_PRESETS: Record<string, [string, string]> = {
+  full_video: ["2 min", "3 min"],
   highlights: ["30s", "60s"],
   trailer: ["90s", "2 min"],
   tunein: ["15s", "30s"],
@@ -187,13 +188,12 @@ export function MicrodramaGenerator({
   const [viewMode, setViewMode] = useState<"chat" | "compact">("chat");
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const needsDuration =
-    selections.purpose && selections.purpose !== "full_video";
+  const needsDuration = !!selections.purpose;
   const isComplete =
     selections.type &&
     selections.platform &&
     selections.purpose &&
-    (selections.purpose === "full_video" || selections.duration);
+    selections.duration;
 
   // Auto-scroll when selections change
   useEffect(() => {
@@ -217,9 +217,9 @@ export function MicrodramaGenerator({
         if (ratio) onAspectRatioChange(ratio);
       }
 
-      // Purpose change → reset duration
+      // Purpose change → set default duration
       if (key === "purpose") {
-        updated.duration = value === "full_video" ? "" : "Auto";
+        updated.duration = "Auto";
       }
 
       return updated;
@@ -637,7 +637,7 @@ function UserPromptSection({
             onChange={(e) => onChange(e.target.value.slice(0, maxLength))}
             maxLength={maxLength}
             placeholder="Any special instructions? (optional)"
-            className="w-full h-16 px-3 py-2 text-sm rounded-2xl rounded-br-sm bg-blue-50 dark:bg-blue-950/30 border-2 border-blue-200 dark:border-blue-800 focus:border-blue-400 focus:outline-none resize-none placeholder:text-muted-foreground/50"
+            className="w-full h-24 px-3 py-2.5 text-sm rounded-2xl rounded-br-sm bg-blue-50 dark:bg-blue-950/30 border-2 border-blue-200 dark:border-blue-800 focus:border-blue-400 focus:outline-none resize-none placeholder:text-muted-foreground/50"
           />
           {value.length > 0 && (
             <div
@@ -663,7 +663,7 @@ function UserPromptSection({
           onChange={(e) => onChange(e.target.value.slice(0, maxLength))}
           maxLength={maxLength}
           placeholder="e.g., Focus on the romantic subplot..."
-          className="w-full h-14 px-3 py-2 text-sm rounded-lg bg-card border-2 border-dashed border-border focus:border-blue-400 focus:border-solid focus:outline-none resize-none placeholder:text-muted-foreground/50"
+          className="w-full h-24 px-3 py-2.5 text-sm rounded-lg bg-card border-2 border-dashed border-border focus:border-blue-400 focus:border-solid focus:outline-none resize-none placeholder:text-muted-foreground/50"
         />
         {value.length > 0 && (
           <div

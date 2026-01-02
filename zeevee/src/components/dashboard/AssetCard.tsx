@@ -390,7 +390,7 @@ export function AssetCard({
     return (
       <div
         className={cn(
-          "rounded-lg overflow-hidden bg-slate-900/80 border border-slate-800/50 cursor-pointer transition-all duration-200 hover:border-purple-500/50",
+          "rounded-xl overflow-hidden bg-card border-2 border-border cursor-pointer transition-all duration-200 hover:border-blue-500/50 hover:shadow-lg",
           "group"
         )}
         onClick={onSelect}
@@ -410,24 +410,24 @@ export function AssetCard({
               className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
             />
           )}
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent" />
           {/* Status badge */}
           {(asset.status === "uploading" ||
             ((asset.status === "processing" || asset.status === "indexing") &&
               asset.processing)) && (
-            <div className="absolute top-1.5 left-1.5">
-              <Badge className="bg-blue-500/90 text-white border-0 text-[10px] px-1.5 py-0">
-                <Loader2 className="h-2.5 w-2.5 animate-spin mr-0.5" />
+            <div className="absolute top-2 left-2">
+              <Badge className="bg-blue-600 text-white border-0 text-[10px] px-2 py-0.5 font-semibold">
+                <Loader2 className="h-2.5 w-2.5 animate-spin mr-1" />
                 {currentStageLabel || asset.status}
               </Badge>
             </div>
           )}
           {/* Title overlay at bottom */}
-          <div className="absolute bottom-0 left-0 right-0 p-2.5">
-            <h3 className="text-sm font-medium text-white truncate drop-shadow-md">
+          <div className="absolute bottom-0 left-0 right-0 p-3">
+            <h3 className="text-sm font-semibold text-white truncate drop-shadow-lg">
               {localAssetTitle}
             </h3>
-            <p className="text-xs text-white/60 truncate">
+            <p className="text-xs text-white/70 truncate font-medium">
               {asset.format || "Video"}
             </p>
           </div>
@@ -439,7 +439,7 @@ export function AssetCard({
   // Spotlight variant - full featured card
   return (
     <>
-      <div className="rounded-xl overflow-hidden bg-gradient-to-b from-slate-900 to-slate-950 border border-slate-800/50 shadow-xl">
+      <div className="rounded-xl overflow-hidden bg-card border-2 border-border shadow-2xl">
         {/* Hero Section - 16:9 landscape */}
         <div className="relative aspect-video w-full overflow-hidden group">
           {asset.videoUrl ? (
@@ -457,24 +457,24 @@ export function AssetCard({
             />
           )}
           {/* Gradient overlay */}
-          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-transparent" />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent" />
 
           {/* Status badge */}
-          <div className="absolute top-2 left-2 z-10">
+          <div className="absolute top-3 left-3 z-10">
             {asset.status === "uploading" ||
             ((asset.status === "processing" || asset.status === "indexing") &&
               asset.processing) ? (
-              <Badge className="bg-blue-500/90 text-white border-0 backdrop-blur-md text-xs px-2 py-0.5">
+              <Badge className="bg-blue-600 text-white border-0 backdrop-blur-md text-xs px-2.5 py-1 font-semibold">
                 {asset.status === "uploading" ? (
                   <>
-                    <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    <Loader2 className="h-3 w-3 animate-spin mr-1.5" />
                     {asset.uploadProgress
                       ? `${asset.uploadProgress}%`
                       : "Uploading"}
                   </>
                 ) : (
                   <>
-                    <Activity className="h-3 w-3 animate-pulse mr-1" />
+                    <Activity className="h-3 w-3 animate-pulse mr-1.5" />
                     {currentStageLabel || asset.status}
                   </>
                 )}
@@ -483,24 +483,24 @@ export function AssetCard({
           </div>
 
           {/* More menu */}
-          <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div className="absolute top-3 right-3 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7 bg-black/40 hover:bg-black/60 text-white backdrop-blur-md rounded-full"
+                  className="h-8 w-8 bg-black/50 hover:bg-black/70 text-white backdrop-blur-md rounded-lg"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <MoreHorizontal className="h-3.5 w-3.5" />
+                  <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 align="end"
-                className="bg-slate-900 border-slate-700"
+                className="bg-card border-border"
               >
                 <DropdownMenuItem
-                  className="text-red-400 focus:text-red-300 focus:bg-red-500/10"
+                  className="text-red-500 focus:text-red-400 focus:bg-red-500/10"
                   onClick={(e) => {
                     e.stopPropagation();
                     setShowDeleteConfirm(true);
@@ -514,25 +514,25 @@ export function AssetCard({
           </div>
 
           {/* Title overlay */}
-          <div className="absolute bottom-0 left-0 right-0 p-3">
+          <div className="absolute bottom-0 left-0 right-0 p-4">
             <EditableTitle
               title={localAssetTitle}
               onSave={handleUpdateAssetTitle}
-              className="text-lg font-bold text-white leading-tight drop-shadow-lg hover:text-white"
-              inputClassName="bg-slate-800/80 border-slate-600 text-white h-8 text-lg font-bold"
+              className="text-xl font-bold text-white leading-tight drop-shadow-lg hover:text-white"
+              inputClassName="bg-black/60 border-white/30 text-white h-9 text-xl font-bold"
               showEditIcon
             />
-            <div className="flex items-center gap-2 mt-1">
+            <div className="flex items-center gap-2 mt-2">
               <Badge
                 variant="secondary"
-                className="bg-white/10 text-white/80 border-0 text-[10px] px-1.5 py-0"
+                className="bg-white/20 text-white border-0 text-xs px-2 py-0.5 font-semibold"
               >
                 {asset.format || "Video"}
               </Badge>
               {isReady && (
                 <Badge
                   variant="secondary"
-                  className="bg-emerald-500/20 text-emerald-300 border-0 text-[10px] px-1.5 py-0"
+                  className="bg-emerald-500/30 text-emerald-300 border-0 text-xs px-2 py-0.5 font-semibold"
                 >
                   Ready
                 </Badge>
@@ -542,16 +542,16 @@ export function AssetCard({
         </div>
 
         {/* Scenes Section */}
-        <div className="p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+        <div className="p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
               Scenes
             </h3>
             {isReady && (
               <Button
                 variant="outline"
                 size="sm"
-                className="h-7 text-xs border-slate-700 hover:border-purple-500/50 hover:bg-purple-500/10 text-slate-300 hover:text-white px-3"
+                className="h-8 text-xs font-semibold"
                 onClick={handleCreateProject}
               >
                 <PlusCircle className="h-3.5 w-3.5 mr-1.5" />
@@ -562,45 +562,43 @@ export function AssetCard({
 
           {/* Projects/Scenes List */}
           {!isReady ? (
-            <div className="text-center py-6 text-sm text-slate-500">
-              <Loader2 className="h-5 w-5 animate-spin mx-auto mb-2 text-purple-400" />
-              <span className="text-xs">Processing...</span>
+            <div className="text-center py-8 text-sm text-muted-foreground">
+              <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2 text-blue-500" />
+              <span className="text-xs font-medium">Processing...</span>
             </div>
           ) : loadingProjects ? (
-            <div className="space-y-2">
+            <div className="space-y-3">
               {[1, 2].map((i) => (
                 <div key={i} className="flex gap-3 animate-pulse">
-                  <div className="w-20 h-12 bg-slate-800 rounded-md shrink-0" />
+                  <div className="w-20 h-12 bg-muted rounded-lg shrink-0" />
                   <div className="flex-1 space-y-2 py-1">
-                    <div className="h-3.5 bg-slate-800 rounded w-3/4" />
-                    <div className="h-2.5 bg-slate-800 rounded w-1/2" />
+                    <div className="h-4 bg-muted rounded w-3/4" />
+                    <div className="h-3 bg-muted rounded w-1/2" />
                   </div>
                 </div>
               ))}
             </div>
           ) : projects.length === 0 ? (
-            <div className="text-center py-6">
-              <p className="text-xs text-slate-500 mb-3">No microdramas yet</p>
+            <div className="text-center py-8">
+              <p className="text-sm text-muted-foreground mb-4">No microdramas yet</p>
               <Button
-                variant="outline"
                 size="sm"
-                className="h-7 text-xs border-slate-700 hover:border-purple-500/50 hover:bg-purple-500/10 text-slate-300 hover:text-white px-3"
                 onClick={handleCreateProject}
               >
-                <PlusCircle className="h-3.5 w-3.5 mr-1.5" />
+                <PlusCircle className="h-4 w-4 mr-2" />
                 Create First
               </Button>
             </div>
           ) : (
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               {projects.map((project, index) => (
                 <div
                   key={project.projectId}
-                  className="flex items-center gap-3 p-2 -mx-2 rounded-lg hover:bg-slate-800/50 cursor-pointer transition-all group/item"
+                  className="flex items-center gap-3 p-2.5 -mx-2 rounded-lg hover:bg-muted cursor-pointer transition-all group/item"
                   onClick={() => navigate(`/editor/${project.projectId}`)}
                 >
                   {/* Thumbnail */}
-                  <div className="w-20 h-12 bg-slate-800 rounded-md overflow-hidden shrink-0 relative">
+                  <div className="w-20 h-12 bg-muted rounded-lg overflow-hidden shrink-0 relative">
                     {asset.videoUrl && getFirstSegmentTime(project) !== null ? (
                       <VideoThumbnail
                         videoUrl={asset.videoUrl}
@@ -615,7 +613,7 @@ export function AssetCard({
                         className="w-full h-full object-cover"
                       />
                     )}
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover/item:opacity-100 transition-opacity">
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 group-hover/item:opacity-100 transition-opacity">
                       <Play className="h-4 w-4 text-white fill-white" />
                     </div>
                   </div>
@@ -623,7 +621,7 @@ export function AssetCard({
                   {/* Content */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-slate-500 text-sm">
+                      <span className="text-muted-foreground text-sm font-medium">
                         {index + 1}.
                       </span>
                       <EditableTitle
@@ -631,15 +629,15 @@ export function AssetCard({
                         onSave={(newTitle) =>
                           handleUpdateProjectTitle(project.projectId, newTitle)
                         }
-                        className="text-sm font-medium text-slate-200 hover:text-white"
-                        inputClassName="bg-slate-800 border-slate-600 text-slate-200 h-7 text-sm"
+                        className="text-sm font-semibold text-foreground hover:text-blue-400"
+                        inputClassName="bg-muted border-border text-foreground h-7 text-sm"
                         showEditIcon
                       />
                       {favorites[project.projectId] && (
                         <Heart className="h-3 w-3 fill-pink-500 text-pink-500 shrink-0" />
                       )}
                     </div>
-                    <p className="text-xs text-slate-500">
+                    <p className="text-xs text-muted-foreground font-medium">
                       {project.segments && project.segments.length > 0
                         ? `${project.segments.length} segment${
                             project.segments.length !== 1 ? "s" : ""
@@ -653,36 +651,36 @@ export function AssetCard({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 hover:bg-slate-700"
+                      className="h-8 w-8 hover:bg-accent"
                       onClick={(e) => toggleFavorite(project.projectId, e)}
                     >
                       <Heart
                         className={cn(
-                          "h-3.5 w-3.5",
+                          "h-4 w-4",
                           favorites[project.projectId]
                             ? "fill-pink-500 text-pink-500"
-                            : "text-slate-400"
+                            : "text-muted-foreground"
                         )}
                       />
                     </Button>
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 hover:bg-slate-700"
+                      className="h-8 w-8 hover:bg-accent"
                       onClick={(e) => handleShare(project.projectId, e)}
                     >
-                      <Share2 className="h-3.5 w-3.5 text-slate-400" />
+                      <Share2 className="h-4 w-4 text-muted-foreground" />
                     </Button>
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 hover:bg-red-500/10 hover:text-red-400"
+                      className="h-8 w-8 hover:bg-red-500/10 hover:text-red-500"
                       onClick={(e) => {
                         e.stopPropagation();
                         setProjectToDelete(project);
                       }}
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
+                      <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
                 </div>
@@ -695,12 +693,12 @@ export function AssetCard({
       {/* Delete Asset Dialog */}
       <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
         <DialogContent
-          className="bg-slate-900 border-slate-700"
+          className="bg-card border-border"
           onClick={(e) => e.stopPropagation()}
         >
           <DialogHeader>
-            <DialogTitle>Delete Asset?</DialogTitle>
-            <DialogDescription className="text-slate-400">
+            <DialogTitle className="text-lg font-bold">Delete Asset?</DialogTitle>
+            <DialogDescription className="text-muted-foreground">
               This will permanently delete "{asset.title}" and all associated
               data. This action cannot be undone.
             </DialogDescription>
@@ -708,7 +706,6 @@ export function AssetCard({
           <DialogFooter>
             <Button
               variant="outline"
-              className="border-slate-700 hover:bg-slate-800"
               onClick={(e) => {
                 e.stopPropagation();
                 setShowDeleteConfirm(false);
@@ -736,12 +733,12 @@ export function AssetCard({
         onOpenChange={(open) => !open && setProjectToDelete(null)}
       >
         <DialogContent
-          className="bg-slate-900 border-slate-700"
+          className="bg-card border-border"
           onClick={(e) => e.stopPropagation()}
         >
           <DialogHeader>
-            <DialogTitle>Delete Project?</DialogTitle>
-            <DialogDescription className="text-slate-400">
+            <DialogTitle className="text-lg font-bold">Delete Project?</DialogTitle>
+            <DialogDescription className="text-muted-foreground">
               This will permanently delete "
               {projectToDelete?.title || "Untitled"}". This action cannot be
               undone.
@@ -750,7 +747,6 @@ export function AssetCard({
           <DialogFooter>
             <Button
               variant="outline"
-              className="border-slate-700 hover:bg-slate-800"
               onClick={(e) => {
                 e.stopPropagation();
                 setProjectToDelete(null);

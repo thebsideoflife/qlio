@@ -168,13 +168,17 @@ export function Timeline({
     ? realTimeToPreviewTime(currentTime)
     : currentTime;
 
+  // Track margin (ml-6 = 24px, mr-3 = 12px)
+  const TRACK_MARGIN = 36;
+
   // Measure container width
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
 
     const updateWidth = () => {
-      setContainerWidth(container.clientWidth);
+      // Subtract margin so track fits within margins at zoom=1
+      setContainerWidth(Math.max(0, container.clientWidth - TRACK_MARGIN));
     };
 
     updateWidth();
@@ -184,7 +188,7 @@ export function Timeline({
     return () => resizeObserver.disconnect();
   }, []);
 
-  // At zoom=1, track fits exactly in container. Higher zoom = wider track.
+  // At zoom=1, track fits exactly in container (minus margins). Higher zoom = wider track.
   const trackWidth = containerWidth * zoom;
 
   // Pixels per second based on zoom and container (use effective duration for preview mode)
@@ -402,6 +406,9 @@ export function Timeline({
     setIsDragging(true);
   };
 
+  // Left margin offset (ml-6 = 24px)
+  const TRACK_LEFT_MARGIN = 24;
+
   // Convert click position to time - handles scroll offset correctly
   const getTimeFromClickEvent = useCallback(
     (e: React.MouseEvent) => {
@@ -412,10 +419,11 @@ export function Timeline({
       const scrollRect = scrollContainer.getBoundingClientRect();
       // Click position relative to scroll container's visible area
       const clickXInViewport = e.clientX - scrollRect.left;
-      // Add scroll offset to get position in the full track
-      const clickXInTrack = clickXInViewport + scrollContainer.scrollLeft;
+      // Add scroll offset and subtract left margin to get position in the track
+      const clickXInTrack =
+        clickXInViewport + scrollContainer.scrollLeft - TRACK_LEFT_MARGIN;
       // Convert to time (this gives us preview time in preview mode)
-      const clickTime = pxToTime(clickXInTrack);
+      const clickTime = pxToTime(Math.max(0, clickXInTrack));
 
       // In preview mode, convert preview time to real time
       if (previewMode) {
@@ -810,68 +818,62 @@ export function Timeline({
   );
 
   return (
-    <div
-      ref={containerRef}
-      className="w-full h-full bg-background border rounded-lg flex flex-col p-1.5 select-none"
-    >
+    <div ref={containerRef} className="w-full h-full flex flex-col select-none">
       {/* Toolbar */}
-      <div className="flex items-center gap-1 mb-1.5">
-        {/* Segment editing tools */}
+      <div className="flex items-center gap-2 px-3 py-2 shrink-0">
         <Button
           size="sm"
-          variant="secondary"
+          variant="outline"
           onClick={handleSplit}
           disabled={!canSplit}
-          className="h-7 w-7 p-0"
+          className="h-9 w-9 p-0"
           title="Split segment at playhead"
         >
-          <Scissors className="h-3.5 w-3.5" />
+          <Scissors className="h-4 w-4" />
         </Button>
         {!previewMode && (
           <Button
             size="sm"
-            variant="secondary"
+            variant="outline"
             onClick={handleAdd}
             disabled={!canAdd}
-            className="h-7 w-7 p-0"
+            className="h-9 w-9 p-0"
             title="Add segment at playhead"
           >
-            <Plus className="h-3.5 w-3.5" />
+            <Plus className="h-4 w-4" />
           </Button>
         )}
 
-        <div className="h-4 w-px bg-border mx-1.5" />
+        <div className="h-5 w-px bg-border mx-1" />
 
-        {/* Zoom controls */}
         <Button
           size="sm"
-          variant="secondary"
+          variant="outline"
           onClick={handleZoomOut}
           disabled={zoom <= MIN_ZOOM}
-          className="h-7 w-7 p-0"
+          className="h-9 w-9 p-0"
           title="Zoom out"
         >
-          <ZoomOut className="h-3.5 w-3.5" />
+          <ZoomOut className="h-4 w-4" />
         </Button>
-        <span className="text-xs text-foreground/70 font-medium w-9 text-center tabular-nums">
+        <span className="text-xs text-muted-foreground font-semibold w-9 text-center tabular-nums">
           {zoomPercent}%
         </span>
         <Button
           size="sm"
-          variant="secondary"
+          variant="outline"
           onClick={handleZoomIn}
           disabled={zoom >= MAX_ZOOM}
-          className="h-7 w-7 p-0"
+          className="h-9 w-9 p-0"
           title="Zoom in"
         >
-          <ZoomIn className="h-3.5 w-3.5" />
+          <ZoomIn className="h-4 w-4" />
         </Button>
 
         {/* Centered playback controls */}
-        <div className="flex-1 flex items-center justify-center gap-2">
+        <div className="flex-1 flex items-center justify-center gap-3">
           <Button
             size="sm"
-            variant="default"
             onClick={() => {
               const video = videoRef.current;
               if (video) {
@@ -882,49 +884,47 @@ export function Timeline({
                 }
               }
             }}
-            className="h-7 w-7 p-0"
+            className="h-9 w-9 p-0"
             title={isPlaying ? "Pause (Space)" : "Play (Space)"}
           >
             {isPlaying ? (
-              <Pause className="h-3.5 w-3.5" />
+              <Pause className="h-4 w-4" />
             ) : (
-              <Play className="h-3.5 w-3.5 ml-0.5" />
+              <Play className="h-4 w-4 ml-0.5" />
             )}
           </Button>
-          <span className="text-xs text-foreground font-mono tabular-nums">
+          <span className="text-sm text-foreground font-mono font-bold tabular-nums">
             {formatTime(effectiveCurrentTime)} / {formatTime(effectiveDuration)}
           </span>
         </div>
 
-        {/* Preview mode toggle */}
         <Button
           size="sm"
-          variant={previewMode ? "default" : "secondary"}
+          variant={previewMode ? "default" : "outline"}
           onClick={() => onPreviewModeChange(!previewMode)}
-          className="h-7 w-7 p-0"
+          className="h-9 w-9 p-0"
           title={previewMode ? "Exit preview mode" : "Preview final video"}
         >
           {previewMode ? (
-            <EyeOff className="h-3.5 w-3.5" />
+            <EyeOff className="h-4 w-4" />
           ) : (
-            <Eye className="h-3.5 w-3.5" />
+            <Eye className="h-4 w-4" />
           )}
         </Button>
 
-        {/* Delete button - far right */}
         <Button
           size="sm"
-          variant="ghost"
+          variant="outline"
           onClick={handleDelete}
           disabled={!selectedId}
-          className="h-7 w-7 p-0 text-red-500 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-30"
+          className="h-9 w-9 p-0 text-red-500 hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/50 disabled:opacity-30"
           title="Delete selected segment"
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 className="h-4 w-4" />
         </Button>
       </div>
 
-      {/* Scrollable timeline container */}
+      {/* Timeline track */}
       <div
         ref={scrollRef}
         className="flex-1 overflow-x-auto overflow-y-hidden relative timeline-scrollbar"
@@ -936,17 +936,16 @@ export function Timeline({
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
       >
-        {/* Fixed-width track based on duration * pixelsPerSecond */}
         <div
-          className="h-full flex flex-col relative"
-          style={{ width: `${trackWidth}px`, minWidth: "100%" }}
+          className="h-full flex flex-col relative ml-6 mr-3"
+          style={{ width: `${trackWidth}px`, minWidth: "calc(100% - 36px)" }}
         >
           {/* Time markers */}
           <div className="h-5 relative shrink-0">
             {timeMarkers.map(({ time, px }) => (
               <span
                 key={time}
-                className="absolute text-[11px] text-foreground/60 font-medium -translate-x-1/2 tabular-nums"
+                className="absolute text-[11px] text-muted-foreground font-medium -translate-x-1/2 tabular-nums"
                 style={{ left: `${px}px` }}
               >
                 {formatTime(time)}
@@ -956,26 +955,20 @@ export function Timeline({
 
           {/* Track */}
           <div
-            className="relative flex-1 rounded cursor-pointer min-h-0 overflow-hidden"
+            className="relative flex-1 rounded cursor-pointer min-h-0 bg-zinc-800/50"
             onClick={handleTrackClick}
           >
-            {/* Base video layer - always visible, shows full duration */}
-            {!previewMode && (
-              <div className="absolute inset-y-1 inset-x-0 bg-zinc-700/60 rounded" />
-            )}
-
             {/* Time tick marks */}
             {timeMarkers.map(({ time, px }) => (
               <div
                 key={time}
-                className="absolute top-0 bottom-0 border-l border-white/10 pointer-events-none"
+                className="absolute top-0 bottom-0 border-l border-white/5 pointer-events-none"
                 style={{ left: `${px}px` }}
               />
             ))}
 
             {/* Segments */}
             {segments.map((segment) => {
-              // In preview mode, use the accumulated offset; in edit mode, use real time
               const left = previewMode
                 ? timeToPx(segmentPreviewOffsets.get(segment.id) || 0)
                 : timeToPx(segment.startTime);
@@ -988,26 +981,23 @@ export function Timeline({
                 <div
                   key={segment.id}
                   className={cn(
-                    "absolute top-1 bottom-1 cursor-pointer",
+                    "absolute top-1 bottom-1 cursor-pointer rounded",
                     selectedId === segment.id
-                      ? "bg-emerald-500 ring-2 ring-white ring-offset-1 ring-offset-background z-10 rounded-md"
-                      : "bg-emerald-600/80 hover:bg-emerald-500/90 rounded-sm"
+                      ? "bg-blue-500 ring-2 ring-blue-400 z-10"
+                      : "bg-blue-600/70 hover:bg-blue-500/80"
                   )}
                   style={{ left: `${left}px`, width: `${width}px` }}
                   onClick={(e) => handleSegmentClick(e, segment.id)}
                   title={segment.title}
                 >
-                  {/* Resize handles - only in edit mode */}
                   {!previewMode && (
                     <>
-                      {/* Left resize handle - covers left half */}
                       <div
                         className="absolute left-0 top-0 bottom-0 w-1/2 cursor-ew-resize z-10"
                         onMouseDown={(e) =>
                           handleResizeMouseDown(e, segment.id, "left")
                         }
                       />
-                      {/* Right resize handle - covers right half */}
                       <div
                         className="absolute right-0 top-0 bottom-0 w-1/2 cursor-ew-resize z-10"
                         onMouseDown={(e) =>
@@ -1017,8 +1007,8 @@ export function Timeline({
                     </>
                   )}
 
-                  {width > 40 && (
-                    <div className="px-2 py-0.5 text-[10px] text-white font-semibold truncate pointer-events-none drop-shadow-sm">
+                  {width > 30 && (
+                    <div className="px-1.5 py-0.5 text-[10px] text-white font-semibold truncate pointer-events-none">
                       {segment.title}
                     </div>
                   )}
@@ -1031,12 +1021,10 @@ export function Timeline({
               className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-20 pointer-events-none"
               style={{ left: `${timeToPx(effectiveCurrentTime)}px` }}
             >
-              {/* Playhead handle */}
               <div
                 className="absolute -top-1 left-1/2 -translate-x-1/2 w-3 h-3 bg-red-500 rounded-full cursor-ew-resize pointer-events-auto hover:scale-110 transition-transform"
                 onMouseDown={handlePlayheadMouseDown}
               />
-              {/* Playhead bottom indicator */}
               <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[4px] border-r-[4px] border-t-[6px] border-l-transparent border-r-transparent border-t-red-500" />
             </div>
           </div>

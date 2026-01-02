@@ -100,7 +100,7 @@ export interface VideoUnderstanding {
  * Each maps to a specific prompt template and output format.
  */
 export enum Purpose {
-  /** Full video split into microdrama chapters (5-10 min each) */
+  /** Full video split into microdrama chapters (60-240 seconds each) */
   FULL_VIDEO = "full_video",
   /** Condensed highlights reel */
   HIGHLIGHTS = "highlights",

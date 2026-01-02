@@ -110,13 +110,13 @@ export function MainLayout({ children }: MainLayoutProps) {
 
   return (
     <div className="flex h-screen w-full flex-col bg-background text-foreground overflow-hidden">
-      <header className="flex h-16 items-center justify-between border-b px-8 bg-card gap-6">
+      <header className="flex h-16 items-center justify-between border-b-2 border-border px-8 bg-card gap-6">
         <Link
           to="/"
-          className="flex items-center gap-3 font-semibold hover:opacity-80 transition-opacity"
+          className="flex items-center gap-3 font-bold hover:opacity-80 transition-opacity"
         >
-          <div className="rounded bg-primary p-2">
-            <Activity className="h-5 w-5 text-primary-foreground" />
+          <div className="rounded-lg bg-blue-600 p-2">
+            <Activity className="h-5 w-5 text-white" />
           </div>
           <span className="text-xl">ZeeVee</span>
         </Link>
@@ -128,7 +128,7 @@ export function MainLayout({ children }: MainLayoutProps) {
               <div className="text-center flex flex-col items-center">
                 <div className="flex items-center gap-2 text-sm">
                   <span
-                    className="text-muted-foreground max-w-[200px] truncate"
+                    className="text-muted-foreground max-w-[200px] truncate font-medium"
                     title={assetName}
                   >
                     {assetName}
@@ -141,16 +141,15 @@ export function MainLayout({ children }: MainLayoutProps) {
                       onSave={(newTitle) =>
                         dispatch(updateProjectTitle(newTitle))
                       }
-                      className="font-semibold underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 hover:bg-muted/50 px-1 rounded"
-                      inputClassName="h-6 w-48 px-1 py-0 text-sm font-semibold border-none focus-visible:ring-1"
+                      className="font-bold underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 hover:bg-muted/50 px-1.5 py-0.5 rounded"
+                      inputClassName="h-7 w-48 px-2 py-0 text-sm font-bold border-border focus-visible:ring-1"
                     />
                   )}
                 </div>
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-3">
               <Button
-                variant="default"
                 size="sm"
                 onClick={() => setExportOpen(true)}
               >
@@ -165,34 +164,34 @@ export function MainLayout({ children }: MainLayoutProps) {
         {isDashboardPage && (
           <>
             <div className="flex-1 flex items-center ml-4">
-              <div className="flex items-center gap-4 text-sm text-muted-foreground border-l pl-4 h-8">
+              <div className="flex items-center gap-5 text-sm text-muted-foreground border-l-2 border-border pl-5 h-8">
                 <div>
-                  <span className="font-medium text-foreground">
+                  <span className="font-bold text-foreground">
                     {assets.length}
                   </span>{" "}
-                  Total
+                  <span className="font-medium">Total</span>
                 </div>
                 <div>
-                  <span className="font-medium text-foreground">
+                  <span className="font-bold text-foreground">
                     {processingCount}
                   </span>{" "}
-                  Processing
+                  <span className="font-medium">Processing</span>
                 </div>
                 <div>
-                  <span className="font-medium text-foreground">
+                  <span className="font-bold text-foreground">
                     {completedCount}
                   </span>{" "}
-                  Completed
+                  <span className="font-medium">Completed</span>
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               <div className="relative w-64 hidden lg:block">
-                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
                 <Input
                   placeholder="Search assets..."
-                  className="pl-9 h-9 bg-background"
+                  className="pl-10 h-10 bg-background border-2 border-border focus:border-blue-500"
                 />
               </div>
               <Button
@@ -215,19 +214,19 @@ export function MainLayout({ children }: MainLayoutProps) {
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Avatar className="h-8 w-8 cursor-pointer">
+              <Avatar className="h-9 w-9 cursor-pointer border-2 border-border hover:border-blue-500 transition-colors">
                 <AvatarImage src="/placeholder-user.jpg" alt="User" />
-                <AvatarFallback>U</AvatarFallback>
+                <AvatarFallback className="bg-muted font-bold">U</AvatarFallback>
               </Avatar>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuLabel>My Account</DropdownMenuLabel>
+            <DropdownMenuContent align="end" className="bg-card border-border">
+              <DropdownMenuLabel className="font-bold">My Account</DropdownMenuLabel>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setIsPasswordOpen(true)}>
                 <KeyRound className="mr-2 h-4 w-4" />
                 Edit API Password
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleLogout} className="text-red-600">
+              <DropdownMenuItem onClick={handleLogout} className="text-red-500 focus:text-red-400">
                 <LogOut className="mr-2 h-4 w-4" />
                 Log out
               </DropdownMenuItem>
@@ -235,7 +234,7 @@ export function MainLayout({ children }: MainLayoutProps) {
           </DropdownMenu>
         </div>
       </header>
-      <main className="flex-1 overflow-auto bg-muted/20">{children}</main>
+      <main className="flex-1 overflow-auto bg-background">{children}</main>
 
       <Dialog open={isPasswordOpen} onOpenChange={setIsPasswordOpen}>
         <DialogContent>

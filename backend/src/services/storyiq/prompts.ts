@@ -54,46 +54,54 @@ Quality Guidelines:
  * Full Video: Split entire asset into microdrama chapters
  *
  * This takes a longer piece of content (e.g., 50 min) and intelligently
- * groups it into digestible chapters (e.g., 10 chapters of ~5 min each).
+ * divides it into chapters of 60-240 seconds each for a microdrama series.
  */
 function getFullVideoPrompt(
   understanding: VideoUnderstanding,
-  targetSegmentMinutes: number
+  targetChapterSeconds: number
 ): string {
   const videoDurationSeconds = Math.round(understanding.duration);
   const videoDurationMinutes = Math.round(understanding.duration / 60);
-  const expectedChapters = Math.ceil(
-    videoDurationMinutes / targetSegmentMinutes
-  );
-  const targetSeconds = targetSegmentMinutes * 60;
 
-  return `You are StoryIQ, an expert video editor reorganizing long-form content into bite-sized MICRODRAMA CHAPTERS for streaming consumption.
+  // Calculate chapter range: target ±50% but clamped to 60-240 seconds
+  const minChapterSeconds = Math.max(
+    60,
+    Math.round(targetChapterSeconds * 0.5)
+  );
+  const maxChapterSeconds = Math.min(
+    240,
+    Math.round(targetChapterSeconds * 1.5)
+  );
+
+  // Estimate expected chapters based on target
+  const expectedChapters = Math.ceil(
+    videoDurationSeconds / targetChapterSeconds
+  );
+
+  return `You are StoryIQ, an expert video editor reorganizing long-form content into a MICRODRAMA SERIES.
 
 VIDEO UNDERSTANDING:
 ${formatUnderstandingCompact(understanding)}
 
 YOUR TASK:
-Take this ${videoDurationMinutes}-minute video and divide it into ${expectedChapters} chapters of approximately ${targetSegmentMinutes} minutes (~${targetSeconds} seconds) each.
+Divide this ${videoDurationMinutes}-minute video into chapters for a microdrama series.
 
-Think of this like creating YouTube chapters or Netflix episode breaks - natural groupings that make a long piece of content easy to consume in short sessions.
+Think of this like creating episodes of a serialized show - each chapter is part of an ongoing story that viewers will watch in sequence.
 
-CONSTRAINTS:
-- Video is ${videoDurationSeconds} seconds total (timestamps must be 0 to ${videoDurationSeconds})
-- Create exactly ${expectedChapters} chapters (give or take 1-2 based on natural breaks)
-- Each chapter ~${targetSeconds} seconds (±60 seconds is fine for natural scene breaks)
-- ALL content must be included - no gaps, no overlaps
+DURATION REQUIREMENTS (IMPORTANT):
+- Each chapter MUST be between ${minChapterSeconds} and ${maxChapterSeconds} seconds (${Math.round(
+    minChapterSeconds / 60
+  )}-${Math.round(maxChapterSeconds / 60)} minutes)
+- Target ${targetChapterSeconds} seconds per chapter
+- This means you need roughly ${expectedChapters} chapters for this ${videoDurationSeconds}-second video
+- ALL content must be included - no gaps, no overlaps between chapters
+- First chapter starts at 0, last chapter ends at ${videoDurationSeconds}
 
 CHAPTER REQUIREMENTS:
-1. Find natural narrative break points (scene changes, topic shifts, dramatic beats)
+1. Find natural narrative break points (scene changes, topic shifts, dramatic beats) that fit within the duration limits
 2. Each chapter should have a compelling, descriptive title (like a YouTube chapter)
 3. Titles should hint at the content without spoilers
 4. Prefer ending chapters on cliffhangers or natural pauses
-
-EXAMPLE for a 50-minute video with 5-minute chapters:
-- Chapter 1: 0-300s "The Beginning" 
-- Chapter 2: 300-600s "Rising Tension"
-- ... (10 total chapters)
-- Chapter 10: 2700-3000s "The Finale"
 
 ${QUALITY_GUIDELINES}
 ${OUTPUT_SCHEMA}`;
@@ -380,6 +388,18 @@ ${OUTPUT_SCHEMA}`;
 // Review & Revision Prompts
 // ============================================================================
 
+// Purpose descriptions for the reviewer
+const PURPOSE_CONTEXT: Record<string, string> = {
+  full_video: `Split the entire video into CHAPTERS for a microdrama series. Each chapter should be 60-240 seconds. ALL content must be covered with no gaps. Think YouTube chapters or Netflix episode breaks.`,
+  highlights: `Extract the BEST moments into a condensed highlights reel. Should tell a mini-story with beginning, middle, end.`,
+  trailer: `Create a 2-2.5 minute movie-style trailer with bumper, setup, conflict, climax, and outro sections.`,
+  tunein: `Create a 15-30 second promotional spot designed for conversion.`,
+  bridge: `Create a recap & tease bridge that reactivates interest.`,
+  episode_recap: `Create a "Previously on..." style episode recap.`,
+  season_recap: `Create a comprehensive season summary.`,
+  social_segment: `Create a social media clip optimized for retention and engagement.`,
+};
+
 export function getReviewPrompt(
   segments: ProposedSegment[],
   segmentContent: SegmentContent[],
@@ -404,16 +424,20 @@ SEGMENT ${i + 1}: "${seg.title}"
     })
     .join("\n---\n");
 
+  const purposeDescription =
+    PURPOSE_CONTEXT[purpose] || `Generate content for ${purpose} purpose.`;
+
   return `You are reviewing your own segment selections. Be critical but fair.
 
 PURPOSE: ${purpose}
+WHAT THIS MEANS: ${purposeDescription}
 
 YOUR PROPOSED SEGMENTS:
 ${segmentDetails}
 
 COVERAGE REPORT:
 - Total duration: ${Math.round(coverage.totalDuration)}s
-- Target duration: ${
+- Target duration per segment: ${
     coverage.targetDuration ? Math.round(coverage.targetDuration) + "s" : "N/A"
   }
 ${
@@ -434,7 +458,7 @@ ${
 
 EVALUATE:
 1. Does each segment deliver on its title and reasoning?
-2. For "${purpose}" purpose - are the selections appropriate?
+2. Given the purpose description above, are the selections appropriate?
 3. Are there obvious improvements (better break points, missed peaks)?
 4. Is the overall quality high enough?
 
@@ -494,9 +518,10 @@ export function getPlanningPrompt(
 
   switch (purpose) {
     case Purpose.FULL_VIDEO:
-      // Default to 5 minute chapters for microdramas
-      const segmentMinutes = targetDuration ? targetDuration / 60 : 5;
-      basePrompt = getFullVideoPrompt(understanding, segmentMinutes);
+      // Default to 150 seconds (2.5 min) for microdrama chapters
+      // Target range is 60-240 seconds per chapter
+      const chapterSeconds = targetDuration || 150;
+      basePrompt = getFullVideoPrompt(understanding, chapterSeconds);
       break;
 
     case Purpose.HIGHLIGHTS:
