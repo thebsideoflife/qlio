@@ -241,10 +241,8 @@ resource "aws_lambda_function" "render_video" {
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
       AWS_REGION_NAME         = var.aws_region
       # These will be set after Remotion Lambda deployment
-      REMOTION_SERVE_URL      = "https://remotionlambda-uswest2-0g1upoverr.s3.us-west-2.amazonaws.com/sites/zeevee-renderer/index.html"
-      REMOTION_FUNCTION_NAME  = "remotion-render-4-0-387-mem2048mb-disk2048mb-240sec"
-      # FFmpeg stitch Lambda for preprocessing segments
-      STITCH_FUNCTION_NAME    = "${var.project_name}-stitch-segments"
+      REMOTION_SERVE_URL     = "https://remotionlambda-uswest2-0g1upoverr.s3.us-west-2.amazonaws.com/sites/zeevee-renderer/index.html"
+      REMOTION_FUNCTION_NAME = "remotion-render-4-0-387-mem2048mb-disk2048mb-240sec"
     }
   }
 }

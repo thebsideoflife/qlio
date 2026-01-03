@@ -1,6 +1,12 @@
-# ===== FFmpeg Lambda for Video Segment Stitching =====
-# This Lambda uses a Docker container with FFmpeg to stitch video segments
-# before passing to Remotion for caption rendering.
+# ===== FFmpeg Lambda for Video Segment Cutting =====
+# This Lambda uses a Docker container with FFmpeg to:
+# 1. Download the source video once
+# 2. Cut each segment into a separate clip using FFmpeg
+# 3. Upload clips to S3
+# 4. Spawn parallel Remotion renders for each small clip
+#
+# This approach is ~500x more efficient than having each Remotion worker
+# download the full source video.
 
 # ECR repository for the FFmpeg Lambda container
 resource "aws_ecr_repository" "ffmpeg_lambda" {
@@ -112,7 +118,7 @@ resource "aws_iam_role_policy" "stitch_lambda_policy" {
   policy = data.aws_iam_policy_document.stitch_lambda_policy.json
 }
 
-# Lambda function for stitching video segments
+# Lambda function for cutting video segments
 # Note: This requires the Docker image to be built and pushed first.
 # Run: ./build-ffmpeg-lambda.sh before applying this.
 resource "aws_lambda_function" "stitch_segments" {

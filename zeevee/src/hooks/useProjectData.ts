@@ -6,7 +6,7 @@ import {
   setTranscriptWords,
   setCaptionSettings,
   setGlobalFraming,
-  setLastRenderUrl,
+  setLastSegmentRenders,
 } from "@/store/editorSlice";
 import { getProject } from "@/services/api";
 import type { CaptionWord } from "@/remotion/types";
@@ -42,9 +42,9 @@ export function useProjectData(projectId: string | undefined) {
         dispatch(setGlobalFraming(project.globalFraming));
       }
 
-      // Load last render URL if it exists
-      if (project.lastRenderUrl) {
-        dispatch(setLastRenderUrl(project.lastRenderUrl));
+      // Load cached segment renders from last completed render job
+      if (project.lastRenderDownloads && project.lastRenderDownloads.length > 0) {
+        dispatch(setLastSegmentRenders(project.lastRenderDownloads));
       }
 
       dispatch(

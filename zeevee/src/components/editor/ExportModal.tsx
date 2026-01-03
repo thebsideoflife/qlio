@@ -1,33 +1,29 @@
 import { useState, useEffect, useCallback } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
-import { setLastRender } from "@/store/editorSlice";
+import {
+  setLastSegmentRenders,
+  clearLastSegmentRenders,
+} from "@/store/editorSlice";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Label } from "@/components/ui/label";
-import { startRender, getRenderStatus } from "@/services/api";
+  startRender,
+  getRenderStatus,
+  type SegmentDownload,
+} from "@/services/api";
 import {
   Download,
   Loader2,
   CheckCircle,
   XCircle,
   Film,
-  Captions as CaptionsIcon,
-  Crop,
   RefreshCw,
 } from "lucide-react";
 
@@ -46,34 +42,20 @@ export function ExportModal({
 }: ExportModalProps) {
   const dispatch = useDispatch();
   const segments = useSelector((state: RootState) => state.editor.segments);
-  const captions = useSelector((state: RootState) => state.editor.captions);
-  const captionSettings = useSelector(
-    (state: RootState) => state.editor.captionSettings
-  );
-  const globalFraming = useSelector(
-    (state: RootState) => state.editor.globalFraming
-  );
-  const lastRenderUrl = useSelector(
-    (state: RootState) => state.editor.lastRenderUrl
+  const lastSegmentRenders = useSelector(
+    (state: RootState) => state.editor.lastSegmentRenders
   );
 
-  const [outputFormat, setOutputFormat] = useState<"mp4" | "webm">("mp4");
-  const [quality, setQuality] = useState<"draft" | "standard" | "high">(
-    "standard"
-  );
   const [status, setStatus] = useState<RenderStatus>("idle");
   const [progress, setProgress] = useState(0);
   const [jobId, setJobId] = useState<string | null>(null);
-  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [segmentDownloads, setSegmentDownloads] = useState<SegmentDownload[]>(
+    []
+  );
+  const [completedCount, setCompletedCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  // Calculate estimated duration
-  const totalDuration = segments.reduce(
-    (sum, seg) => sum + (seg.endTime - seg.startTime),
-    0
-  );
-
-  // Poll for render status with exponential backoff
+  // Poll for render status
   useEffect(() => {
     if (!jobId || status === "completed" || status === "failed") return;
 
@@ -84,34 +66,41 @@ export function ExportModal({
       try {
         const result = await getRenderStatus(jobId);
         setProgress(result.progress);
+        setCompletedCount(result.completedCount || 0);
+
+        if (result.segmentDownloads) {
+          setSegmentDownloads(result.segmentDownloads);
+        }
 
         if (result.status === "completed") {
           setStatus("completed");
-          setDownloadUrl(result.downloadUrl || null);
-          // Cache the render for reuse (S3 URI for persistence, URL for download)
-          if (result.downloadUrl && result.outputS3Uri) {
-            dispatch(setLastRender({ s3Uri: result.outputS3Uri, url: result.downloadUrl }));
+          if (result.segmentDownloads) {
+            const completedRenders = result.segmentDownloads
+              .filter((s) => s.status === "completed" && s.downloadUrl)
+              .map((s) => ({
+                segmentId: s.segmentId,
+                title: s.title,
+                url: s.downloadUrl!,
+              }));
+            dispatch(setLastSegmentRenders(completedRenders));
           }
-          return; // Stop polling
+          return;
         } else if (result.status === "failed") {
           setStatus("failed");
           setError(result.error || "Render failed");
-          return; // Stop polling
+          return;
         }
 
-        // Exponential backoff: 2s → 3s → 5s → 8s → 10s (max)
         pollCount++;
         const nextDelay = Math.min(2000 * Math.pow(1.5, pollCount), 10000);
         timeoutId = setTimeout(poll, nextDelay);
-      } catch (err) {
-        // Continue polling on error (network issues, etc)
+      } catch {
         pollCount++;
         const nextDelay = Math.min(2000 * Math.pow(1.5, pollCount), 10000);
         timeoutId = setTimeout(poll, nextDelay);
       }
     };
 
-    // Start first poll immediately
     poll();
 
     return () => {
@@ -120,19 +109,18 @@ export function ExportModal({
   }, [jobId, status, dispatch]);
 
   const handleStartRender = useCallback(async () => {
+    dispatch(clearLastSegmentRenders());
     setStatus("starting");
     setProgress(0);
     setError(null);
-    setDownloadUrl(null);
+    setSegmentDownloads([]);
+    setCompletedCount(0);
 
     try {
-      // Only send render options - all project data (segments, captions, framing)
-      // is read from the database by the backend for data integrity
       const result = await startRender(projectId, {
-        outputFormat,
-        quality,
+        outputFormat: "mp4",
+        quality: "standard",
       });
-
       setJobId(result.jobId);
       setStatus("rendering");
     } catch (err: unknown) {
@@ -140,30 +128,52 @@ export function ExportModal({
       const error = err as { response?: { data?: { error?: string } } };
       setError(error.response?.data?.error || "Failed to start render");
     }
-  }, [projectId, outputFormat, quality]);
+  }, [projectId, dispatch]);
 
-  const handleDownload = useCallback(() => {
-    if (downloadUrl) {
-      window.open(downloadUrl, "_blank");
-    }
-  }, [downloadUrl]);
+  const handleDownload = useCallback((url: string, title: string) => {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${title}.mp4`;
+    a.target = "_blank";
+    a.click();
+  }, []);
 
   const handleClose = useCallback(() => {
     if (status !== "rendering" && status !== "starting") {
       setStatus("idle");
       setProgress(0);
       setJobId(null);
-      setDownloadUrl(null);
+      setSegmentDownloads([]);
+      setCompletedCount(0);
       setError(null);
       onOpenChange(false);
     }
   }, [status, onOpenChange]);
 
-  const formatDuration = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins}:${secs.toString().padStart(2, "0")}`;
-  };
+  const hasCachedRenders = lastSegmentRenders && lastSegmentRenders.length > 0;
+  const isProcessing = status === "starting" || status === "rendering";
+
+  // Build render list based on state
+  const renderList: Array<{
+    segmentId: string;
+    title: string;
+    status: "pending" | "rendering" | "completed" | "failed";
+    downloadUrl?: string;
+  }> =
+    hasCachedRenders && status === "idle"
+      ? lastSegmentRenders.map((r) => ({
+          segmentId: r.segmentId,
+          title: r.title,
+          status: "completed" as const,
+          downloadUrl: r.url,
+        }))
+      : segmentDownloads.length > 0
+      ? segmentDownloads
+      : segments.map((s) => ({
+          segmentId: s.id,
+          title: s.title,
+          status: isProcessing ? ("rendering" as const) : ("pending" as const),
+        }));
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -171,175 +181,119 @@ export function ExportModal({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Film className="h-5 w-5" />
-            Export Video
+            Export {segments.length} Video{segments.length !== 1 ? "s" : ""}
           </DialogTitle>
-          <DialogDescription>
-            Render your edited video with captions burned in.
-          </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-6 py-4">
-          {/* Summary */}
-          <div className="bg-muted rounded-lg p-4 space-y-2 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Segments</span>
-              <span className="font-medium">{segments.length}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Duration</span>
-              <span className="font-medium">
-                {formatDuration(totalDuration)}
-              </span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-muted-foreground">Captions</span>
-              <span className="font-medium flex items-center gap-1">
-                {captionSettings.enabled ? (
-                  <>
-                    <CaptionsIcon className="h-3 w-3" />
-                    {captions.length} lines
-                  </>
-                ) : (
-                  "Disabled"
-                )}
-              </span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-muted-foreground">Framing</span>
-              <span className="font-medium flex items-center gap-1">
-                {globalFraming.enabled ? (
-                  <>
-                    <Crop className="h-3 w-3" />
-                    {globalFraming.aspectRatio}
-                  </>
-                ) : (
-                  "Original"
-                )}
-              </span>
-            </div>
-          </div>
-
-          {/* Settings */}
-          {status === "idle" && (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>Format</Label>
-                <Select
-                  value={outputFormat}
-                  onValueChange={(v) => setOutputFormat(v as "mp4" | "webm")}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="mp4">MP4 (H.264)</SelectItem>
-                    <SelectItem value="webm">WebM (VP8)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Quality</Label>
-                <Select
-                  value={quality}
-                  onValueChange={(v) =>
-                    setQuality(v as "draft" | "standard" | "high")
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="draft">Draft (Fast)</SelectItem>
-                    <SelectItem value="standard">Standard</SelectItem>
-                    <SelectItem value="high">High Quality</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          )}
-
-          {/* Progress */}
-          {(status === "starting" || status === "rendering") && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span className="text-sm">
+        <div className="space-y-4">
+          {/* Progress bar when processing */}
+          {isProcessing && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">
                   {status === "starting"
-                    ? "Starting render..."
-                    : `Rendering... ${progress}%`}
+                    ? "Preparing..."
+                    : `Exporting ${completedCount}/${segments.length}`}
                 </span>
+                <span className="font-medium">{progress}%</span>
               </div>
-              <Progress value={progress} />
-              <p className="text-xs text-muted-foreground">
-                This may take a few minutes. You can close this dialog and check
-                back later.
-              </p>
+              <Progress value={progress} className="h-2" />
             </div>
           )}
 
-          {/* Success */}
-          {status === "completed" && (
-            <div className="space-y-3">
+          {/* Success message */}
+          {(status === "completed" ||
+            (status === "idle" && hasCachedRenders)) && (
+            <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-green-600">
-                <CheckCircle className="h-5 w-5" />
-                <span className="font-medium">Render complete!</span>
+                <CheckCircle className="h-4 w-4" />
+                <span className="text-sm font-medium">Ready to download</span>
               </div>
-              <Button onClick={handleDownload} className="w-full">
-                <Download className="h-4 w-4 mr-2" />
-                Download Video
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={handleStartRender}
+                className="h-8 text-xs"
+              >
+                <RefreshCw className="h-3 w-3 mr-1" />
+                Re-render
               </Button>
             </div>
           )}
 
-          {/* Error */}
+          {/* Error message */}
           {status === "failed" && (
-            <div className="space-y-3">
+            <div className="p-3 bg-red-50 dark:bg-red-950/50 rounded-lg border border-red-200 dark:border-red-900">
               <div className="flex items-center gap-2 text-red-600">
-                <XCircle className="h-5 w-5" />
-                <span className="font-medium">Render failed</span>
+                <XCircle className="h-4 w-4" />
+                <span className="text-sm font-medium">Export failed</span>
               </div>
-              <p className="text-sm text-muted-foreground">{error}</p>
-              <Button onClick={() => setStatus("idle")} variant="outline">
-                Try Again
-              </Button>
+              {error && (
+                <p className="text-xs text-muted-foreground mt-1">{error}</p>
+              )}
             </div>
           )}
+
+          {/* Segment list */}
+          <div className="max-h-64 overflow-y-auto space-y-1 rounded-lg border bg-muted/30 p-2">
+            {renderList.map((item) => {
+              const isCompleted = item.status === "completed";
+              const isFailed = item.status === "failed";
+              const isPending = item.status === "pending";
+
+              return (
+                <div
+                  key={item.segmentId}
+                  className={`flex items-center justify-between px-3 py-2 rounded-md text-sm ${
+                    isCompleted
+                      ? "bg-green-500/10"
+                      : isFailed
+                      ? "bg-red-500/10"
+                      : "bg-background/50"
+                  }`}
+                >
+                  <span className="truncate flex-1 mr-2">{item.title}</span>
+                  {isCompleted && item.downloadUrl ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 w-7 p-0 text-green-600 hover:text-green-700 hover:bg-green-500/20"
+                      onClick={() =>
+                        handleDownload(item.downloadUrl!, item.title)
+                      }
+                    >
+                      <Download className="h-4 w-4" />
+                    </Button>
+                  ) : isFailed ? (
+                    <XCircle className="h-4 w-4 text-red-500" />
+                  ) : isPending ? (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  ) : (
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
 
-        {/* Actions */}
-        {status === "idle" && (
-          <div className="space-y-3">
-            {lastRenderUrl && (
-              <div className="flex items-center gap-2 p-3 bg-green-50 dark:bg-green-950 rounded-lg border border-green-200 dark:border-green-800">
-                <CheckCircle className="h-4 w-4 text-green-600" />
-                <span className="text-sm text-green-700 dark:text-green-300 flex-1">
-                  Previous render available
-                </span>
-                <Button
-                  size="sm"
-                  onClick={() => window.open(lastRenderUrl, "_blank")}
-                >
-                  <Download className="h-4 w-4 mr-1" />
-                  Download
-                </Button>
-              </div>
-            )}
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={handleClose}>
-                Cancel
-              </Button>
-              <Button
-                onClick={handleStartRender}
-                disabled={segments.length === 0}
-                variant={lastRenderUrl ? "outline" : "default"}
-              >
-                <RefreshCw className="h-4 w-4 mr-2" />
-                {lastRenderUrl ? "Re-render" : "Start Render"}
-              </Button>
-            </div>
-          </div>
-        )}
+        {/* Footer */}
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="ghost" onClick={handleClose}>
+            {status === "completed" || hasCachedRenders ? "Done" : "Cancel"}
+          </Button>
+          {status === "idle" && !hasCachedRenders && (
+            <Button
+              onClick={handleStartRender}
+              disabled={segments.length === 0}
+            >
+              Start Export
+            </Button>
+          )}
+          {status === "failed" && (
+            <Button onClick={handleStartRender}>Try Again</Button>
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   );

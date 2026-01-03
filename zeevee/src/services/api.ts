@@ -188,7 +188,6 @@ export const updateProject = async (
     segments?: Segment[];
     captionSettings?: CaptionSettings;
     globalFraming?: GlobalFramingSettings;
-    lastRenderS3Uri?: string;
   }
 ) => {
   const response = await axios.patch(`${API_URL}/projects/${projectId}`, data, {
@@ -331,14 +330,27 @@ export interface RenderRequest {
   quality?: "draft" | "standard" | "high";
 }
 
+export interface SegmentDownload {
+  segmentId: string;
+  title: string;
+  status: "rendering" | "completed" | "failed";
+  downloadUrl?: string;
+  progress?: number;
+  error?: string;
+}
+
 export interface RenderJobResponse {
   jobId: string;
-  status: "pending" | "rendering" | "completed" | "failed";
+  status: "pending" | "cutting" | "rendering" | "completed" | "failed";
   progress: number;
+  segmentCount?: number;
+  completedCount?: number;
+  segmentDownloads?: SegmentDownload[];
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
   error?: string;
+  // Legacy single-video fields (deprecated)
   downloadUrl?: string;
   outputS3Uri?: string;
 }
