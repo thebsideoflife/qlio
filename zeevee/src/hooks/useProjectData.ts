@@ -6,15 +6,25 @@ import {
   setTranscriptWords,
   setCaptionSettings,
   setGlobalFraming,
-  setLastRenderUrl,
+  setLastSegmentRenders,
 } from "@/store/editorSlice";
 import { getProject } from "@/services/api";
 import type { CaptionWord } from "@/remotion/types";
+
+// Generation input metadata stored with project
+export interface GenerationMetadata {
+  type?: string;
+  platform?: string;
+  purpose?: string;
+  duration?: string;
+  userPrompt?: string;
+}
 
 export function useProjectData(projectId: string | undefined) {
   const dispatch = useDispatch();
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [transcription, setTranscription] = useState<CaptionWord[]>([]);
+  const [generationMetadata, setGenerationMetadata] = useState<GenerationMetadata | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,9 +52,14 @@ export function useProjectData(projectId: string | undefined) {
         dispatch(setGlobalFraming(project.globalFraming));
       }
 
-      // Load last render URL if it exists
-      if (project.lastRenderUrl) {
-        dispatch(setLastRenderUrl(project.lastRenderUrl));
+      // Load cached segment renders from last completed render job
+      if (project.lastRenderDownloads && project.lastRenderDownloads.length > 0) {
+        dispatch(setLastSegmentRenders(project.lastRenderDownloads));
+      }
+
+      // Load generation metadata (last used generation inputs)
+      if (project.metadata) {
+        setGenerationMetadata(project.metadata);
       }
 
       dispatch(
@@ -86,5 +101,5 @@ export function useProjectData(projectId: string | undefined) {
     loadProject();
   }, [loadProject]);
 
-  return { videoUrl, transcription, loading, error };
+  return { videoUrl, transcription, generationMetadata, loading, error };
 }

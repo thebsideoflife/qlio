@@ -3,8 +3,6 @@ import {
   registerRoot,
   type CalculateMetadataFunction,
 } from "remotion";
-import { parseMedia } from "@remotion/media-parser";
-import { webReader } from "@remotion/media-parser/web";
 import { CaptionedVideo } from "./CaptionedVideo";
 import type { CaptionedVideoProps } from "./types";
 import { DEFAULT_CAPTION_SETTINGS, DEFAULT_GLOBAL_FRAMING } from "./types";
@@ -12,34 +10,19 @@ import { DEFAULT_CAPTION_SETTINGS, DEFAULT_GLOBAL_FRAMING } from "./types";
 const FPS = 30;
 
 /**
- * Calculate duration from the actual video file.
+ * Calculate duration from segments (not the video file).
+ * Each segment's duration determines the render length.
  */
 const calculateMetadata: CalculateMetadataFunction<
   CaptionedVideoProps
 > = async ({ props }) => {
-  const { videoUrl, segments } = props;
+  const { segments } = props;
 
-  // Get actual video duration
-  if (videoUrl && videoUrl.trim() !== "") {
-    try {
-      const { durationInSeconds } = await parseMedia({
-        src: videoUrl,
-        fields: { durationInSeconds: true },
-        reader: webReader,
-      });
-      if (durationInSeconds !== null) {
-        return {
-          durationInFrames: Math.max(FPS, Math.ceil(durationInSeconds * FPS)),
-        };
-      }
-    } catch (error) {
-      console.error("Failed to get video metadata:", error);
-    }
-  }
-
-  // Fallback: calculate from segments
+  // Calculate duration from segments only
+  // We render just the segment(s), not the full video
   const durationInSeconds =
     segments?.reduce((sum, seg) => sum + (seg.endTime - seg.startTime), 0) || 0;
+  
   return {
     durationInFrames: Math.max(FPS, Math.ceil(durationInSeconds * FPS)),
   };

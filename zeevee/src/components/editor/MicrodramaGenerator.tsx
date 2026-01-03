@@ -41,11 +41,20 @@ interface GenerationStatus {
   error?: string;
 }
 
+interface InitialSelections {
+  type?: string;
+  platform?: string;
+  purpose?: string;
+  duration?: string;
+  userPrompt?: string;
+}
+
 interface MicrodramaGeneratorProps {
   onGenerate: (selections: any) => Promise<void>;
   isGenerating: boolean;
   generationStatus?: GenerationStatus | null;
   onAspectRatioChange?: (ratio: AspectRatio) => void;
+  initialSelections?: InitialSelections | null;
 }
 
 // Platform → Aspect Ratio mapping
@@ -183,9 +192,18 @@ export function MicrodramaGenerator({
   isGenerating,
   generationStatus,
   onAspectRatioChange,
+  initialSelections,
 }: MicrodramaGeneratorProps) {
-  const [selections, setSelections] = useState<Selections>(INITIAL);
-  const [viewMode, setViewMode] = useState<"chat" | "compact">("chat");
+  const [selections, setSelections] = useState<Selections>(() => ({
+    type: initialSelections?.type || "",
+    platform: initialSelections?.platform || "",
+    purpose: initialSelections?.purpose || "",
+    duration: initialSelections?.duration || "",
+    userPrompt: initialSelections?.userPrompt || "",
+  }));
+  const [viewMode, setViewMode] = useState<"chat" | "compact">(() => 
+    initialSelections?.type ? "compact" : "chat"
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const needsDuration = !!selections.purpose;

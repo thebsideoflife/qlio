@@ -27,17 +27,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     }
 
     const body = JSON.parse(event.body || "{}");
-    const { title, segments, captionSettings, globalFraming, lastRenderS3Uri } =
-      body;
+    const { title, segments, captionSettings, globalFraming } = body;
 
     // Check if any updateable fields are provided
-    if (
-      !title &&
-      !segments &&
-      !captionSettings &&
-      !globalFraming &&
-      lastRenderS3Uri === undefined
-    ) {
+    if (!title && !segments && !captionSettings && !globalFraming) {
       return {
         statusCode: 400,
         headers: {
@@ -82,12 +75,6 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       exprValues[":gf"] = globalFraming;
     }
 
-    if (lastRenderS3Uri !== undefined) {
-      updateParts.push("#lastRenderS3Uri = :lr");
-      exprNames["#lastRenderS3Uri"] = "lastRenderS3Uri";
-      exprValues[":lr"] = lastRenderS3Uri;
-    }
-
     await docClient.send(
       new UpdateCommand({
         TableName: PROJECTS_TABLE,
@@ -111,7 +98,6 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         segments,
         captionSettings,
         globalFraming,
-        lastRenderS3Uri,
       }),
     };
   } catch (error) {

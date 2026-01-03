@@ -46,9 +46,8 @@ interface EditorState {
   captionSettings: CaptionSettings;
   // Framing state
   globalFraming: GlobalFramingSettings;
-  // Last render - S3 URI for persistence, presigned URL for download
-  lastRenderS3Uri: string | null;
-  lastRenderUrl: string | null;
+  // Last rendered segments - cached to avoid re-renders
+  lastSegmentRenders: { segmentId: string; title: string; url: string }[] | null;
 }
 
 const initialState: EditorState = {
@@ -69,16 +68,14 @@ const initialState: EditorState = {
   captionSettings: DEFAULT_CAPTION_SETTINGS,
   // Framing state
   globalFraming: DEFAULT_GLOBAL_FRAMING,
-  // Last render
-  lastRenderS3Uri: null,
-  lastRenderUrl: null,
+  // Last rendered segments
+  lastSegmentRenders: null,
 };
 
-// Helper to mark state as edited (invalidates cached render)
+// Helper to mark state as edited
+// Note: Does NOT clear lastSegmentRenders - user decides when to re-render
 const markEdited = (state: EditorState) => {
   state.localVersion++;
-  state.lastRenderS3Uri = null;
-  state.lastRenderUrl = null;
 };
 
 // Minimum segment duration (100ms)
@@ -449,17 +446,16 @@ export const editorSlice = createSlice({
     // Reset state when leaving editor
     resetEditor: () => initialState,
 
-    // Render tracking
-    setLastRender: (
+    // Render tracking - per-segment renders
+    setLastSegmentRenders: (
       state,
-      action: PayloadAction<{ s3Uri: string; url: string }>
+      action: PayloadAction<{ segmentId: string; title: string; url: string }[]>
     ) => {
-      state.lastRenderS3Uri = action.payload.s3Uri;
-      state.lastRenderUrl = action.payload.url;
+      state.lastSegmentRenders = action.payload;
     },
-    // Called when loading project - only presigned URL available
-    setLastRenderUrl: (state, action: PayloadAction<string | null>) => {
-      state.lastRenderUrl = action.payload;
+    // Clear cache when user clicks re-render
+    clearLastSegmentRenders: (state) => {
+      state.lastSegmentRenders = null;
     },
   },
 });
@@ -495,7 +491,7 @@ export const {
   applyFramingToAllSegments,
   resetEditor,
   // Render tracking
-  setLastRender,
-  setLastRenderUrl,
+  setLastSegmentRenders,
+  clearLastSegmentRenders,
 } = editorSlice.actions;
 export default editorSlice.reducer;

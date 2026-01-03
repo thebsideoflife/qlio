@@ -83,8 +83,15 @@ data "aws_iam_policy_document" "lambda_policy" {
       "${aws_dynamodb_table.assets.arn}/index/*",
       aws_dynamodb_table.projects.arn,
       "${aws_dynamodb_table.projects.arn}/index/*",
-      aws_dynamodb_table.chunk_tasks.arn
+      aws_dynamodb_table.chunk_tasks.arn,
+      aws_dynamodb_table.render_jobs.arn,
+      "${aws_dynamodb_table.render_jobs.arn}/index/*"
     ]
+  }
+  # S3 read access for Remotion bucket (presigning download URLs)
+  statement {
+    actions = ["s3:GetObject"]
+    resources = ["arn:aws:s3:::remotionlambda-*/*"]
   }
   # Allow Lambda to invoke other Lambdas (for split -> indexChunks flow)
   statement {
@@ -416,6 +423,7 @@ resource "aws_lambda_function" "project_ops" {
     variables = {
       PROJECTS_TABLE          = aws_dynamodb_table.projects.name
       ASSETS_TABLE            = aws_dynamodb_table.assets.name
+      RENDER_JOBS_TABLE       = aws_dynamodb_table.render_jobs.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
     }
   }

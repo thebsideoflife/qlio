@@ -1,35 +1,33 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
-import { setLastRender } from "@/store/editorSlice";
+import {
+  setLastSegmentRenders,
+  clearLastSegmentRenders,
+} from "@/store/editorSlice";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Label } from "@/components/ui/label";
-import { startRender, getRenderStatus } from "@/services/api";
+  startRender,
+  getRenderStatus,
+  type SegmentDownload,
+} from "@/services/api";
 import {
   Download,
   Loader2,
-  CheckCircle,
+  CheckCircle2,
   XCircle,
   Film,
-  Captions as CaptionsIcon,
-  Crop,
   RefreshCw,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface ExportModalProps {
   open: boolean;
@@ -46,34 +44,41 @@ export function ExportModal({
 }: ExportModalProps) {
   const dispatch = useDispatch();
   const segments = useSelector((state: RootState) => state.editor.segments);
-  const captions = useSelector((state: RootState) => state.editor.captions);
-  const captionSettings = useSelector(
-    (state: RootState) => state.editor.captionSettings
-  );
-  const globalFraming = useSelector(
-    (state: RootState) => state.editor.globalFraming
-  );
-  const lastRenderUrl = useSelector(
-    (state: RootState) => state.editor.lastRenderUrl
+  const lastSegmentRenders = useSelector(
+    (state: RootState) => state.editor.lastSegmentRenders
   );
 
-  const [outputFormat, setOutputFormat] = useState<"mp4" | "webm">("mp4");
-  const [quality, setQuality] = useState<"draft" | "standard" | "high">(
-    "standard"
-  );
   const [status, setStatus] = useState<RenderStatus>("idle");
   const [progress, setProgress] = useState(0);
   const [jobId, setJobId] = useState<string | null>(null);
-  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [segmentDownloads, setSegmentDownloads] = useState<SegmentDownload[]>(
+    []
+  );
+  const [completedCount, setCompletedCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
-
-  // Calculate estimated duration
-  const totalDuration = segments.reduce(
-    (sum, seg) => sum + (seg.endTime - seg.startTime),
-    0
+  const [selectedSegmentIds, setSelectedSegmentIds] = useState<Set<string>>(
+    new Set()
   );
 
-  // Poll for render status with exponential backoff
+  // Build a map of segment ID -> cached render URL
+  const cachedRenderMap = useMemo(() => {
+    const map = new Map<string, string>();
+    if (lastSegmentRenders) {
+      for (const render of lastSegmentRenders) {
+        map.set(render.segmentId, render.url);
+      }
+    }
+    return map;
+  }, [lastSegmentRenders]);
+
+  // Initialize with none selected when modal opens
+  useEffect(() => {
+    if (open) {
+      setSelectedSegmentIds(new Set());
+    }
+  }, [open]);
+
+  // Poll for render status
   useEffect(() => {
     if (!jobId || status === "completed" || status === "failed") return;
 
@@ -84,55 +89,78 @@ export function ExportModal({
       try {
         const result = await getRenderStatus(jobId);
         setProgress(result.progress);
+        setCompletedCount(result.completedCount || 0);
+
+        if (result.segmentDownloads) {
+          setSegmentDownloads(result.segmentDownloads);
+        }
 
         if (result.status === "completed") {
           setStatus("completed");
-          setDownloadUrl(result.downloadUrl || null);
-          // Cache the render for reuse (S3 URI for persistence, URL for download)
-          if (result.downloadUrl && result.outputS3Uri) {
-            dispatch(setLastRender({ s3Uri: result.outputS3Uri, url: result.downloadUrl }));
+          if (result.segmentDownloads) {
+            const newRenders = result.segmentDownloads
+              .filter((s) => s.status === "completed" && s.downloadUrl)
+              .map((s) => ({
+                segmentId: s.segmentId,
+                title: s.title,
+                url: s.downloadUrl!,
+              }));
+
+            const mergedMap = new Map(
+              (lastSegmentRenders || []).map((r) => [r.segmentId, r])
+            );
+            for (const render of newRenders) {
+              mergedMap.set(render.segmentId, render);
+            }
+
+            dispatch(setLastSegmentRenders(Array.from(mergedMap.values())));
           }
-          return; // Stop polling
+          return;
         } else if (result.status === "failed") {
           setStatus("failed");
           setError(result.error || "Render failed");
-          return; // Stop polling
+          return;
         }
 
-        // Exponential backoff: 2s → 3s → 5s → 8s → 10s (max)
         pollCount++;
         const nextDelay = Math.min(2000 * Math.pow(1.5, pollCount), 10000);
         timeoutId = setTimeout(poll, nextDelay);
-      } catch (err) {
-        // Continue polling on error (network issues, etc)
+      } catch {
         pollCount++;
         const nextDelay = Math.min(2000 * Math.pow(1.5, pollCount), 10000);
         timeoutId = setTimeout(poll, nextDelay);
       }
     };
 
-    // Start first poll immediately
     poll();
 
     return () => {
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [jobId, status, dispatch]);
+  }, [jobId, status, dispatch, lastSegmentRenders]);
 
   const handleStartRender = useCallback(async () => {
+    const rendersToKeep = (lastSegmentRenders || []).filter(
+      (r) => !selectedSegmentIds.has(r.segmentId)
+    );
+    if (rendersToKeep.length > 0) {
+      dispatch(setLastSegmentRenders(rendersToKeep));
+    } else {
+      dispatch(clearLastSegmentRenders());
+    }
+
     setStatus("starting");
     setProgress(0);
     setError(null);
-    setDownloadUrl(null);
+    setSegmentDownloads([]);
+    setCompletedCount(0);
 
     try {
-      // Only send render options - all project data (segments, captions, framing)
-      // is read from the database by the backend for data integrity
       const result = await startRender(projectId, {
-        outputFormat,
-        quality,
+        outputFormat: "mp4",
+        quality: "standard",
+        segmentIds: Array.from(selectedSegmentIds),
       });
-
       setJobId(result.jobId);
       setStatus("rendering");
     } catch (err: unknown) {
@@ -140,206 +168,331 @@ export function ExportModal({
       const error = err as { response?: { data?: { error?: string } } };
       setError(error.response?.data?.error || "Failed to start render");
     }
-  }, [projectId, outputFormat, quality]);
+  }, [projectId, dispatch, selectedSegmentIds, lastSegmentRenders]);
 
-  const handleDownload = useCallback(() => {
-    if (downloadUrl) {
-      window.open(downloadUrl, "_blank");
-    }
-  }, [downloadUrl]);
+  const handleDownload = useCallback((url: string, title: string) => {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${title}.mp4`;
+    a.target = "_blank";
+    a.click();
+  }, []);
 
   const handleClose = useCallback(() => {
     if (status !== "rendering" && status !== "starting") {
       setStatus("idle");
       setProgress(0);
       setJobId(null);
-      setDownloadUrl(null);
+      setSegmentDownloads([]);
+      setCompletedCount(0);
       setError(null);
       onOpenChange(false);
     }
   }, [status, onOpenChange]);
 
-  const formatDuration = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins}:${secs.toString().padStart(2, "0")}`;
-  };
+  const toggleSegment = useCallback((segmentId: string) => {
+    setSelectedSegmentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(segmentId)) {
+        next.delete(segmentId);
+      } else {
+        next.add(segmentId);
+      }
+      return next;
+    });
+  }, []);
+
+  const selectAll = useCallback(() => {
+    setSelectedSegmentIds(new Set(segments.map((s) => s.id)));
+  }, [segments]);
+
+  const selectNone = useCallback(() => {
+    setSelectedSegmentIds(new Set());
+  }, []);
+
+  const selectUnrendered = useCallback(() => {
+    const unrenderedIds = segments
+      .filter((s) => !cachedRenderMap.has(s.id))
+      .map((s) => s.id);
+    setSelectedSegmentIds(new Set(unrenderedIds));
+  }, [segments, cachedRenderMap]);
+
+  const isProcessing = status === "starting" || status === "rendering";
+  const hasAnySelection = selectedSegmentIds.size > 0;
+  const allRendered = segments.every((s) => cachedRenderMap.has(s.id));
+  const someRendered = segments.some((s) => cachedRenderMap.has(s.id));
+  const unrenderedCount = segments.filter(
+    (s) => !cachedRenderMap.has(s.id)
+  ).length;
+
+  // Build segment list
+  const segmentList = useMemo(() => {
+    if (isProcessing && segmentDownloads.length > 0) {
+      return segments.map((seg) => {
+        const download = segmentDownloads.find((d) => d.segmentId === seg.id);
+        const cached = cachedRenderMap.get(seg.id);
+        if (download) {
+          return {
+            segmentId: seg.id,
+            title: seg.title,
+            status: download.status,
+            downloadUrl: download.downloadUrl,
+            isSelected: selectedSegmentIds.has(seg.id),
+            isBeingRendered: true,
+          };
+        } else if (cached) {
+          return {
+            segmentId: seg.id,
+            title: seg.title,
+            status: "completed" as const,
+            downloadUrl: cached,
+            isSelected: false,
+            isBeingRendered: false,
+          };
+        } else {
+          return {
+            segmentId: seg.id,
+            title: seg.title,
+            status: "pending" as const,
+            downloadUrl: undefined,
+            isSelected: selectedSegmentIds.has(seg.id),
+            isBeingRendered: false,
+          };
+        }
+      });
+    }
+
+    return segments.map((seg) => {
+      const cached = cachedRenderMap.get(seg.id);
+      return {
+        segmentId: seg.id,
+        title: seg.title,
+        status: cached ? ("completed" as const) : ("pending" as const),
+        downloadUrl: cached,
+        isSelected: selectedSegmentIds.has(seg.id),
+        isBeingRendered: false,
+      };
+    });
+  }, [
+    segments,
+    segmentDownloads,
+    cachedRenderMap,
+    selectedSegmentIds,
+    isProcessing,
+  ]);
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-xl max-h-[80vh] flex flex-col bg-zinc-900 border-zinc-700">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Film className="h-5 w-5" />
-            Export Video
+          <DialogTitle className="flex items-center gap-2 text-zinc-100">
+            <Film className="h-5 w-5 text-blue-500" />
+            Export Segments
           </DialogTitle>
-          <DialogDescription>
-            Render your edited video with captions burned in.
-          </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-6 py-4">
-          {/* Summary */}
-          <div className="bg-muted rounded-lg p-4 space-y-2 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Segments</span>
-              <span className="font-medium">{segments.length}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Duration</span>
-              <span className="font-medium">
-                {formatDuration(totalDuration)}
-              </span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-muted-foreground">Captions</span>
-              <span className="font-medium flex items-center gap-1">
-                {captionSettings.enabled ? (
-                  <>
-                    <CaptionsIcon className="h-3 w-3" />
-                    {captions.length} lines
-                  </>
-                ) : (
-                  "Disabled"
-                )}
-              </span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-muted-foreground">Framing</span>
-              <span className="font-medium flex items-center gap-1">
-                {globalFraming.enabled ? (
-                  <>
-                    <Crop className="h-3 w-3" />
-                    {globalFraming.aspectRatio}
-                  </>
-                ) : (
-                  "Original"
-                )}
-              </span>
-            </div>
-          </div>
-
-          {/* Settings */}
-          {status === "idle" && (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>Format</Label>
-                <Select
-                  value={outputFormat}
-                  onValueChange={(v) => setOutputFormat(v as "mp4" | "webm")}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="mp4">MP4 (H.264)</SelectItem>
-                    <SelectItem value="webm">WebM (VP8)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Quality</Label>
-                <Select
-                  value={quality}
-                  onValueChange={(v) =>
-                    setQuality(v as "draft" | "standard" | "high")
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="draft">Draft (Fast)</SelectItem>
-                    <SelectItem value="standard">Standard</SelectItem>
-                    <SelectItem value="high">High Quality</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          )}
-
+        <div className="flex-1 overflow-hidden flex flex-col gap-3 min-h-0">
           {/* Progress */}
-          {(status === "starting" || status === "rendering") && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span className="text-sm">
+          {isProcessing && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-zinc-400">
                   {status === "starting"
-                    ? "Starting render..."
-                    : `Rendering... ${progress}%`}
+                    ? "Preparing..."
+                    : `Rendering ${completedCount}/${selectedSegmentIds.size}`}
                 </span>
+                <span className="text-zinc-100 font-mono">{progress}%</span>
               </div>
-              <Progress value={progress} />
-              <p className="text-xs text-muted-foreground">
-                This may take a few minutes. You can close this dialog and check
-                back later.
-              </p>
-            </div>
-          )}
-
-          {/* Success */}
-          {status === "completed" && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 text-green-600">
-                <CheckCircle className="h-5 w-5" />
-                <span className="font-medium">Render complete!</span>
-              </div>
-              <Button onClick={handleDownload} className="w-full">
-                <Download className="h-4 w-4 mr-2" />
-                Download Video
-              </Button>
+              <Progress value={progress} className="h-1.5 bg-zinc-800" />
             </div>
           )}
 
           {/* Error */}
           {status === "failed" && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 text-red-600">
-                <XCircle className="h-5 w-5" />
-                <span className="font-medium">Render failed</span>
+            <div className="p-3 bg-red-950 border border-red-800 rounded-lg">
+              <div className="flex items-center gap-2 text-red-400">
+                <XCircle className="h-4 w-4" />
+                <span className="text-sm font-medium">Export failed</span>
               </div>
-              <p className="text-sm text-muted-foreground">{error}</p>
-              <Button onClick={() => setStatus("idle")} variant="outline">
-                Try Again
-              </Button>
+              {error && <p className="text-xs text-red-400/70 mt-1">{error}</p>}
             </div>
           )}
+
+          {/* Selection controls */}
+          {status === "idle" && (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={selectAll}
+                  className="h-7 px-2.5 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                >
+                  All
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={selectNone}
+                  className="h-7 px-2.5 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                >
+                  None
+                </Button>
+                {someRendered && unrenderedCount > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={selectUnrendered}
+                    className="h-7 px-2.5 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                  >
+                    Unrendered ({unrenderedCount})
+                  </Button>
+                )}
+              </div>
+              <span className="text-xs text-zinc-500 font-mono">
+                {selectedSegmentIds.size}/{segments.length}
+              </span>
+            </div>
+          )}
+
+          {/* Status badge */}
+          {status === "idle" && someRendered && (
+            <div className="flex items-center gap-2 text-emerald-500 text-sm">
+              <CheckCircle2 className="h-4 w-4" />
+              <span>
+                {allRendered
+                  ? "All segments rendered"
+                  : `${cachedRenderMap.size} of ${segments.length} rendered`}
+              </span>
+            </div>
+          )}
+
+          {/* Segment list */}
+          <div className="flex-1 overflow-y-auto min-h-0 space-y-1 pr-1">
+            {segmentList.map((item) => {
+              const isCompleted = item.status === "completed";
+              const isFailed = item.status === "failed";
+              const isRendering = item.status === "rendering";
+              const canSelect = status === "idle";
+
+              return (
+                <div
+                  key={item.segmentId}
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all",
+                    isCompleted &&
+                      "bg-emerald-950/50 border border-emerald-800/50",
+                    isFailed && "bg-red-950/50 border border-red-800/50",
+                    isRendering && "bg-blue-950/50 border border-blue-800/50",
+                    !isCompleted &&
+                      !isFailed &&
+                      !isRendering &&
+                      "bg-zinc-800/50 border border-zinc-700/50",
+                    canSelect && "cursor-pointer hover:border-zinc-600",
+                    canSelect &&
+                      item.isSelected &&
+                      "border-blue-600 bg-blue-950/30"
+                  )}
+                  onClick={
+                    canSelect ? () => toggleSegment(item.segmentId) : undefined
+                  }
+                >
+                  {/* Checkbox or status icon */}
+                  {canSelect ? (
+                    <Checkbox
+                      checked={item.isSelected}
+                      onCheckedChange={() => toggleSegment(item.segmentId)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="border-zinc-600 data-[state=checked]:bg-blue-600 data-[state=checked]:border-blue-600"
+                    />
+                  ) : isRendering ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                  ) : isCompleted ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                  ) : isFailed ? (
+                    <XCircle className="h-4 w-4 text-red-500" />
+                  ) : (
+                    <div className="h-4 w-4 rounded-full border-2 border-zinc-600" />
+                  )}
+
+                  {/* Title */}
+                  <span
+                    className={cn(
+                      "flex-1 truncate",
+                      isCompleted ? "text-zinc-200" : "text-zinc-300"
+                    )}
+                  >
+                    {item.title}
+                  </span>
+
+                  {/* Download or status */}
+                  {isCompleted && item.downloadUrl ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 w-7 p-0 text-emerald-500 hover:text-emerald-400 hover:bg-emerald-950"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDownload(item.downloadUrl!, item.title);
+                      }}
+                    >
+                      <Download className="h-4 w-4" />
+                    </Button>
+                  ) : isRendering ? (
+                    <span className="text-xs text-blue-400">Rendering...</span>
+                  ) : isFailed ? (
+                    <span className="text-xs text-red-400">Failed</span>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
         </div>
 
-        {/* Actions */}
-        {status === "idle" && (
-          <div className="space-y-3">
-            {lastRenderUrl && (
-              <div className="flex items-center gap-2 p-3 bg-green-50 dark:bg-green-950 rounded-lg border border-green-200 dark:border-green-800">
-                <CheckCircle className="h-4 w-4 text-green-600" />
-                <span className="text-sm text-green-700 dark:text-green-300 flex-1">
-                  Previous render available
-                </span>
-                <Button
-                  size="sm"
-                  onClick={() => window.open(lastRenderUrl, "_blank")}
-                >
-                  <Download className="h-4 w-4 mr-1" />
-                  Download
-                </Button>
-              </div>
-            )}
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={handleClose}>
-                Cancel
-              </Button>
+        {/* Footer */}
+        <div className="flex justify-between items-center pt-3 border-t border-zinc-800">
+          <span className="text-xs text-zinc-500">
+            {isProcessing
+              ? "Rendering..."
+              : hasAnySelection
+              ? `${selectedSegmentIds.size} selected`
+              : "Select segments to render"}
+          </span>
+          <div className="flex gap-2">
+            <Button
+              variant="ghost"
+              onClick={handleClose}
+              className="text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+            >
+              {status === "completed" || someRendered ? "Done" : "Cancel"}
+            </Button>
+            {status === "idle" && (
               <Button
                 onClick={handleStartRender}
-                disabled={segments.length === 0}
-                variant={lastRenderUrl ? "outline" : "default"}
+                disabled={!hasAnySelection}
+                className="bg-blue-600 hover:bg-blue-500 text-white disabled:bg-zinc-700 disabled:text-zinc-500"
               >
-                <RefreshCw className="h-4 w-4 mr-2" />
-                {lastRenderUrl ? "Re-render" : "Start Render"}
+                {someRendered && hasAnySelection ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Re-render
+                  </>
+                ) : (
+                  "Export"
+                )}
               </Button>
-            </div>
+            )}
+            {status === "failed" && (
+              <Button
+                onClick={handleStartRender}
+                disabled={!hasAnySelection}
+                className="bg-blue-600 hover:bg-blue-500 text-white"
+              >
+                Retry
+              </Button>
+            )}
           </div>
-        )}
+        </div>
       </DialogContent>
     </Dialog>
   );

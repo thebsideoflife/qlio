@@ -27,10 +27,10 @@ COPY package*.json ${LAMBDA_TASK_ROOT}/
 WORKDIR ${LAMBDA_TASK_ROOT}
 RUN npm ci --omit=dev
 
-# Copy built handlers (stitchSegments for rendering, splitVideo for long video splitting)
-COPY dist/stitchSegments.js ${LAMBDA_TASK_ROOT}/
+# Copy built handlers
+COPY dist/cutSegments.js ${LAMBDA_TASK_ROOT}/
 COPY dist/splitVideo.js ${LAMBDA_TASK_ROOT}/
 
-# Default handler (can be overridden in Lambda config)
-CMD [ "stitchSegments.handler" ]
+# Default handler: cutSegments for per-segment extraction
+CMD [ "cutSegments.handler" ]
 
