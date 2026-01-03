@@ -4,7 +4,6 @@ import {
   DynamoDBDocumentClient,
   GetCommand,
   DeleteCommand,
-  QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -17,15 +16,14 @@ const s3Client = new S3Client({});
 
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
-const RENDER_JOBS_TABLE = process.env.RENDER_JOBS_TABLE;
 
-// SegmentRender stored in DynamoDB
-interface SegmentRenderRecord {
+// Segment render info stored directly on project
+interface StoredSegmentRender {
   segmentId: string;
   title: string;
-  bucketName: string;
-  outputKey: string; // Exact S3 key - stored at render start
-  status: "rendering" | "completed" | "failed";
+  bucket: string;
+  key: string;
+  renderedAt: string;
 }
 
 export const handler: APIGatewayProxyHandler = async (event) => {
@@ -113,60 +111,47 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       }
     }
 
-    // 5. Get last completed render job for this project (if any)
-    let lastRenderDownloads: Array<{ segmentId: string; title: string; url: string }> | null = null;
-    
-    if (RENDER_JOBS_TABLE) {
-      try {
-        // Query for most recent render job (any status - check segments directly)
-        const renderJobsResult = await docClient.send(
-          new QueryCommand({
-            TableName: RENDER_JOBS_TABLE,
-            IndexName: "ProjectIdIndex",
-            KeyConditionExpression: "projectId = :pid",
-            ExpressionAttributeValues: {
-              ":pid": projectId,
-            },
-            ScanIndexForward: false, // Most recent first
-            Limit: 5, // Check a few recent jobs
-          })
-        );
+    // 5. Generate presigned URLs for stored segment renders
+    // Renders are stored directly on project when they complete
+    let lastRenderDownloads: Array<{
+      segmentId: string;
+      title: string;
+      url: string;
+    }> | null = null;
 
-        // Find the most recent job that has completed segments
-        console.log(`Found ${renderJobsResult.Items?.length || 0} render jobs for project ${projectId}`);
-        
-        for (const job of renderJobsResult.Items || []) {
-          console.log(`Checking job ${job.jobId}: status=${job.status}, segments=${job.segmentRenders?.length || 0}`);
-          if (!job.segmentRenders) continue;
-          
-          const downloads: Array<{ segmentId: string; title: string; url: string }> = [];
-          
-          for (const seg of job.segmentRenders as SegmentRenderRecord[]) {
-            console.log(`  Segment ${seg.segmentId}: status=${seg.status}, hasBucket=${!!seg.bucketName}, hasOutputKey=${!!seg.outputKey}`);
-            
-            if (seg.status === "completed" && seg.bucketName && seg.outputKey) {
-              try {
-                const url = await getSignedUrl(
-                  s3Client,
-                  new GetObjectCommand({ Bucket: seg.bucketName, Key: seg.outputKey }),
-                  { expiresIn: 43200 } // 12 hours
-                );
-                downloads.push({ segmentId: seg.segmentId, title: seg.title, url });
-              } catch (e) {
-                console.error(`Failed to presign URL for segment ${seg.segmentId}:`, e);
-              }
-            }
-          }
-          
-          // Use the first job that has at least one completed segment
-          if (downloads.length > 0) {
-            lastRenderDownloads = downloads;
-            console.log(`Found ${downloads.length} cached renders from job ${job.jobId}`);
-            break;
-          }
+    const storedRenders: StoredSegmentRender[] = project.segmentRenders || [];
+    if (storedRenders.length > 0) {
+      const downloads: Array<{
+        segmentId: string;
+        title: string;
+        url: string;
+      }> = [];
+
+      for (const render of storedRenders) {
+        try {
+          const url = await getSignedUrl(
+            s3Client,
+            new GetObjectCommand({ Bucket: render.bucket, Key: render.key }),
+            { expiresIn: 43200 } // 12 hours
+          );
+          downloads.push({
+            segmentId: render.segmentId,
+            title: render.title,
+            url,
+          });
+        } catch (e) {
+          console.error(
+            `Failed to presign URL for segment ${render.segmentId}:`,
+            e
+          );
         }
-      } catch (e) {
-        console.error("Failed to fetch last render job:", e);
+      }
+
+      if (downloads.length > 0) {
+        lastRenderDownloads = downloads;
+        console.log(
+          `Generated ${downloads.length} presigned URLs from stored renders`
+        );
       }
     }
 

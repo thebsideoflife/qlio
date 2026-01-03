@@ -328,6 +328,7 @@ export interface GlobalFramingSettings {
 export interface RenderRequest {
   outputFormat?: "mp4" | "webm";
   quality?: "draft" | "standard" | "high";
+  segmentIds?: string[]; // Optional: render only specific segments (by ID)
 }
 
 export interface SegmentDownload {

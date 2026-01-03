@@ -74,7 +74,7 @@ export default function Editor() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Custom Hooks
-  const { videoUrl, transcription, loading } = useProjectData(projectId);
+  const { videoUrl, transcription, generationMetadata, loading } = useProjectData(projectId);
   // Seamless playback only in preview mode
   useSeamlessPlayback(videoRef, previewMode ? segments : []);
 
@@ -758,6 +758,7 @@ export default function Editor() {
                     onAspectRatioChange={(ratio) =>
                       dispatch(setGlobalAspectRatio(ratio))
                     }
+                    initialSelections={generationMetadata}
                   />
                 )}
                 {activeTab === "captions" && <CaptionEditor />}

@@ -16,8 +16,18 @@ const docClient = DynamoDBDocumentClient.from(client);
 const s3Client = new S3Client({});
 
 const RENDER_JOBS_TABLE = process.env.RENDER_JOBS_TABLE!;
+const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const REMOTION_FUNCTION_NAME = process.env.REMOTION_FUNCTION_NAME;
 const AWS_REGION_NAME = process.env.AWS_REGION_NAME;
+
+// Stored on project for persistent render access
+interface StoredSegmentRender {
+  segmentId: string;
+  title: string;
+  bucket: string;
+  key: string;
+  renderedAt: string;
+}
 
 interface SegmentRender {
   segmentId: string;
@@ -35,6 +45,63 @@ interface SegmentDownload {
   downloadUrl?: string;
   progress?: number;
   error?: string;
+}
+
+/**
+ * Persist completed renders to project for permanent access.
+ * Merges with existing renders (handles partial re-renders).
+ */
+async function persistRendersToProject(
+  projectId: string,
+  segmentRenders: SegmentRender[]
+): Promise<void> {
+  try {
+    // Get existing renders from project
+    const projectResult = await docClient.send(
+      new GetCommand({
+        TableName: PROJECTS_TABLE,
+        Key: { projectId },
+        ProjectionExpression: "segmentRenders",
+      })
+    );
+
+    // Merge: existing renders + new completed renders (new wins)
+    const renderMap = new Map<string, StoredSegmentRender>();
+    for (const r of (projectResult.Item?.segmentRenders ||
+      []) as StoredSegmentRender[]) {
+      renderMap.set(r.segmentId, r);
+    }
+
+    const now = new Date().toISOString();
+    for (const seg of segmentRenders) {
+      if (seg.status === "completed" && seg.bucketName && seg.outputKey) {
+        renderMap.set(seg.segmentId, {
+          segmentId: seg.segmentId,
+          title: seg.title,
+          bucket: seg.bucketName,
+          key: seg.outputKey,
+          renderedAt: now,
+        });
+      }
+    }
+
+    await docClient.send(
+      new UpdateCommand({
+        TableName: PROJECTS_TABLE,
+        Key: { projectId },
+        UpdateExpression:
+          "SET segmentRenders = :renders, updatedAt = :updatedAt",
+        ExpressionAttributeValues: {
+          ":renders": Array.from(renderMap.values()),
+          ":updatedAt": now,
+        },
+      })
+    );
+
+    console.log(`Persisted ${renderMap.size} renders to project ${projectId}`);
+  } catch (e) {
+    console.error("Failed to persist renders to project:", e);
+  }
 }
 
 export const handler: APIGatewayProxyHandler = async (event) => {
@@ -106,7 +173,9 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   }
 
   // Helper to generate presigned URL using stored bucket/key
-  async function generatePresignedUrl(segment: SegmentRender): Promise<string | undefined> {
+  async function generatePresignedUrl(
+    segment: SegmentRender
+  ): Promise<string | undefined> {
     try {
       const command = new GetObjectCommand({
         Bucket: segment.bucketName,
@@ -114,7 +183,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       });
       return await getSignedUrl(s3Client, command, { expiresIn: 43200 }); // 12 hours
     } catch (error) {
-      console.error(`Error generating URL for segment ${segment.segmentId}:`, error);
+      console.error(
+        `Error generating URL for segment ${segment.segmentId}:`,
+        error
+      );
       return undefined;
     }
   }
@@ -177,12 +249,17 @@ export const handler: APIGatewayProxyHandler = async (event) => {
           // Generate presigned URL using stored bucket/key
           download.downloadUrl = await generatePresignedUrl(segment);
 
-          console.log(`Segment ${segment.segmentId} completed! Key: ${segment.outputKey}`);
+          console.log(
+            `Segment ${segment.segmentId} completed! Key: ${segment.outputKey}`
+          );
         } else {
           download.progress = Math.round(renderProgress.overallProgress * 100);
         }
       } catch (error) {
-        console.error(`Error checking progress for segment ${segment.segmentId}:`, error);
+        console.error(
+          `Error checking progress for segment ${segment.segmentId}:`,
+          error
+        );
         download.progress = 0;
       }
 
@@ -209,7 +286,9 @@ export const handler: APIGatewayProxyHandler = async (event) => {
           ExpressionAttributeValues: {
             ":status": newStatus,
             ":segmentRenders": segmentRenders,
-            ":progress": Math.round((completedCount / segmentRenders.length) * 100),
+            ":progress": Math.round(
+              (completedCount / segmentRenders.length) * 100
+            ),
             ":updatedAt": new Date().toISOString(),
           },
         })
@@ -217,9 +296,15 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
       job.status = newStatus;
       job.progress = Math.round((completedCount / segmentRenders.length) * 100);
+
+      // Persist to project only when job completes (not on every segment)
+      // This reduces DB writes from N to 1
+      if (newStatus === "completed" && job.projectId) {
+        await persistRendersToProject(job.projectId, segmentRenders);
+      }
     }
   } else if (job.status === "completed" || job.status === "failed") {
-    // Job already done - just build download URLs
+    // Job already done - build download URLs
     for (const segment of segmentRenders) {
       const download: SegmentDownload = {
         segmentId: segment.segmentId,
@@ -229,9 +314,16 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
       if (segment.status === "completed") {
         download.downloadUrl = await generatePresignedUrl(segment);
+        completedCount++;
       }
 
       segmentDownloads.push(download);
+    }
+
+    // Ensure renders are persisted to project (idempotent - safe to call multiple times)
+    // This catches cases where persist failed or polling stopped before completion
+    if (job.status === "completed" && job.projectId && completedCount > 0) {
+      await persistRendersToProject(job.projectId, segmentRenders);
     }
   }
 

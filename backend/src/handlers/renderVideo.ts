@@ -206,7 +206,11 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     };
   }
 
-  let body: { outputFormat?: "mp4" | "webm"; quality?: string };
+  let body: {
+    outputFormat?: "mp4" | "webm";
+    quality?: string;
+    segmentIds?: string[];
+  };
   try {
     body = JSON.parse(event.body || "{}");
   } catch {
@@ -268,11 +272,22 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   const asset = assetResult.Item;
 
   // Read project data
-  const segments: Segment[] = project.segments || [];
+  let segments: Segment[] = project.segments || [];
   const captionSettings: CaptionSettings =
     project.captionSettings || DEFAULT_CAPTION_SETTINGS;
   const globalFraming: GlobalFramingSettings =
     project.globalFraming || DEFAULT_GLOBAL_FRAMING;
+
+  // Filter to specific segments if segmentIds provided
+  if (body.segmentIds && body.segmentIds.length > 0) {
+    const requestedIds = new Set(body.segmentIds);
+    segments = segments.filter((s) => requestedIds.has(s.id));
+    console.log(
+      `Filtering to ${segments.length} of ${
+        project.segments?.length || 0
+      } segments`
+    );
+  }
 
   // Generate captions from transcription
   let captions: CaptionLine[] = [];
