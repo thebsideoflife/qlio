@@ -40,6 +40,8 @@ interface ChunkInfo {
   duration: number;
   taskId?: string;
   videoId?: string;
+  actualDuration?: number;
+  actualStartOffset?: number;
 }
 
 export const handler: APIGatewayProxyHandler = async (event) => {
@@ -410,12 +412,16 @@ async function handleChunkCompletion(
 
             const transcriptionData = response.data?.transcription;
             if (transcriptionData && Array.isArray(transcriptionData)) {
+              // Use actualStartOffset for precise timing (accounts for keyframe seeking)
+              // Fall back to startOffset if actualStartOffset not available
+              const timeOffset = chunk.actualStartOffset ?? chunk.startOffset;
+
               // Adjust timestamps to original video timeline
               for (const segment of transcriptionData) {
                 allTranscriptions.push({
                   ...segment,
-                  start: (segment.start || 0) + chunk.startOffset,
-                  end: (segment.end || 0) + chunk.startOffset,
+                  start: (segment.start || 0) + timeOffset,
+                  end: (segment.end || 0) + timeOffset,
                 });
               }
             }

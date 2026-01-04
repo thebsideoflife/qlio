@@ -154,3 +154,5 @@ backend/dist/
 backend/render-package/
 
 .cursor/
+
+scripts/
