@@ -6,7 +6,12 @@ import {
   DeleteCommand,
   QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { S3Client, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  DeleteObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
+} from "@aws-sdk/client-s3";
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
@@ -81,7 +86,9 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
     // a. Delete Projects
     if (projects.length > 0) {
-      console.log(`Deleting ${projects.length} projects associated with asset ${assetId}`);
+      console.log(
+        `Deleting ${projects.length} projects associated with asset ${assetId}`
+      );
       await Promise.all(
         projects.map((project) =>
           docClient.send(
@@ -94,52 +101,144 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       );
     }
 
-    // b. Delete from 12Labs
+    // b. Delete from 12Labs (including chunked videos)
     const indexId = asset.twelveLabsIndexId;
-    const videoId = asset.twelveLabsVideoId;
 
-    if (indexId && videoId) {
+    if (indexId) {
       try {
-        console.log(`Deleting video ${videoId} from 12Labs index ${indexId}`);
-        // Get API Key
         const secretVal = await secretsClient.send(
           new GetSecretValueCommand({ SecretId: SECRET_ARN })
         );
         const apiKey = secretVal.SecretString;
-        
+
         if (apiKey) {
-            const client = new TwelveLabs({ apiKey });
-            // Using the delete method from the SDK
-            await client.indexes.videos.delete(indexId, videoId);
-            console.log("Successfully deleted from 12Labs");
+          const client = new TwelveLabs({ apiKey });
+
+          // Collect all videoIds to delete (main video + chunks)
+          const videoIdsToDelete: string[] = [];
+
+          if (asset.twelveLabsVideoId) {
+            videoIdsToDelete.push(asset.twelveLabsVideoId);
+          }
+
+          // Add chunk videoIds if this is a chunked video
+          if (asset.chunks && Array.isArray(asset.chunks)) {
+            for (const chunk of asset.chunks) {
+              if (chunk.videoId) {
+                videoIdsToDelete.push(chunk.videoId);
+              }
+            }
+          }
+
+          // Delete all videos from 12Labs
+          for (const videoId of videoIdsToDelete) {
+            try {
+              console.log(
+                `Deleting video ${videoId} from 12Labs index ${indexId}`
+              );
+              await client.indexes.videos.delete(indexId, videoId);
+            } catch (err) {
+              console.error(
+                `Error deleting video ${videoId} from 12Labs:`,
+                err
+              );
+            }
+          }
+          console.log(
+            `Deleted ${videoIdsToDelete.length} video(s) from 12Labs`
+          );
         } else {
-            console.warn("Could not retrieve 12Labs API key, skipping 12Labs deletion");
+          console.warn(
+            "Could not retrieve 12Labs API key, skipping 12Labs deletion"
+          );
         }
       } catch (err) {
         console.error("Error deleting from 12Labs:", err);
-        // Continue with other deletions even if 12Labs fails
       }
-    } else {
-        console.log("Skipping 12Labs deletion: indexId or videoId missing");
     }
 
-    // c. Delete from S3
-    const s3Url = asset.s3VideoUrl; // e.g., s3://bucket/key
+    // c. Delete from S3 (video, transcription, and chunks)
+    const s3Url = asset.s3VideoUrl;
     if (s3Url && s3Url.startsWith("s3://")) {
+      const parts = s3Url.replace("s3://", "").split("/");
+      const bucket = parts[0];
+      const videoKey = parts.slice(1).join("/");
+
+      // Delete main video file
       try {
-        const parts = s3Url.replace("s3://", "").split("/");
-        const bucket = parts[0];
-        const key = parts.slice(1).join("/");
-        
-        console.log(`Deleting object from S3: bucket=${bucket}, key=${key}`);
+        console.log(`Deleting video from S3: ${videoKey}`);
         await s3Client.send(
-          new DeleteObjectCommand({
-            Bucket: bucket,
-            Key: key,
-          })
+          new DeleteObjectCommand({ Bucket: bucket, Key: videoKey })
         );
       } catch (err) {
-        console.error("Error deleting from S3:", err);
+        console.error("Error deleting video from S3:", err);
+      }
+
+      // Delete transcription file
+      if (
+        asset.transcriptionUrl &&
+        asset.transcriptionUrl.startsWith("s3://")
+      ) {
+        try {
+          const transParts = asset.transcriptionUrl
+            .replace("s3://", "")
+            .split("/");
+          const transKey = transParts.slice(1).join("/");
+          console.log(`Deleting transcription from S3: ${transKey}`);
+          await s3Client.send(
+            new DeleteObjectCommand({ Bucket: bucket, Key: transKey })
+          );
+        } catch (err) {
+          console.error("Error deleting transcription from S3:", err);
+        }
+      }
+
+      // Delete video chunks folder if this is a chunked video
+      if (asset.isChunked) {
+        try {
+          const chunkPrefix = `chunks/${assetId}/`;
+          console.log(`Deleting chunks from S3: ${chunkPrefix}`);
+
+          const listResult = await s3Client.send(
+            new ListObjectsV2Command({ Bucket: bucket, Prefix: chunkPrefix })
+          );
+
+          if (listResult.Contents && listResult.Contents.length > 0) {
+            await s3Client.send(
+              new DeleteObjectsCommand({
+                Bucket: bucket,
+                Delete: {
+                  Objects: listResult.Contents.map((obj) => ({ Key: obj.Key })),
+                },
+              })
+            );
+            console.log(`Deleted ${listResult.Contents.length} chunk files`);
+          }
+        } catch (err) {
+          console.error("Error deleting chunks from S3:", err);
+        }
+      }
+
+      // Delete StoryIQ cache folder
+      try {
+        const cachePrefix = `storyiq-cache/${assetId}/`;
+        const cacheResult = await s3Client.send(
+          new ListObjectsV2Command({ Bucket: bucket, Prefix: cachePrefix })
+        );
+
+        if (cacheResult.Contents && cacheResult.Contents.length > 0) {
+          await s3Client.send(
+            new DeleteObjectsCommand({
+              Bucket: bucket,
+              Delete: {
+                Objects: cacheResult.Contents.map((obj) => ({ Key: obj.Key })),
+              },
+            })
+          );
+          console.log(`Deleted ${cacheResult.Contents.length} cache files`);
+        }
+      } catch (err) {
+        console.error("Error deleting StoryIQ cache from S3:", err);
       }
     }
 
@@ -171,4 +270,3 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     };
   }
 };
-

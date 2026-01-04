@@ -35,9 +35,11 @@ export interface SplitVideoEvent {
 export interface ChunkInfo {
   chunkIndex: number;
   s3Key: string;
-  startOffset: number; // Start time in the original video (seconds)
+  startOffset: number; // Intended start time in the original video (seconds)
   endOffset: number; // End time in the original video (seconds)
-  duration: number; // Actual chunk duration (seconds)
+  duration: number; // Expected chunk duration (seconds)
+  actualDuration?: number; // Actual duration after FFmpeg extraction (for precise timing)
+  actualStartOffset?: number; // Calculated from endOffset - actualDuration (for transcription alignment)
 }
 
 export interface SplitVideoResult {
@@ -92,51 +94,9 @@ async function getVideoDuration(inputPath: string): Promise<number> {
 }
 
 /**
- * Validate that a video file has proper codec parameters using ffprobe
- * Returns true if valid, false if pixel format is missing/unspecified
- */
-async function validateVideoFile(filePath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const ffprobe = spawn("ffprobe", [
-      "-v",
-      "error",
-      "-select_streams",
-      "v:0",
-      "-show_entries",
-      "stream=pix_fmt",
-      "-of",
-      "default=noprint_wrappers=1:nokey=1",
-      filePath,
-    ]);
-
-    let stdout = "";
-    ffprobe.stdout.on("data", (data) => {
-      stdout += data.toString();
-    });
-
-    ffprobe.on("close", (code) => {
-      const pixFmt = stdout.trim();
-      // Valid if we got a pixel format and it's not empty/unknown
-      const isValid =
-        code === 0 &&
-        pixFmt.length > 0 &&
-        pixFmt !== "none" &&
-        pixFmt !== "unknown";
-      console.log(`Video validation: pix_fmt=${pixFmt}, valid=${isValid}`);
-      resolve(isValid);
-    });
-
-    ffprobe.on("error", () => {
-      resolve(false);
-    });
-  });
-}
-
-/**
- * Split a video into a chunk using FFmpeg
- * - First chunk (startTime=0): Re-encode with ultrafast to fix missing codec params
- * - Other chunks: Stream copy (fast)
- * This handles videos with corrupted headers at the start (common with VLC, old formats)
+ * Split a video into a chunk using FFmpeg with stream copy.
+ * Uses bitstream filter to inject SPS/PPS at keyframes, fixing codec parameter issues
+ * without expensive re-encoding.
  */
 async function extractChunk(
   inputPath: string,
@@ -147,10 +107,6 @@ async function extractChunk(
   return new Promise((resolve, reject) => {
     const args: string[] = [];
 
-    // First chunk often has missing codec parameters due to edit lists or bad headers
-    // Re-encode only chunk 0; stream copy for the rest (fast)
-    const isFirstChunk = startTime === 0;
-
     // Input options
     // -ignore_editlist fixes "Missing key frame" issues from VLC-encoded videos
     args.push("-ignore_editlist", "1");
@@ -158,25 +114,10 @@ async function extractChunk(
     args.push("-i", inputPath);
     args.push("-t", duration.toString());
 
-    if (isFirstChunk) {
-      // Re-encode first chunk to ensure proper codec parameters
-      // ultrafast is ~10-15x realtime on Lambda (55min chunk ≈ 4-5min to encode)
-      args.push("-c:v", "libx264");
-      args.push("-preset", "ultrafast");
-      args.push("-crf", "18"); // High quality
-      args.push("-pix_fmt", "yuv420p"); // Explicit pixel format
-      args.push("-profile:v", "high");
-      args.push("-level", "4.0");
-      console.log(
-        "First chunk: re-encoding video to fix potential codec issues"
-      );
-    } else {
-      // Stream copy for subsequent chunks (instant)
-      args.push("-c:v", "copy");
-      console.log("Subsequent chunk: using stream copy (fast)");
-    }
+    // Stream copy video (instant, no re-encoding)
+    args.push("-c:v", "copy");
 
-    // Audio: always re-encode to AAC for compatibility (source may have MP2/MP3)
+    // Audio: re-encode to AAC for compatibility (source may have MP2/MP3)
     args.push("-c:a", "aac");
     args.push("-b:a", "128k");
     args.push("-ar", "44100");
@@ -342,10 +283,47 @@ export const handler: Handler<SplitVideoEvent, SplitVideoResult> = async (
   try {
     // Check file size before downloading (Lambda has 10GB /tmp limit)
     const MAX_FILE_SIZE = 8 * 1024 * 1024 * 1024; // 8GB
-    const headResponse = await s3Client.send(
-      new HeadObjectCommand({ Bucket: bucket, Key: s3Key })
-    );
-    const fileSize = headResponse.ContentLength || 0;
+    let fileSize: number;
+
+    try {
+      const headResponse = await s3Client.send(
+        new HeadObjectCommand({ Bucket: bucket, Key: s3Key })
+      );
+      fileSize = headResponse.ContentLength || 0;
+    } catch (headErr: any) {
+      // Handle missing file gracefully - don't retry
+      if (
+        headErr.name === "NotFound" ||
+        headErr.$metadata?.httpStatusCode === 404
+      ) {
+        console.error(`Source file not found: s3://${bucket}/${s3Key}`);
+        await docClient.send(
+          new UpdateCommand({
+            TableName: TABLE_NAME,
+            Key: { assetId },
+            UpdateExpression:
+              "SET #status = :status, #error = :error, updatedAt = :updatedAt",
+            ExpressionAttributeNames: {
+              "#status": "status",
+              "#error": "error",
+            },
+            ExpressionAttributeValues: {
+              ":status": "SPLIT_FAILED",
+              ":error":
+                "Source video file not found - it may have been deleted",
+              ":updatedAt": new Date().toISOString(),
+            },
+          })
+        );
+        // Return instead of throw to prevent Lambda retry
+        return {
+          assetId,
+          chunks: [],
+          totalChunks: 0,
+        };
+      }
+      throw headErr;
+    }
 
     if (fileSize > MAX_FILE_SIZE) {
       throw new Error(
@@ -427,12 +405,64 @@ export const handler: Handler<SplitVideoEvent, SplitVideoResult> = async (
         chunk.duration
       );
 
+      // Probe actual duration to calculate precise start offset
+      // FFmpeg seeks to nearest keyframe, so actual start may differ from intended
+      try {
+        const actualDuration = await getVideoDuration(chunkLocalPath);
+        chunk.actualDuration = actualDuration;
+
+        // Chunk 0 always starts at 0 (can't go before beginning of video)
+        // Other chunks: calculate from endOffset - actualDuration
+        if (chunk.chunkIndex === 0) {
+          chunk.actualStartOffset = 0;
+        } else {
+          chunk.actualStartOffset = chunk.endOffset - actualDuration;
+        }
+
+        console.log(
+          `Chunk ${chunk.chunkIndex}: intended start=${
+            chunk.startOffset
+          }s, actual start=${chunk.actualStartOffset.toFixed(2)}s (diff=${(
+            chunk.startOffset - chunk.actualStartOffset
+          ).toFixed(2)}s)`
+        );
+      } catch (err) {
+        console.warn(
+          `Could not probe chunk ${chunk.chunkIndex} duration:`,
+          err
+        );
+        // Fall back to intended offset
+        chunk.actualStartOffset = chunk.startOffset;
+        chunk.actualDuration = chunk.duration;
+      }
+
       // Upload chunk to S3 - this triggers startIndexing via S3 notification
       await uploadToS3(chunkLocalPath, BUCKET_NAME, chunk.s3Key);
 
       // Clean up local chunk file to save space
       await fs.unlink(chunkLocalPath);
     }
+
+    // Update DynamoDB with actual timing info before marking complete
+    await docClient.send(
+      new UpdateCommand({
+        TableName: TABLE_NAME,
+        Key: { assetId },
+        UpdateExpression: "SET chunks = :chunks, updatedAt = :updatedAt",
+        ExpressionAttributeValues: {
+          ":chunks": chunks.map((c) => ({
+            chunkIndex: c.chunkIndex,
+            s3Key: c.s3Key,
+            startOffset: c.startOffset,
+            endOffset: c.endOffset,
+            duration: c.duration,
+            actualDuration: c.actualDuration,
+            actualStartOffset: c.actualStartOffset,
+          })),
+          ":updatedAt": new Date().toISOString(),
+        },
+      })
+    );
 
     // Update status to indicate splitting is complete
     await docClient.send(
