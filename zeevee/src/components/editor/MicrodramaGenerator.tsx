@@ -110,16 +110,16 @@ const PLATFORMS: Option[] = [
 
 const PURPOSES: Option[] = [
   {
+    value: "highlights",
+    label: "Microdramas",
+    icon: Scissors,
+    tooltip: "Best moments",
+  },
+  {
     value: "full_video",
     label: "Full Video",
     icon: LayoutGrid,
     tooltip: "Split into microdrama chapters",
-  },
-  {
-    value: "highlights",
-    label: "Highlights",
-    icon: Scissors,
-    tooltip: "Best moments",
   },
   {
     value: "trailer",
@@ -162,7 +162,7 @@ const PURPOSES: Option[] = [
 // Duration presets per purpose
 const DURATION_PRESETS: Record<string, [string, string]> = {
   full_video: ["2 min", "3 min"],
-  highlights: ["30s", "60s"],
+  highlights: ["60s", "120s"],
   trailer: ["90s", "2 min"],
   tunein: ["15s", "30s"],
   bridge: ["30s", "60s"],
@@ -201,9 +201,7 @@ export function MicrodramaGenerator({
     duration: initialSelections?.duration || "",
     userPrompt: initialSelections?.userPrompt || "",
   }));
-  const [viewMode, setViewMode] = useState<"chat" | "compact">(() => 
-    initialSelections?.type ? "compact" : "chat"
-  );
+  const [viewMode, setViewMode] = useState<"chat" | "compact">("chat");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const needsDuration = !!selections.purpose;
@@ -492,14 +490,16 @@ function DurationPicker({
   selected,
   onSelect,
 }: {
-  presets: [string, string];
+  presets?: [string, string];
   selected: string;
   onSelect: (value: string) => void;
 }) {
   const [customValue, setCustomValue] = useState("");
   const [editing, setEditing] = useState(false);
 
-  const options = ["Auto", presets[0], presets[1]];
+  // Default presets if none provided
+  const safePresets = presets ?? ["30s", "60s"];
+  const options = ["Auto", safePresets[0], safePresets[1]];
   const isCustom = selected && !options.includes(selected);
 
   const submitCustom = () => {
@@ -648,8 +648,8 @@ function UserPromptSection({
 
   if (viewMode === "chat") {
     return (
-      <div className="flex justify-end">
-        <div className="w-[85%] space-y-1">
+      <div className="w-full">
+        <div className="w-full space-y-1">
           <textarea
             value={value}
             onChange={(e) => onChange(e.target.value.slice(0, maxLength))}
