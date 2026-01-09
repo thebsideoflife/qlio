@@ -111,7 +111,7 @@ const PLATFORMS: Option[] = [
 const PURPOSES: Option[] = [
   {
     value: "highlights",
-    label: "Microdramas",
+    label: "Microdrama",
     icon: Scissors,
     tooltip: "Best moments",
   },
