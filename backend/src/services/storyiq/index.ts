@@ -17,7 +17,7 @@
  * - Small, focused operations
  */
 
-import { TwelveLabsWrapper } from "../twelvelabs";
+import { TwelveLabsWrapper, type SceneBreak } from "../twelvelabs";
 import { createStoryIQTools } from "./tools";
 import { synthesizeVideoUnderstanding } from "./synthesize";
 import { getPlanningPrompt } from "./prompts";
@@ -120,9 +120,35 @@ export async function generateWithStoryIQ(
     });
   }
 
+  // Phase 2b: Detect scenes for full_video/compact_video/highlights (provides cut points for Claude)
+  let sceneBreaks: SceneBreak[] = [];
+  const needsSceneDetection =
+    goals.purpose === Purpose.FULL_VIDEO ||
+    goals.purpose === Purpose.COMPACT_VIDEO ||
+    goals.purpose === Purpose.HIGHLIGHTS;
+
+  if (needsSceneDetection) {
+    console.log("[StoryIQ] Detecting scenes...");
+    try {
+      const sceneResult = await twelvelabs.detectScenes(assetId);
+      sceneBreaks = sceneResult.brief;
+      console.log(`[StoryIQ] Found ${sceneBreaks.length} scene breaks`);
+    } catch (err) {
+      console.warn(
+        "[StoryIQ] Scene detection failed, proceeding without:",
+        err
+      );
+      // Continue without scene breaks - Claude can still make decisions
+    }
+  }
+
   // Phase 3: Generate initial segment proposals
   console.log("[StoryIQ] Phase 3: Generating segment proposals...");
-  const proposedSegments = await generateSegmentProposals(understanding, goals);
+  const proposedSegments = await generateSegmentProposals(
+    understanding,
+    goals,
+    sceneBreaks
+  );
 
   // Validate structure
   const { valid: validatedSegments, errors } = validateSegmentStructure(
@@ -177,19 +203,26 @@ export async function generateWithStoryIQ(
 
 async function generateSegmentProposals(
   understanding: VideoUnderstanding,
-  goals: StoryIQGoals
+  goals: StoryIQGoals,
+  sceneBreaks: SceneBreak[] = []
 ): Promise<ProposedSegment[]> {
-  // Get the appropriate prompt for this purpose (with optional user instructions)
+  // Get the appropriate prompt for this purpose
   const prompt = getPlanningPrompt(
     goals.purpose,
     understanding,
     goals.targetDuration,
-    goals.userInstructions
+    goals.userInstructions,
+    sceneBreaks,
+    goals.targetPercent
   );
 
   // Determine max tokens based on purpose
-  // Full video mode may need many segments
-  const maxTokens = goals.purpose === Purpose.FULL_VIDEO ? 4000 : 2000;
+  // Full video and compact video modes may need many segments
+  const maxTokens =
+    goals.purpose === Purpose.FULL_VIDEO ||
+    goals.purpose === Purpose.COMPACT_VIDEO
+      ? 4000
+      : 2000;
 
   try {
     const content = await callClaude({
@@ -281,8 +314,9 @@ export function parseDurationString(
 export interface FrontendMetadata {
   type?: string; // "tv" | "movie" | "ugc"
   platform?: string; // "mobile" | "tiktok" | etc.
-  purpose?: string; // "full_video" | "highlights" | etc.
-  duration?: string; // "3 min" | "30s" | "Auto" - target duration selection
+  purpose?: string; // "full_video" | "compact_video" | "highlights" | etc.
+  duration?: string; // "3 min" | "30s" | "Auto" - for non-compact purposes
+  targetPercent?: number | string; // For compact_video: 25, 50, 75, or custom
   videoDuration?: number; // Actual video duration in seconds (for reference)
   userPrompt?: string; // Custom instructions from user
 }
@@ -294,11 +328,35 @@ export function mapMetadataToGoals(metadata: FrontendMetadata): StoryIQGoals {
   const userInstructions =
     metadata.userPrompt?.slice(0, MAX_USER_INSTRUCTIONS_LENGTH) || undefined;
 
+  // Parse target percent for compact video
+  let targetPercent: number | undefined;
+  if (metadata.targetPercent !== undefined) {
+    const parsed =
+      typeof metadata.targetPercent === "number"
+        ? metadata.targetPercent
+        : parseInt(String(metadata.targetPercent), 10);
+    if (!isNaN(parsed) && parsed > 0 && parsed <= 100) {
+      targetPercent = parsed;
+    }
+  }
+
+  // Calculate target duration for compact video based on percentage
+  let targetDuration = parseDurationString(metadata.duration);
+  if (
+    (metadata.purpose === "compact_video" ||
+      metadata.purpose === "highlights") &&
+    targetPercent &&
+    metadata.videoDuration
+  ) {
+    targetDuration = Math.round((metadata.videoDuration * targetPercent) / 100);
+  }
+
   return {
-    purpose: (metadata.purpose as Purpose) || "highlights",
+    purpose: (metadata.purpose as Purpose) || Purpose.COMPACT_VIDEO,
     contentType: (metadata.type as "tv" | "movie" | "ugc") || "tv",
     platform: (metadata.platform as any) || "mobile",
-    targetDuration: parseDurationString(metadata.duration),
+    targetDuration,
+    targetPercent,
     userInstructions,
   };
 }

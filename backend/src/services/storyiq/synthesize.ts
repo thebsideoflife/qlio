@@ -69,61 +69,43 @@ export interface SynthesizeOptions {
  * 1. Queries all analysis tools in parallel where possible
  * 2. Handles partial failures gracefully
  * 3. Synthesizes high-level understanding via LLM
+ *
+ * For compact_video/full_video, we use a simplified flow that skips
+ * the old chapters/highlights APIs (which timeout) since we now have
+ * granular scene detection via the analyze API.
  */
 export async function synthesizeVideoUnderstanding(
   options: SynthesizeOptions
 ): Promise<VideoUnderstanding> {
   const { assetId, duration, title, tools } = options;
 
-  console.log("[StoryIQ Synthesize] Starting comprehensive analysis...");
+  console.log("[StoryIQ Synthesize] Starting analysis...");
   const startTime = Date.now();
 
-  // Query all tools - some can run in parallel
-  const [scenes, transcript, characters, emotions, visuals] = await Promise.all(
-    [
-      safeQuery(() => tools.read_scene_breakdown(), [] as SceneBreakdown[]),
-      safeQuery(() => tools.read_full_transcript(), [] as TranscriptSegment[]),
-      safeQuery(() => tools.read_character_analysis(), [] as CharacterInfo[]),
-      safeQuery(() => tools.read_emotional_beats(), [] as EmotionalBeat[]),
-      safeQuery(() => tools.read_visual_style_notes(), [] as VisualNote[]),
-    ]
+  // Only fetch transcript - scene data comes from new detectScenes() in index.ts
+  // The old chapters/highlights APIs are slow and redundant now
+  const transcript = await safeQuery(
+    () => tools.read_full_transcript(),
+    [] as TranscriptSegment[]
   );
 
   console.log(
-    `[StoryIQ Synthesize] Raw analysis complete in ${Date.now() - startTime}ms`
+    `[StoryIQ Synthesize] Got transcript in ${Date.now() - startTime}ms`
   );
-  console.log(
-    `  - Scenes: ${scenes.length}, Characters: ${characters.length}, Emotions: ${emotions.length}`
-  );
+  console.log(`  - Transcript segments: ${transcript.length}`);
 
-  // Validate scene timestamps - filter out any that exceed video duration
-  // Allow 20% tolerance for minor timing discrepancies
-  const maxAllowedTime = duration * 1.2;
-  const validScenes = scenes.filter((scene) => {
-    if (scene.endTime > maxAllowedTime) {
-      console.warn(
-        `[StoryIQ Synthesize] Discarding scene "${scene.description?.slice(0, 50)}..." ` +
-          `(endTime ${scene.endTime}s > duration ${duration}s)`
-      );
-      return false;
-    }
-    return true;
-  });
+  // Empty arrays for deprecated fields
+  const scenes: SceneBreakdown[] = [];
+  const characters: CharacterInfo[] = [];
+  const emotions: EmotionalBeat[] = [];
+  const visuals: VisualNote[] = [];
 
-  if (validScenes.length < scenes.length) {
-    console.warn(
-      `[StoryIQ Synthesize] Filtered ${scenes.length - validScenes.length} scenes with invalid timestamps`
-    );
-  }
-
-  // Similarly validate emotional arc timestamps
-  const validEmotions = emotions.filter((e) => e.endTime <= maxAllowedTime);
-
-  // Synthesize high-level understanding (using validated data)
+  // Synthesize high-level understanding from transcript
+  // (Scene data now comes from detectScenes() which runs separately)
   const synthesis = await synthesizeHighLevel(
-    validScenes,
+    scenes,
     characters,
-    validEmotions,
+    emotions,
     visuals,
     transcript
   );
@@ -139,15 +121,15 @@ export async function synthesizeVideoUnderstanding(
     tone: synthesis.tone || "neutral",
     genre: synthesis.genre,
 
-    // Detailed (from tools) - use validated scenes/emotions
-    scenes: validScenes,
+    // Detailed data - scenes now come from detectScenes() separately
+    scenes,
     characters,
-    emotionalArc: validEmotions,
+    emotionalArc: emotions,
     visualNotes: visuals,
     transcript,
 
     // Quick lookups
-    peakMoments: synthesis.peakMoments || extractPeakMoments(validEmotions),
+    peakMoments: synthesis.peakMoments || [],
   };
 
   console.log(`[StoryIQ Synthesize] Complete in ${Date.now() - startTime}ms`);

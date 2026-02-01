@@ -18,6 +18,8 @@ import {
   TwelveLabsWrapper,
   type ChapterSegment,
   type HighlightSegment,
+  type SceneDetectionResult,
+  type SceneDetail,
 } from "../twelvelabs";
 import {
   type SceneBreakdown,
@@ -36,7 +38,17 @@ import {
 const s3Client = new S3Client({});
 
 // S3 bucket for caching (same as assets bucket)
-const CACHE_BUCKET = process.env.ASSETS_BUCKET || process.env.S3_BUCKET;
+const CACHE_BUCKET =
+  process.env.BUCKET_NAME || process.env.ASSETS_BUCKET || process.env.S3_BUCKET;
+
+/**
+ * Format seconds as "M:SS" for display
+ */
+function formatTimeForDisplay(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
 
 // NOTE: analyze API prompts removed - they were causing timeouts on long videos.
 // Now we only use 12Labs summarize API (chapters/highlights) which returns structured data directly.
@@ -359,6 +371,9 @@ export function createStoryIQTools(
   // In-memory cache for transcript (also cached in S3)
   let cachedTranscript: TranscriptSegment[] | null = null;
 
+  // In-memory cache for scene detection (also cached in S3 by twelvelabs)
+  let cachedSceneDetection: SceneDetectionResult | null = null;
+
   return {
     /**
      * Get detailed scene-by-scene breakdown of the video.
@@ -489,12 +504,15 @@ export function createStoryIQTools(
       const cached = await getFromCache<EmotionalBeat[]>(assetId, "emotions");
       if (cached) return cached;
 
-      console.log("[StoryIQ Tools] Reading emotional beats via highlights API...");
+      console.log(
+        "[StoryIQ Tools] Reading emotional beats via highlights API..."
+      );
 
       try {
         const result = await twelvelabs.summarize(assetId, {
           type: "highlight",
-          prompt: "Identify the most emotionally impactful and dramatic moments.",
+          prompt:
+            "Identify the most emotionally impactful and dramatic moments.",
         });
 
         const emotionalBeats: EmotionalBeat[] = (result?.highlights || []).map(
@@ -503,13 +521,17 @@ export function createStoryIQTools(
             endTime: h.end,
             intensity: "peak" as const,
             emotion: detectEmotion(h.highlight, h.highlightSummary || ""),
-            description: h.highlight + (h.highlightSummary ? `: ${h.highlightSummary}` : ""),
+            description:
+              h.highlight +
+              (h.highlightSummary ? `: ${h.highlightSummary}` : ""),
           })
         );
 
         emotionalBeats.sort((a, b) => a.startTime - b.startTime);
-        console.log(`[StoryIQ Tools] Found ${emotionalBeats.length} emotional beats`);
-        
+        console.log(
+          `[StoryIQ Tools] Found ${emotionalBeats.length} emotional beats`
+        );
+
         await saveToCache(assetId, "emotions", emotionalBeats);
         return emotionalBeats;
       } catch (err) {
@@ -534,6 +556,61 @@ export function createStoryIQTools(
       // Don't call analyze API - it times out on long videos
       console.log("[StoryIQ Tools] Skipping visual style analysis (disabled)");
       return [];
+    },
+
+    /**
+     * Get detailed scene information for a specific time range.
+     * Claude can call this when it needs more context to make cut decisions.
+     *
+     * Returns formatted text with location, characters, description, and visual notes
+     * for all scenes within the specified time range.
+     */
+    async get_scene_details(
+      startTime: number,
+      endTime: number
+    ): Promise<string> {
+      console.log(
+        `[StoryIQ Tools] Getting scene details for ${startTime}s - ${endTime}s`
+      );
+
+      // Ensure scene detection has run (lazy load)
+      if (!cachedSceneDetection) {
+        try {
+          cachedSceneDetection = await twelvelabs.detectScenes(assetId);
+        } catch (err) {
+          console.warn("[StoryIQ Tools] Scene detection failed:", err);
+          return "Scene details not available.";
+        }
+      }
+
+      // Filter scenes to the requested time range
+      const scenes = cachedSceneDetection.detailed.filter(
+        (s) => s.time >= startTime && s.time <= endTime
+      );
+
+      if (scenes.length === 0) {
+        return `No scenes found between ${formatTimeForDisplay(
+          startTime
+        )} and ${formatTimeForDisplay(endTime)}.`;
+      }
+
+      // Format scenes as readable text
+      const formatted = scenes.map((s) => {
+        const lines = [
+          `SCENE at ${formatTimeForDisplay(s.time)}:`,
+          `  Location: ${s.location || "Unknown"}`,
+          `  Characters: ${
+            s.characters.length > 0 ? s.characters.join(", ") : "None visible"
+          }`,
+          `  Description: ${s.description}`,
+        ];
+        if (s.visualNotes) {
+          lines.push(`  Visual: ${s.visualNotes}`);
+        }
+        return lines.join("\n");
+      });
+
+      return formatted.join("\n\n");
     },
 
     /**

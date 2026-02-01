@@ -15,7 +15,14 @@
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  S3Client,
+  GetObjectCommand,
+  PutObjectCommand,
+} from "@aws-sdk/client-s3";
 import { TwelveLabs, TwelvelabsApi } from "twelvelabs-js";
+
+const s3Client = new S3Client({});
 
 // Re-export SDK types we use
 type NonStreamAnalyzeResponse = TwelvelabsApi.NonStreamAnalyzeResponse;
@@ -96,9 +103,11 @@ async function withRetry<T>(
 export interface ChunkInfo {
   chunkIndex: number;
   s3Key: string;
-  startOffset: number; // Start time in original video (seconds)
+  startOffset: number; // Intended start time in original video (seconds)
   endOffset: number; // End time in original video (seconds)
-  duration: number;
+  duration: number; // Intended duration
+  actualStartOffset?: number; // Precise start (accounts for FFmpeg keyframe seeking)
+  actualDuration?: number; // Precise duration after extraction
   taskId?: string;
   videoId?: string; // 12labs video ID for this chunk
 }
@@ -183,6 +192,57 @@ export interface VideoMetadata {
   height?: number;
   fps?: number;
 }
+
+// ============================================================================
+// Scene Detection Types
+// ============================================================================
+
+/**
+ * Brief scene break info - timestamp + one sentence
+ * This is what Claude sees by default
+ */
+export interface SceneBreak {
+  time: number; // seconds
+  description: string; // one sentence
+}
+
+/**
+ * Full scene detail - all available info
+ * Available via get_scene_details() tool
+ */
+export interface SceneDetail {
+  time: number; // seconds
+  endTime?: number; // seconds (estimated)
+  location: string;
+  characters: string[];
+  description: string;
+  visualNotes?: string;
+}
+
+/**
+ * Combined scene detection result
+ */
+export interface SceneDetectionResult {
+  assetId: string;
+  brief: SceneBreak[]; // For prompt context
+  detailed: SceneDetail[]; // For tool queries
+  detectedAt: string;
+  // Error tracking for cache invalidation
+  meta?: {
+    windowsTotal: number;
+    windowsSucceeded: number;
+    windowsErrored: number; // Explicit error count (API failures, rate limits, config issues)
+    hitRateLimit: boolean;
+    isComplete: boolean; // true if windowsErrored === 0
+  };
+}
+
+// Scene detection constants
+const SCENE_CHUNK_DURATION_SEC = 600; // 10 minutes (was 5 - reduces API calls)
+const SCENE_CHUNK_OVERLAP_SEC = 30; // 30 second overlap
+const SCENE_PARALLEL_CHUNKS = 2; // Max concurrent 12Labs calls (was 4 - reduces rate limit pressure)
+const SCENE_CACHE_BUCKET =
+  process.env.BUCKET_NAME || process.env.ASSETS_BUCKET || process.env.S3_BUCKET;
 
 /**
  * Wrapper class for 12labs operations that handles chunked videos transparently
@@ -924,6 +984,481 @@ export class TwelveLabsWrapper {
       .filter((c) => c.videoId)
       .sort((a, b) => a.chunkIndex - b.chunkIndex)
       .map((c) => c.videoId!);
+  }
+
+  // ==========================================================================
+  // Scene Detection
+  // ==========================================================================
+
+  /**
+   * Detect all scene changes in a video.
+   * Uses 5-minute parallel chunks to avoid timeouts.
+   * Results are cached in S3.
+   *
+   * Returns both brief (for prompts) and detailed (for tool) scene data.
+   */
+  async detectScenes(assetId: string): Promise<SceneDetectionResult> {
+    // 1. Check S3 cache first
+    const cached = await this.getSceneCacheFromS3(assetId);
+    if (cached) {
+      console.log(`[12Labs] Scene cache hit for ${assetId}`);
+      return cached;
+    }
+
+    console.log(
+      `[12Labs] Scene cache miss for ${assetId}, detecting scenes...`
+    );
+
+    // 2. Get asset info and video IDs
+    const asset = await this.getAssetInfo(assetId);
+    const videoDuration = asset.duration || 0;
+
+    if (videoDuration <= 0) {
+      throw new Error(
+        `Cannot detect scenes: video duration unknown for ${assetId}`
+      );
+    }
+
+    // 3. Determine if video is chunked
+    const isChunked =
+      asset.isChunked && asset.chunks && asset.chunks.length > 1;
+
+    // 4. Build time windows - use chunk-aware windows for chunked videos
+    // to prevent windows from spanning chunk boundaries
+    const windows = isChunked
+      ? this.buildChunkAwareWindows(asset.chunks!)
+      : this.buildSceneDetectionWindows(videoDuration);
+    console.log(
+      `[12Labs] Detecting scenes in ${windows.length} windows ` +
+        `(${SCENE_CHUNK_DURATION_SEC}s each${isChunked ? ", chunk-aware" : ""})`
+    );
+
+    // 5. Get video ID(s) for the asset
+    const videoIds = await this.getVideoIds(assetId);
+    if (videoIds.length === 0) {
+      throw new Error(`No video IDs available for asset ${assetId}`);
+    }
+
+    // 6. Run detection in parallel batches
+    const allScenes: SceneDetail[] = [];
+    let hitRateLimit = false;
+    let windowsSucceeded = 0;
+    let windowsErrored = 0;
+
+    for (let i = 0; i < windows.length; i += SCENE_PARALLEL_CHUNKS) {
+      // Stop early if we hit rate limit
+      if (hitRateLimit) {
+        console.warn(
+          `[12Labs] Stopping scene detection due to rate limit, processed ${i}/${windows.length} windows`
+        );
+        break;
+      }
+
+      const batch = windows.slice(i, i + SCENE_PARALLEL_CHUNKS);
+
+      const batchPromises = batch.map(async (window) => {
+        // Find the right videoId for this time window
+        let videoId: string;
+        let adjustedStart = window.start;
+        let adjustedEnd = window.end;
+        // Offset to convert video timestamps to original timeline
+        // - Non-chunked: 0 (video time = original time)
+        // - Chunked: chunk.startOffset (chunk video time + offset = original time)
+        let timelineOffset = 0;
+
+        if (isChunked && asset.chunks) {
+          // Find chunk that contains this window's start
+          const chunk = asset.chunks.find(
+            (c) => window.start >= c.startOffset && window.start < c.endOffset
+          );
+          if (!chunk?.videoId) {
+            console.warn(
+              `[12Labs] No chunk found for window ${window.start}-${window.end}s`
+            );
+            return { scenes: [], rateLimited: false, error: true };
+          }
+          videoId = chunk.videoId;
+          // Use actualStartOffset for precise timing (accounts for FFmpeg keyframe seeking)
+          // Fall back to startOffset if actualStartOffset not available
+          const chunkOffset = chunk.actualStartOffset ?? chunk.startOffset;
+          const chunkDuration = chunk.actualDuration ?? chunk.duration;
+          // Adjust times to be chunk-relative (for the API call)
+          // Clamp to valid range in case actual offset differs from intended
+          adjustedStart = Math.max(0, window.start - chunkOffset);
+          adjustedEnd = Math.min(window.end - chunkOffset, chunkDuration);
+          // Offset to convert chunk-video timestamps back to original timeline
+          timelineOffset = chunkOffset;
+        } else {
+          videoId = videoIds[0];
+          // Non-chunked: video timestamps ARE original timestamps
+          timelineOffset = 0;
+        }
+
+        try {
+          const scenes = await this.detectScenesInWindow(
+            videoId,
+            adjustedStart,
+            adjustedEnd,
+            timelineOffset
+          );
+          // Empty scenes is valid (no scene changes in window)
+          return { scenes, rateLimited: false, error: false };
+        } catch (err: any) {
+          // Check for rate limit error
+          if (
+            err?.statusCode === 429 ||
+            err?.message?.includes("429") ||
+            err?.message?.includes("rate limit")
+          ) {
+            console.error(
+              `[12Labs] Rate limit hit for window ${window.start}-${window.end}s`
+            );
+            return { scenes: [], rateLimited: true, error: true };
+          }
+          console.warn(
+            `[12Labs] Scene detection failed for window ${window.start}-${window.end}s:`,
+            err
+          );
+          return { scenes: [], rateLimited: false, error: true };
+        }
+      });
+
+      const batchResults = await Promise.all(batchPromises);
+      for (const result of batchResults) {
+        if (result.rateLimited) {
+          hitRateLimit = true;
+        }
+        // Track success and errors explicitly
+        if (result.error) {
+          windowsErrored++;
+        } else {
+          windowsSucceeded++;
+        }
+        allScenes.push(...result.scenes);
+      }
+    }
+
+    // 7. Merge and deduplicate scenes from overlapping windows
+    const mergedScenes = this.mergeOverlappingScenes(allScenes);
+
+    // Account for skipped windows (from early rate limit exit)
+    const windowsProcessed = windowsSucceeded + windowsErrored;
+    const windowsSkipped = windows.length - windowsProcessed;
+    const totalErrored = windowsErrored + windowsSkipped;
+    const isComplete = totalErrored === 0;
+
+    console.log(
+      `[12Labs] Detected ${mergedScenes.length} scenes total ` +
+        `(${windowsSucceeded}/${windows.length} windows succeeded` +
+        `${windowsErrored > 0 ? `, ${windowsErrored} errored` : ""}` +
+        `${windowsSkipped > 0 ? `, ${windowsSkipped} skipped` : ""}` +
+        `${hitRateLimit ? ", hit rate limit" : ""})`
+    );
+
+    // 8. Build result with both brief and detailed versions
+    const result: SceneDetectionResult = {
+      assetId,
+      brief: mergedScenes.map((s) => ({
+        time: s.time,
+        description: s.description,
+      })),
+      detailed: mergedScenes,
+      detectedAt: new Date().toISOString(),
+      meta: {
+        windowsTotal: windows.length,
+        windowsSucceeded,
+        windowsErrored: totalErrored, // Includes skipped windows
+        hitRateLimit,
+        isComplete,
+      },
+    };
+
+    // 9. Cache in S3 (only if complete)
+    await this.saveSceneCacheToS3(assetId, result);
+
+    return result;
+  }
+
+  /**
+   * Build time windows for scene detection
+   */
+  private buildSceneDetectionWindows(
+    duration: number
+  ): Array<{ start: number; end: number }> {
+    const windows: Array<{ start: number; end: number }> = [];
+
+    for (
+      let start = 0;
+      start < duration;
+      start += SCENE_CHUNK_DURATION_SEC - SCENE_CHUNK_OVERLAP_SEC
+    ) {
+      const end = Math.min(start + SCENE_CHUNK_DURATION_SEC, duration);
+      windows.push({ start, end });
+
+      // If this window reaches the end, stop
+      if (end >= duration) break;
+    }
+
+    return windows;
+  }
+
+  /**
+   * Build scene detection windows that respect chunk boundaries.
+   * This prevents windows from spanning multiple chunks, which would cause
+   * parts of the video to be skipped.
+   */
+  private buildChunkAwareWindows(
+    chunks: ChunkInfo[]
+  ): Array<{ start: number; end: number }> {
+    const windows: Array<{ start: number; end: number }> = [];
+
+    for (const chunk of chunks) {
+      // Build windows within this chunk
+      for (
+        let start = chunk.startOffset;
+        start < chunk.endOffset;
+        start += SCENE_CHUNK_DURATION_SEC - SCENE_CHUNK_OVERLAP_SEC
+      ) {
+        // Cap end at chunk boundary
+        const end = Math.min(start + SCENE_CHUNK_DURATION_SEC, chunk.endOffset);
+        windows.push({ start, end });
+
+        // If this window reaches the chunk end, move to next chunk
+        if (end >= chunk.endOffset) break;
+      }
+    }
+
+    return windows;
+  }
+
+  /**
+   * Detect scenes in a single time window using 12Labs analyze API
+   */
+  private async detectScenesInWindow(
+    videoId: string,
+    startTime: number,
+    endTime: number,
+    timelineOffset: number // Add this to results to get original timeline
+  ): Promise<SceneDetail[]> {
+    // Simple prompt - model just reports what it sees, we handle all timestamp math
+    const prompt = `Analyze the video from ${Math.round(
+      startTime
+    )}s to ${Math.round(endTime)}s.
+
+List all scene changes. A scene change is:
+- A hard cut (visual transition between shots)
+- A location change
+- A significant time jump
+
+For each scene, provide:
+- time: timestamp in seconds
+- endTime: when scene ends in seconds
+- location: where the scene takes place
+- characters: who appears
+- description: what happens (one sentence)
+- visualNotes: camera style, lighting, pacing`;
+
+    const schema = {
+      type: "object",
+      properties: {
+        scenes: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              time: { type: "number" },
+              endTime: { type: "number" },
+              location: { type: "string" },
+              characters: { type: "array", items: { type: "string" } },
+              description: { type: "string" },
+              visualNotes: { type: "string" },
+            },
+            required: ["time", "description"],
+          },
+        },
+      },
+      required: ["scenes"],
+    };
+
+    try {
+      const response = await withTimeout(
+        this.client.analyze({
+          videoId,
+          prompt,
+          responseFormat: {
+            type: "json_schema",
+            jsonSchema: schema,
+          },
+          temperature: 0.1, // Low temperature for consistent scene detection
+          maxTokens: 2000,
+        }),
+        TWELVE_LABS_TIMEOUT_MS,
+        `detectScenes(${videoId})`
+      );
+
+      const data = response.data;
+      if (!data) {
+        return [];
+      }
+
+      // Parse JSON response - handle various formats
+      let parsed: { scenes?: any[] };
+      try {
+        // Try direct JSON parse first
+        parsed = JSON.parse(data);
+      } catch {
+        // Try to extract JSON from markdown code blocks
+        const jsonMatch = data.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (jsonMatch) {
+          try {
+            parsed = JSON.parse(jsonMatch[1].trim());
+          } catch {
+            throw new Error(
+              `Failed to parse scene detection response as JSON (markdown extraction failed)`
+            );
+          }
+        } else {
+          // Last resort: try to find JSON object in response
+          const objMatch = data.match(/\{[\s\S]*"scenes"[\s\S]*\}/);
+          if (objMatch) {
+            try {
+              parsed = JSON.parse(objMatch[0]);
+            } catch {
+              throw new Error(
+                `Failed to parse scene detection response as JSON (object extraction failed)`
+              );
+            }
+          } else {
+            throw new Error(
+              `Failed to parse scene detection response as JSON (no valid JSON found)`
+            );
+          }
+        }
+      }
+
+      if (!parsed.scenes || !Array.isArray(parsed.scenes)) {
+        // Valid response but no scenes found - this is OK (not an error)
+        return [];
+      }
+
+      // Filter to requested range, then shift timestamps to original timeline
+      // Model returns timestamps relative to video file (0-based)
+      // We add timelineOffset to convert to original video timeline
+      return parsed.scenes
+        .filter((s: any) => {
+          const sceneTime = s.time || 0;
+          // Keep scenes within requested range (with small buffer for edge cases)
+          return sceneTime >= startTime - 5 && sceneTime <= endTime + 5;
+        })
+        .map((s: any) => ({
+          // Shift timestamp to original timeline
+          time: (s.time || 0) + timelineOffset,
+          endTime: s.endTime ? s.endTime + timelineOffset : undefined,
+          location: s.location || "Unknown",
+          characters: Array.isArray(s.characters) ? s.characters : [],
+          description: s.description || "",
+          visualNotes: s.visualNotes || "",
+        }));
+    } catch (err) {
+      // Throw so caller can mark this as an error
+      console.error(`[12Labs] Scene detection error for window:`, err);
+      throw err;
+    }
+  }
+
+  /**
+   * Sort scenes from overlapping windows by time.
+   * No deduplication - we preserve all scenes to avoid losing legitimate
+   * back-to-back cuts. Claude can mentally dedupe when reviewing.
+   */
+  private mergeOverlappingScenes(scenes: SceneDetail[]): SceneDetail[] {
+    if (scenes.length === 0) return [];
+
+    // Just sort by time, no dedup
+    return [...scenes].sort((a, b) => a.time - b.time);
+  }
+
+  /**
+   * Get cached scene detection from S3
+   */
+  private async getSceneCacheFromS3(
+    assetId: string
+  ): Promise<SceneDetectionResult | null> {
+    if (!SCENE_CACHE_BUCKET) return null;
+
+    try {
+      const key = `scene-cache/${assetId}.json`;
+      const response = await s3Client.send(
+        new GetObjectCommand({
+          Bucket: SCENE_CACHE_BUCKET,
+          Key: key,
+        })
+      );
+
+      const bodyString = await response.Body?.transformToString();
+      if (!bodyString) return null;
+
+      const parsed = JSON.parse(bodyString);
+
+      // Validate required fields to catch corrupted cache
+      if (
+        !parsed.assetId ||
+        !Array.isArray(parsed.brief) ||
+        !Array.isArray(parsed.detailed) ||
+        !parsed.detectedAt
+      ) {
+        console.warn(
+          `[12Labs] Invalid scene cache structure for ${assetId}, ignoring`
+        );
+        return null;
+      }
+
+      return parsed as SceneDetectionResult;
+    } catch (err: any) {
+      if (err.name !== "NoSuchKey") {
+        console.warn(`[12Labs] Failed to read scene cache:`, err.message);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Save scene detection to S3 cache.
+   * Only caches complete results - incomplete results are not cached
+   * so next request will re-run detection.
+   */
+  private async saveSceneCacheToS3(
+    assetId: string,
+    result: SceneDetectionResult
+  ): Promise<void> {
+    if (!SCENE_CACHE_BUCKET) return;
+
+    // Only cache complete results
+    if (!result.meta?.isComplete) {
+      console.log(
+        `[12Labs] Not caching incomplete result for ${assetId} ` +
+          `(${result.meta?.windowsSucceeded}/${result.meta?.windowsTotal} windows succeeded)`
+      );
+      return;
+    }
+
+    try {
+      const key = `scene-cache/${assetId}.json`;
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: SCENE_CACHE_BUCKET,
+          Key: key,
+          Body: JSON.stringify(result),
+          ContentType: "application/json",
+        })
+      );
+      console.log(
+        `[12Labs] Cached complete scene detection for ${assetId} ` +
+          `(${result.meta.windowsSucceeded}/${result.meta.windowsTotal} windows)`
+      );
+    } catch (err: any) {
+      console.warn(`[12Labs] Failed to cache scene detection:`, err.message);
+    }
   }
 }
 

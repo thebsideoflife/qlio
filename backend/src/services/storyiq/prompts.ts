@@ -17,6 +17,7 @@ import {
   type CoverageReport,
   type SegmentContent,
 } from "./types";
+import { type SceneBreak } from "../twelvelabs";
 
 // ============================================================================
 // Common Prompt Components
@@ -51,55 +52,66 @@ Quality Guidelines:
 // ============================================================================
 
 /**
- * Full Video: Split entire asset into microdrama chapters
+ * Full Video: Split entire asset into chapters
  *
  * This takes a longer piece of content (e.g., 50 min) and intelligently
- * divides it into chapters of 60-240 seconds each for a microdrama series.
+ * divides it into chapters of 60-180 seconds each (target 2 minutes).
+ * ALL content is included - no gaps.
  */
 function getFullVideoPrompt(
   understanding: VideoUnderstanding,
-  targetChapterSeconds: number
+  targetChapterSeconds: number,
+  sceneBreaks: SceneBreak[] = []
 ): string {
   const videoDurationSeconds = Math.round(understanding.duration);
   const videoDurationMinutes = Math.round(understanding.duration / 60);
 
-  // Calculate chapter range: target ±50% but clamped to 60-240 seconds
-  const minChapterSeconds = Math.max(
-    60,
-    Math.round(targetChapterSeconds * 0.5)
-  );
-  const maxChapterSeconds = Math.min(
-    240,
-    Math.round(targetChapterSeconds * 1.5)
-  );
+  // Chapter constraints: 60-180 seconds (1-3 minutes)
+  const minChapterSeconds = 60;
+  const maxChapterSeconds = 180;
 
-  // Estimate expected chapters based on target
-  const expectedChapters = Math.ceil(
-    videoDurationSeconds / targetChapterSeconds
+  // Estimate expected chapters based on target (default 120s = 2 min)
+  const effectiveTarget = Math.max(
+    minChapterSeconds,
+    Math.min(maxChapterSeconds, targetChapterSeconds)
   );
+  const expectedChapters = Math.ceil(videoDurationSeconds / effectiveTarget);
 
-  return `You are StoryIQ, an expert video editor reorganizing long-form content into a MICRODRAMA SERIES.
+  // Format scene breaks as a clean list
+  const sceneList = sceneBreaks
+    .map((s) => {
+      const mins = Math.floor(s.time / 60);
+      const secs = Math.floor(s.time % 60);
+      return `  ${mins}:${String(secs).padStart(2, "0")} - ${s.description}`;
+    })
+    .join("\n");
+
+  return `You are StoryIQ, an expert video editor dividing long-form content into chapters.
 
 VIDEO UNDERSTANDING:
 ${formatUnderstandingCompact(understanding)}
 
 YOUR TASK:
-Divide this ${videoDurationMinutes}-minute video into chapters for a microdrama series.
+Divide this ${videoDurationMinutes}-minute video into chapters.
 
-Think of this like creating episodes of a serialized show - each chapter is part of an ongoing story that viewers will watch in sequence.
+Think of this like creating YouTube chapters - each segment is part of the complete video that viewers will watch in sequence.
 
-DURATION REQUIREMENTS (IMPORTANT):
-- Each chapter MUST be between ${minChapterSeconds} and ${maxChapterSeconds} seconds (${Math.round(
-    minChapterSeconds / 60
-  )}-${Math.round(maxChapterSeconds / 60)} minutes)
-- Target ${targetChapterSeconds} seconds per chapter
-- This means you need roughly ${expectedChapters} chapters for this ${videoDurationSeconds}-second video
+DURATION REQUIREMENTS (CRITICAL):
+- Each chapter MUST be between ${minChapterSeconds} and ${maxChapterSeconds} seconds (1-3 minutes)
+- Target approximately ${effectiveTarget} seconds (~2 minutes) per chapter
+- You need roughly ${expectedChapters} chapters for this ${videoDurationSeconds}-second video
 - ALL content must be included - no gaps, no overlaps between chapters
 - First chapter starts at 0, last chapter ends at ${videoDurationSeconds}
 
+AVAILABLE SCENE BREAKS (use these to find natural chapter boundaries):
+${
+  sceneList ||
+  "  No scene breaks detected - use your judgment based on the content"
+}
+
 CHAPTER REQUIREMENTS:
-1. Find natural narrative break points (scene changes, topic shifts, dramatic beats) that fit within the duration limits
-2. Each chapter should have a compelling, descriptive title (like a YouTube chapter)
+1. Use scene breaks as chapter boundaries when possible to avoid mid-scene cuts
+2. Each chapter should have a compelling, descriptive title
 3. Titles should hint at the content without spoilers
 4. Prefer ending chapters on cliffhangers or natural pauses
 
@@ -156,6 +168,71 @@ Requirements:
 - You may exceed target by 20-30% if it completes the story better
 
 Target: ~${Math.round(targetDurationSeconds / 60)} minutes
+
+${QUALITY_GUIDELINES}
+${OUTPUT_SCHEMA}`;
+}
+
+/**
+ * Compact Video: Condense video to target percentage while maintaining narrative coherence.
+ * Each segment should be 60-180 seconds (target 120s).
+ * Viewer should be able to watch all segments in order and follow the story.
+ */
+function getCompactVideoPrompt(
+  understanding: VideoUnderstanding,
+  targetPercent: number,
+  sceneBreaks: SceneBreak[]
+): string {
+  const targetSeconds = Math.round(
+    (understanding.duration * targetPercent) / 100
+  );
+  const targetMinutes = Math.round(targetSeconds / 60);
+  const expectedSegments = Math.round(targetSeconds / 120); // ~2 min each
+
+  // Format scene breaks as a clean list
+  const sceneList = sceneBreaks
+    .map((s) => {
+      const mins = Math.floor(s.time / 60);
+      const secs = Math.floor(s.time % 60);
+      return `  ${mins}:${String(secs).padStart(2, "0")} - ${s.description}`;
+    })
+    .join("\n");
+
+  return `You are StoryIQ, an expert video editor creating a COMPACT VERSION of this video.
+
+ORIGINAL VIDEO: ${Math.round(understanding.duration / 60)} minutes
+TARGET OUTPUT: ${targetPercent}% = ~${targetMinutes} minutes
+SEGMENTS: Aim for approximately ${expectedSegments} segments
+
+CRITICAL CONSTRAINTS:
+- Each segment MUST be 60-180 seconds (target ~120 seconds)
+- Total output duration should be within 15% of ${targetMinutes} minutes
+- Segments must be in chronological order
+- Watching all segments in order should tell a coherent story
+
+AVAILABLE SCENE BREAKS (use these as cut points):
+${
+  sceneList ||
+  "  No scene breaks detected - use your judgment based on the content"
+}
+
+Use the scene breaks above to find natural cut points. Each scene description tells you
+what happens at that timestamp - cut at these boundaries to avoid awkward mid-scene transitions.
+
+WHAT TO KEEP:
+- Opening hook (first 2-3 minutes of content)
+- Major plot points and turning points
+- Climax and resolution
+- Key character moments from the main storyline
+
+WHAT TO CUT:
+- Extended establishing shots and B-roll
+- Repetitive or redundant scenes
+- Subplots that don't connect to the main story
+- Long dialogue that can be trimmed without losing meaning
+
+VIDEO UNDERSTANDING:
+${formatUnderstandingCompact(understanding)}
 
 ${QUALITY_GUIDELINES}
 ${OUTPUT_SCHEMA}`;
@@ -505,29 +582,43 @@ export interface PlanningPromptOptions {
   purpose: Purpose;
   understanding: VideoUnderstanding;
   targetDuration?: number;
+  targetPercent?: number;
   userInstructions?: string;
+  sceneBreaks?: SceneBreak[];
 }
 
 export function getPlanningPrompt(
   purpose: Purpose,
   understanding: VideoUnderstanding,
   targetDuration?: number,
-  userInstructions?: string
+  userInstructions?: string,
+  sceneBreaks?: SceneBreak[],
+  targetPercent?: number
 ): string {
   let basePrompt: string;
 
   switch (purpose) {
     case Purpose.FULL_VIDEO:
-      // Default to 150 seconds (2.5 min) for microdrama chapters
-      // Target range is 60-240 seconds per chapter
-      const chapterSeconds = targetDuration || 150;
-      basePrompt = getFullVideoPrompt(understanding, chapterSeconds);
+      // Default to 120 seconds (2 min) for chapters
+      // Target range is 60-180 seconds per chapter
+      const chapterSeconds = targetDuration || 120;
+      basePrompt = getFullVideoPrompt(
+        understanding,
+        chapterSeconds,
+        sceneBreaks || []
+      );
       break;
 
+    case Purpose.COMPACT_VIDEO:
     case Purpose.HIGHLIGHTS:
-      // Default to 60 seconds
-      const highlightSeconds = targetDuration || 60;
-      basePrompt = getHighlightsPrompt(understanding, highlightSeconds);
+      // Compact video: condense to target percentage
+      // Default to 50% if not specified
+      const percent = targetPercent || 50;
+      basePrompt = getCompactVideoPrompt(
+        understanding,
+        percent,
+        sceneBreaks || []
+      );
       break;
 
     case Purpose.TRAILER:
