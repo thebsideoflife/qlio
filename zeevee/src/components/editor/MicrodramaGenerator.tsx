@@ -34,7 +34,12 @@ import type { IconType } from "react-icons";
 import type { AspectRatio } from "@/remotion/types";
 
 interface GenerationStatus {
-  status: "pending" | "generating" | "completed" | "failed";
+  status:
+    | "pending"
+    | "detecting_scenes"
+    | "generating"
+    | "completed"
+    | "failed";
   jobId: string;
   startedAt: string;
   completedAt?: string;
@@ -46,11 +51,12 @@ interface InitialSelections {
   platform?: string;
   purpose?: string;
   duration?: string;
+  targetPercent?: string;
   userPrompt?: string;
 }
 
 interface MicrodramaGeneratorProps {
-  onGenerate: (selections: any) => Promise<void>;
+  onGenerate: (selections: Selections) => Promise<void>;
   isGenerating: boolean;
   generationStatus?: GenerationStatus | null;
   onAspectRatioChange?: (ratio: AspectRatio) => void;
@@ -110,16 +116,16 @@ const PLATFORMS: Option[] = [
 
 const PURPOSES: Option[] = [
   {
-    value: "highlights",
-    label: "Microdrama",
+    value: "compact_video",
+    label: "Compact",
     icon: Scissors,
-    tooltip: "Best moments",
+    tooltip: "Condense video to target %",
   },
   {
     value: "full_video",
     label: "Full Video",
     icon: LayoutGrid,
-    tooltip: "Split into microdrama chapters",
+    tooltip: "Split into chapters (1-3 min each)",
   },
   {
     value: "trailer",
@@ -161,8 +167,8 @@ const PURPOSES: Option[] = [
 
 // Duration presets per purpose
 const DURATION_PRESETS: Record<string, [string, string]> = {
-  full_video: ["2 min", "3 min"],
-  highlights: ["60s", "120s"],
+  // full_video: no duration - uses entire video
+  // compact_video: uses percent picker instead
   trailer: ["90s", "2 min"],
   tunein: ["15s", "30s"],
   bridge: ["30s", "60s"],
@@ -171,11 +177,19 @@ const DURATION_PRESETS: Record<string, [string, string]> = {
   social_segment: ["15s", "30s"],
 };
 
-type Selections = {
+// Percent presets for compact video
+const PERCENT_OPTIONS = [
+  { value: "25", label: "25%", tooltip: "Quarter of original" },
+  { value: "50", label: "50%", tooltip: "Half of original" },
+  { value: "75", label: "75%", tooltip: "Three quarters" },
+];
+
+export type Selections = {
   type: string;
   platform: string;
   purpose: string;
   duration: string;
+  targetPercent: string;
   userPrompt: string;
 };
 
@@ -184,6 +198,7 @@ const INITIAL: Selections = {
   platform: "",
   purpose: "",
   duration: "",
+  targetPercent: "",
   userPrompt: "",
 };
 
@@ -199,17 +214,25 @@ export function MicrodramaGenerator({
     platform: initialSelections?.platform || "",
     purpose: initialSelections?.purpose || "",
     duration: initialSelections?.duration || "",
+    targetPercent: initialSelections?.targetPercent || "",
     userPrompt: initialSelections?.userPrompt || "",
   }));
   const [viewMode, setViewMode] = useState<"chat" | "compact">("chat");
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const needsDuration = !!selections.purpose;
+  // Purpose-specific logic
+  const isCompactVideo = selections.purpose === "compact_video";
+  const isFullVideo = selections.purpose === "full_video";
+  const needsDuration = !!selections.purpose && !isFullVideo && !isCompactVideo;
+  const needsPercent = isCompactVideo;
+
+  // Completion check: compact_video needs percent, full_video needs nothing, others need duration
   const isComplete =
     selections.type &&
     selections.platform &&
     selections.purpose &&
-    selections.duration;
+    (isFullVideo ||
+      (isCompactVideo ? selections.targetPercent : selections.duration));
 
   // Auto-scroll when selections change
   useEffect(() => {
@@ -233,9 +256,21 @@ export function MicrodramaGenerator({
         if (ratio) onAspectRatioChange(ratio);
       }
 
-      // Purpose change → set default duration
+      // Purpose change → set defaults
       if (key === "purpose") {
-        updated.duration = "Auto";
+        if (value === "compact_video") {
+          // Default to 50% for compact video
+          updated.targetPercent = "50";
+          updated.duration = "";
+        } else if (value === "full_video") {
+          // Full video doesn't need duration or percent
+          updated.duration = "";
+          updated.targetPercent = "";
+        } else {
+          // Other purposes use duration
+          updated.duration = "Auto";
+          updated.targetPercent = "";
+        }
       }
 
       return updated;
@@ -324,7 +359,20 @@ export function MicrodramaGenerator({
               />
             )}
 
-            {/* Duration - only when not full_video */}
+            {/* Percent picker - for compact_video */}
+            {selections.type && selections.platform && needsPercent && (
+              <div className="space-y-3">
+                <div className="inline-block bg-muted rounded-2xl rounded-bl-sm px-4 py-2.5 max-w-[85%]">
+                  <p className="text-sm font-medium">How much to keep?</p>
+                </div>
+                <PercentPicker
+                  selected={selections.targetPercent}
+                  onSelect={(v) => select("targetPercent", v)}
+                />
+              </div>
+            )}
+
+            {/* Duration - for other purposes (not full_video or compact_video) */}
             {selections.type && selections.platform && needsDuration && (
               <div className="space-y-3">
                 <div className="inline-block bg-muted rounded-2xl rounded-bl-sm px-4 py-2.5 max-w-[85%]">
@@ -376,6 +424,15 @@ export function MicrodramaGenerator({
               />
             </GridSection>
 
+            {needsPercent && (
+              <GridSection label="Keep Percentage">
+                <PercentPicker
+                  selected={selections.targetPercent}
+                  onSelect={(v) => select("targetPercent", v)}
+                />
+              </GridSection>
+            )}
+
             {needsDuration && (
               <GridSection label="Duration">
                 <DurationPicker
@@ -409,6 +466,8 @@ export function MicrodramaGenerator({
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                 {generationStatus?.status === "pending" &&
                   "Starting Analysis..."}
+                {generationStatus?.status === "detecting_scenes" &&
+                  "Detecting Scenes..."}
                 {generationStatus?.status === "generating" &&
                   "Generating Segments..."}
                 {!generationStatus && "Analyzing Video..."}
@@ -422,7 +481,9 @@ export function MicrodramaGenerator({
           </Button>
           {isGenerating && generationStatus && (
             <p className="text-xs text-muted-foreground text-center mt-2">
-              This may take 1-2 minutes for longer videos
+              {generationStatus.status === "detecting_scenes"
+                ? "Scene detection may take a few minutes for longer videos"
+                : "This may take 1-2 minutes for longer videos"}
             </p>
           )}
         </div>
@@ -553,6 +614,89 @@ function DurationPicker({
           )}
         >
           {isCustom ? selected : "Other"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Percent picker for compact video mode.
+ * Allows selecting 25%, 50%, 75% or custom percentage.
+ */
+function PercentPicker({
+  selected,
+  onSelect,
+}: {
+  selected: string;
+  onSelect: (value: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [customValue, setCustomValue] = useState("");
+
+  const isCustom =
+    selected && !PERCENT_OPTIONS.some((opt) => opt.value === selected);
+
+  const submitCustom = () => {
+    if (customValue.trim()) {
+      // Parse and validate percentage
+      const num = parseInt(customValue.replace("%", "").trim(), 10);
+      if (!isNaN(num) && num > 0 && num <= 100) {
+        onSelect(String(num));
+      }
+    }
+    setEditing(false);
+  };
+
+  return (
+    <div className="flex flex-wrap gap-2 pl-1">
+      {PERCENT_OPTIONS.map((opt) => {
+        const isSelected = selected === opt.value;
+        return (
+          <Tooltip key={opt.value}>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => onSelect(opt.value)}
+                className={cn(
+                  "px-4 py-2 rounded-xl text-sm font-medium transition-all",
+                  isSelected
+                    ? "bg-blue-600 text-white shadow-md"
+                    : "bg-card border-2 border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-foreground"
+                )}
+              >
+                {opt.label}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{opt.tooltip}</TooltipContent>
+          </Tooltip>
+        );
+      })}
+
+      {editing ? (
+        <input
+          type="text"
+          value={customValue}
+          onChange={(e) => setCustomValue(e.target.value)}
+          onBlur={submitCustom}
+          onKeyDown={(e) => e.key === "Enter" && submitCustom()}
+          placeholder="40%"
+          autoFocus
+          className="w-16 px-3 py-2 rounded-xl text-sm font-medium text-center bg-blue-600 text-white border-2 border-blue-600 focus:outline-none"
+        />
+      ) : (
+        <button
+          onClick={() => {
+            setCustomValue(isCustom ? `${selected}%` : "");
+            setEditing(true);
+          }}
+          className={cn(
+            "px-3 py-2 rounded-xl text-sm font-medium transition-all border-2 border-dashed",
+            isCustom
+              ? "bg-blue-600 text-white border-blue-600 shadow-md"
+              : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-muted-foreground"
+          )}
+        >
+          {isCustom ? `${selected}%` : "Other"}
         </button>
       )}
     </div>

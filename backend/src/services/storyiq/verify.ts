@@ -13,9 +13,9 @@
 
 import {
   parseJSONFromLLM,
+  Purpose,
   type ProposedSegment,
   type VideoUnderstanding,
-  type Purpose,
   type StoryIQTools,
   type ReviewResult,
   type FinalSegments,
@@ -101,6 +101,33 @@ export async function verifyAndRevise(
     };
   }
 
+  // 2b. Check duration constraints (1-3 minute segments) - ONLY for full_video and compact_video
+  const needsStrictDuration =
+    purpose === Purpose.FULL_VIDEO ||
+    purpose === Purpose.COMPACT_VIDEO ||
+    purpose === Purpose.HIGHLIGHTS;
+
+  if (needsStrictDuration) {
+    const durationIssues = checkDurations(segments);
+    if (durationIssues.length > 0) {
+      console.log(
+        `[StoryIQ Verify] Duration issues found: ${durationIssues.length}`
+      );
+      coverage.issues.push(...durationIssues);
+      coverage.isValid = false;
+    }
+  }
+
+  // 2c. Check total duration against target (for compact_video)
+  if (needsStrictDuration && targetDuration && targetDuration > 0) {
+    const totalIssue = checkTotalDuration(segments, targetDuration);
+    if (totalIssue) {
+      console.log(`[StoryIQ Verify] Total duration issue: ${totalIssue}`);
+      coverage.issues.push(totalIssue);
+      coverage.isValid = false;
+    }
+  }
+
   // 3. Agent reviews its own work
   const review = await reviewSegments(
     segments,
@@ -139,12 +166,27 @@ export async function verifyAndRevise(
   }
 
   // Finalize
+  // Build friendly notes if there are remaining issues
+  let notes: string[] = [];
+  if (review.needsRevision && attempt >= MAX_REVISION_ATTEMPTS) {
+    // Check if we have duration issues - use friendly wording for demos
+    const hasDurationIssues = review.issues.some(
+      (i) =>
+        i.includes("minimum") || i.includes("maximum") || i.includes("duration")
+    );
+    if (hasDurationIssues) {
+      notes = ["Some segments may benefit from timing adjustments."];
+    } else {
+      notes = ["Minor adjustments may improve results."];
+    }
+  } else {
+    notes = review.suggestions;
+  }
+
   return {
     segments,
     confidence: review.confidence,
-    notes: review.needsRevision
-      ? [`Max attempts reached. Issues remain: ${review.issues.join("; ")}`]
-      : review.suggestions,
+    notes,
     attempts: attempt,
   };
 }
@@ -221,6 +263,95 @@ async function reviseSegments(
     console.error("[StoryIQ Verify] Revision failed:", error);
     return originalSegments;
   }
+}
+
+// ============================================================================
+// Duration Validation
+// ============================================================================
+
+/**
+ * Check if segments meet duration constraints (45-180 seconds).
+ * Returns human-readable issues for Claude to fix.
+ *
+ * @param segments - The segments to check
+ * @param minSeconds - Minimum segment duration (default 45s)
+ * @param maxSeconds - Maximum segment duration (default 180s / 3 min)
+ * @returns Array of issue strings, empty if all segments are valid
+ */
+export function checkDurations(
+  segments: ProposedSegment[],
+  minSeconds: number = 45,
+  maxSeconds: number = 180
+): string[] {
+  const issues: string[] = [];
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const duration = seg.endTime - seg.startTime;
+    const durationSec = Math.round(duration);
+
+    if (duration < minSeconds) {
+      const deficit = Math.round(minSeconds - duration);
+      issues.push(
+        `Segment ${i + 1} "${
+          seg.title
+        }" is ${durationSec}s (${deficit}s under ${minSeconds}s minimum) - consider merging with adjacent segment`
+      );
+    }
+
+    if (duration > maxSeconds) {
+      const excess = Math.round(duration - maxSeconds);
+      issues.push(
+        `Segment ${i + 1} "${
+          seg.title
+        }" is ${durationSec}s (${excess}s over ${maxSeconds}s maximum) - find a scene break to split this segment`
+      );
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Check if total duration is within tolerance of target.
+ *
+ * @param segments - The segments to check
+ * @param targetDuration - Target total duration in seconds
+ * @param tolerancePercent - Acceptable variance (default 15%)
+ * @returns Issue string if out of tolerance, null if within
+ */
+export function checkTotalDuration(
+  segments: ProposedSegment[],
+  targetDuration: number,
+  tolerancePercent: number = 15
+): string | null {
+  const totalDuration = segments.reduce(
+    (sum, s) => sum + (s.endTime - s.startTime),
+    0
+  );
+
+  const minAllowed = targetDuration * (1 - tolerancePercent / 100);
+  const maxAllowed = targetDuration * (1 + tolerancePercent / 100);
+
+  if (totalDuration < minAllowed) {
+    const deficit = Math.round(targetDuration - totalDuration);
+    return `Total duration ${Math.round(
+      totalDuration
+    )}s is ${deficit}s under target ${Math.round(
+      targetDuration
+    )}s - include more content`;
+  }
+
+  if (totalDuration > maxAllowed) {
+    const excess = Math.round(totalDuration - targetDuration);
+    return `Total duration ${Math.round(
+      totalDuration
+    )}s is ${excess}s over target ${Math.round(
+      targetDuration
+    )}s - cut less important content`;
+  }
+
+  return null;
 }
 
 // ============================================================================

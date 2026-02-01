@@ -30,7 +30,12 @@ const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 // ============================================================================
 
 interface GenerationJob {
-  status: "pending" | "generating" | "completed" | "failed";
+  status:
+    | "pending"
+    | "detecting_scenes"
+    | "generating"
+    | "completed"
+    | "failed";
   jobId: string;
   startedAt: string;
   completedAt?: string;
@@ -60,6 +65,27 @@ const CORS_HEADERS = {
   "Content-Type": "application/json",
   "Access-Control-Allow-Origin": "*",
 };
+
+/**
+ * Helper to update job status in DynamoDB
+ */
+async function updateJobStatus(
+  projectId: string,
+  status: GenerationJob["status"]
+): Promise<void> {
+  await docClient.send(
+    new UpdateCommand({
+      TableName: PROJECTS_TABLE,
+      Key: { projectId },
+      UpdateExpression: "set generationJob.#status = :s, updatedAt = :u",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":s": status,
+        ":u": new Date().toISOString(),
+      },
+    })
+  );
+}
 
 /**
  * Main handler - routes between API Gateway requests and async job execution
@@ -245,14 +271,26 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
     let generatedSegments: Segment[] = [];
 
     try {
+      // Status callback - allows StoryIQ to update job status during scene detection
+      const onStatusChange = async (
+        status: "detecting_scenes" | "generating"
+      ) => {
+        console.log(`[generateSegments] Status change: ${status}`);
+        await updateJobStatus(projectId, status);
+      };
+
       // Run StoryIQ (pass transcript S3 URI and duration if available)
-      const result = await generateWithStoryIQ(twelvelabs, {
-        assetId,
-        goals,
-        transcriptS3Uri: asset.transcriptionUrl,
-        // Pass videoDuration from frontend if available (more reliable than 12Labs for chunked videos)
-        videoDuration: metadata?.videoDuration || asset.duration || 0,
-      });
+      const result = await generateWithStoryIQ(
+        twelvelabs,
+        {
+          assetId,
+          goals,
+          transcriptS3Uri: asset.transcriptionUrl,
+          // Pass videoDuration from frontend if available (more reliable than 12Labs for chunked videos)
+          videoDuration: metadata?.videoDuration || asset.duration || 0,
+        },
+        onStatusChange
+      );
 
       console.log(
         `[generateSegments] StoryIQ complete: ${result.segments.segments.length} segments, ` +

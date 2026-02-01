@@ -452,6 +452,33 @@ resource "aws_lambda_function" "list_projects" {
   }
 }
 
+# --- Detect Scenes (Async scene detection for long videos) ---
+data "archive_file" "detect_scenes_zip" {
+  type        = "zip"
+  source_file = "../backend/dist/detectScenes.js"
+  output_path = "${path.module}/zips/detectScenes.zip"
+}
+
+resource "aws_lambda_function" "detect_scenes" {
+  filename         = data.archive_file.detect_scenes_zip.output_path
+  function_name    = "${var.project_name}-detect-scenes"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "detectScenes.handler"
+  runtime          = "nodejs20.x"
+  source_code_hash = data.archive_file.detect_scenes_zip.output_base64sha256
+  timeout          = 900  # 15 minutes - full Lambda max for long videos
+  memory_size      = 512
+
+  environment {
+    variables = {
+      ASSETS_TABLE         = aws_dynamodb_table.assets.name
+      SECRET_ARN           = aws_secretsmanager_secret.twelve_labs_key.arn
+      TWELVE_LABS_INDEX_ID = var.twelve_labs_index_id
+      BUCKET_NAME          = aws_s3_bucket.media.bucket
+    }
+  }
+}
+
 # --- Generate Segments ---
 data "archive_file" "generate_segments_zip" {
   type        = "zip"
@@ -475,6 +502,8 @@ resource "aws_lambda_function" "generate_segments" {
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
       SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
       TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
+      BUCKET_NAME             = aws_s3_bucket.media.bucket
+      DETECT_SCENES_FUNCTION  = aws_lambda_function.detect_scenes.function_name
     }
   }
 }

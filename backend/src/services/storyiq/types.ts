@@ -100,9 +100,11 @@ export interface VideoUnderstanding {
  * Each maps to a specific prompt template and output format.
  */
 export enum Purpose {
-  /** Full video split into microdrama chapters (60-240 seconds each) */
+  /** Full video split into chapters (target 90s, max 3 min) */
   FULL_VIDEO = "full_video",
-  /** Condensed highlights reel */
+  /** Compact video - condense to target percentage (target 90s, max 3 min) */
+  COMPACT_VIDEO = "compact_video",
+  /** Legacy: kept for backwards compatibility, treated as compact_video */
   HIGHLIGHTS = "highlights",
   /** Movie-style trailer (2-2.5 min) */
   TRAILER = "trailer",
@@ -134,7 +136,8 @@ export interface StoryIQGoals {
   purpose: Purpose;
   contentType: ContentType;
   platform: Platform;
-  targetDuration?: number; // Advisory, in seconds
+  targetDuration?: number; // Calculated target duration in seconds
+  targetPercent?: number; // For compact_video: percentage of original (25, 50, 75, etc.)
   userInstructions?: string; // Custom instructions from user
 }
 
@@ -210,6 +213,10 @@ export interface StoryIQTools {
   read_emotional_beats(): Promise<EmotionalBeat[]>;
   read_visual_style_notes(): Promise<VisualNote[]>;
 
+  // Scene detail tool (for Compact Video mode)
+  // Claude can call this to get full scene info for a time range
+  get_scene_details(startTime: number, endTime: number): Promise<string>;
+
   // Verification tools (Phase 4)
   read_transcript_for_segments(
     segments: TimeRange[]
@@ -247,6 +254,21 @@ export interface StoryIQOutput {
     processingTime: number;
     attempts: number;
   };
+}
+
+// ============================================================================
+// Custom Errors
+// ============================================================================
+
+/**
+ * Thrown when scene detection is in progress or just started.
+ * Handler should catch this and return 202 to frontend.
+ */
+export class SceneDetectionPendingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SceneDetectionPendingError";
+  }
 }
 
 // ============================================================================

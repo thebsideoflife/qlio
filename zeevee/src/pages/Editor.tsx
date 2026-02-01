@@ -1,6 +1,9 @@
 import React from "react";
 import { Timeline } from "@/components/editor/Timeline";
-import { MicrodramaGenerator } from "@/components/editor/MicrodramaGenerator";
+import {
+  MicrodramaGenerator,
+  type Selections,
+} from "@/components/editor/MicrodramaGenerator";
 import { CaptionOverlay } from "@/components/editor/CaptionOverlay";
 import { CaptionEditor } from "@/components/editor/CaptionEditor";
 import { FramingSlider } from "@/components/editor/FramingSlider";
@@ -73,8 +76,20 @@ export default function Editor() {
   const [framingTooltip, setFramingTooltip] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
+  // Ref to track current projectId for async callbacks (prevents stale closures)
+  const projectIdRef = useRef(projectId);
+  useEffect(() => {
+    projectIdRef.current = projectId;
+  }, [projectId]);
+
   // Custom Hooks
-  const { videoUrl, transcription, generationMetadata, loading } = useProjectData(projectId);
+  const {
+    videoUrl,
+    transcription,
+    generationMetadata,
+    generationJob,
+    loading,
+  } = useProjectData(projectId);
   // Seamless playback only in preview mode
   useSeamlessPlayback(videoRef, previewMode ? segments : []);
 
@@ -229,6 +244,11 @@ export default function Editor() {
   // AI analyze framing for current segment
   const handleAnalyzeFraming = async () => {
     if (!projectId || !selectedSegment) return;
+
+    // Capture context at start to check against later
+    const startingProjectId = projectId;
+    const segmentId = selectedSegment.id;
+
     setIsAnalyzingFraming(true);
     setFramingTooltip(null);
     try {
@@ -239,9 +259,18 @@ export default function Editor() {
         selectedSegment.endTime,
         globalFraming.aspectRatio // Pass the target aspect ratio to the AI
       );
+
+      // Guard: only dispatch if still on same project
+      if (projectIdRef.current !== startingProjectId) {
+        console.log(
+          `[Editor] Ignoring stale framing result for project ${startingProjectId}`
+        );
+        return;
+      }
+
       dispatch(
         setSegmentFraming({
-          segmentId: selectedSegment.id,
+          segmentId,
           framing: {
             aspectRatio: globalFraming.aspectRatio,
             mode: result.framing.mode,
@@ -263,11 +292,17 @@ export default function Editor() {
       // Auto-hide after 3 seconds
       setTimeout(() => setFramingTooltip(null), 5000);
     } catch (error) {
-      console.error("Failed to analyze framing:", error);
-      setFramingTooltip("Analysis failed");
-      setTimeout(() => setFramingTooltip(null), 2000);
+      // Only show error if still on same project
+      if (projectIdRef.current === startingProjectId) {
+        console.error("Failed to analyze framing:", error);
+        setFramingTooltip("Analysis failed");
+        setTimeout(() => setFramingTooltip(null), 2000);
+      }
     } finally {
-      setIsAnalyzingFraming(false);
+      // Only reset state if still on same project
+      if (projectIdRef.current === startingProjectId) {
+        setIsAnalyzingFraming(false);
+      }
     }
   };
 
@@ -287,14 +322,82 @@ export default function Editor() {
   const aspectRatioValue = getAspectRatioValue(globalFraming.aspectRatio);
 
   // Set projectId in Redux for sync middleware
+  // Also reset local state when switching projects (prevents stale state from previous project)
   useEffect(() => {
     if (projectId) {
       dispatch(setProjectId(projectId));
     }
+    // Reset all async operation state when project changes
+    setIsGenerating(false);
+    setGenerationStatus(null);
+    setIsAnalyzingFraming(false);
+    setFramingTooltip(null);
+    // Reset preview mode since segments are different per project
+    setPreviewMode(false);
+
     return () => {
       dispatch(resetEditor());
     };
   }, [projectId, dispatch]);
+
+  // Resume polling if there's an in-progress generation job (e.g., after page refresh)
+  useEffect(() => {
+    if (!projectId || !generationJob || loading) return;
+
+    const inProgressStatuses = ["pending", "detecting_scenes", "generating"];
+    if (!inProgressStatuses.includes(generationJob.status)) return;
+
+    // Already generating (user clicked button in this session)
+    if (isGenerating) return;
+
+    console.log(
+      `[Editor] Resuming polling for in-progress job: ${generationJob.jobId} (${generationJob.status})`
+    );
+
+    setIsGenerating(true);
+    setGenerationStatus(generationJob);
+
+    // Capture projectId at start to check against later
+    const startingProjectId = projectId;
+
+    // Resume polling - use shorter initial delay since job is already running
+    pollGenerationStatus(projectId, {
+      initialDelayMs: 5000, // 5s initial delay (job already started)
+      pollIntervalMs: 10000, // 10s intervals
+      onProgress: (job) => {
+        // Only update if still on same project
+        if (projectIdRef.current !== startingProjectId) return;
+        console.log(`[Editor] Generation status: ${job.status}`);
+        setGenerationStatus(job);
+      },
+    })
+      .then((result) => {
+        // Guard: only dispatch if still on the same project
+        if (projectIdRef.current !== startingProjectId) {
+          console.log(
+            `[Editor] Ignoring stale generation result for project ${startingProjectId}`
+          );
+          return;
+        }
+        if (result.segments.length > 0) {
+          dispatch(setSegments(result.segments));
+          console.log(
+            `[Editor] Generation complete (resumed): ${result.segments.length} segments`
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        console.error("Generation failed (resumed):", error);
+        // Don't show alert for resumed jobs that fail - might be stale
+      })
+      .finally(() => {
+        // Only reset state if still on same project
+        if (projectIdRef.current === startingProjectId) {
+          setIsGenerating(false);
+          setGenerationStatus(null);
+        }
+      });
+  }, [projectId, generationJob, loading, isGenerating, dispatch]);
 
   // Don't auto-seek when selecting segments - timeline handles seeking now
   // useEffect(() => {
@@ -370,8 +473,12 @@ export default function Editor() {
   const [generationStatus, setGenerationStatus] =
     useState<GenerationJob | null>(null);
 
-  const handleGenerateSegments = async (selections: any) => {
+  const handleGenerateSegments = async (selections: Selections) => {
     if (!projectId) return;
+
+    // Capture projectId at start to check against later
+    const startingProjectId = projectId;
+
     setIsGenerating(true);
     setGenerationStatus(null);
 
@@ -386,6 +493,14 @@ export default function Editor() {
       const { jobId } = await generateSegments(projectId, metadata);
       console.log(`[Editor] Started generation job: ${jobId}`);
 
+      // Guard: check if still on same project
+      if (projectIdRef.current !== startingProjectId) {
+        console.log(
+          `[Editor] Project changed, abandoning generation tracking for ${startingProjectId}`
+        );
+        return;
+      }
+
       setGenerationStatus({
         status: "pending",
         jobId,
@@ -395,10 +510,20 @@ export default function Editor() {
       // Poll for completion (30s initial delay, then 10s intervals)
       const result = await pollGenerationStatus(projectId, {
         onProgress: (job) => {
+          // Only update if still on same project
+          if (projectIdRef.current !== startingProjectId) return;
           console.log(`[Editor] Generation status: ${job.status}`);
           setGenerationStatus(job);
         },
       });
+
+      // Guard: only dispatch if still on the same project
+      if (projectIdRef.current !== startingProjectId) {
+        console.log(
+          `[Editor] Ignoring stale generation result for project ${startingProjectId}`
+        );
+        return;
+      }
 
       if (result.segments.length > 0) {
         dispatch(setSegments(result.segments));
@@ -409,11 +534,18 @@ export default function Editor() {
 
       setIsGenerating(false);
       setGenerationStatus(null);
-    } catch (error: any) {
-      console.error("Failed to generate segments:", error);
-      alert(error.message || "Failed to generate segments. Please try again.");
-      setIsGenerating(false);
-      setGenerationStatus(null);
+    } catch (error: unknown) {
+      // Only show error if still on same project
+      if (projectIdRef.current === startingProjectId) {
+        console.error("Failed to generate segments:", error);
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to generate segments. Please try again.";
+        alert(message);
+        setIsGenerating(false);
+        setGenerationStatus(null);
+      }
     }
   };
 

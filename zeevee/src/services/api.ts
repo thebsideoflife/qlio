@@ -41,7 +41,7 @@ export interface UploadCredentialsResponse {
 
 export const getUploadCredentials = async (
   fileType: string,
-  metadata: any
+  metadata: Record<string, unknown>
 ): Promise<UploadCredentialsResponse> => {
   let extension = fileType.split("/")[1] || "mp4";
   if (extension === "quicktime") extension = "mov";
@@ -128,14 +128,20 @@ export const getAsset = async (assetId: string) => {
   return response.data;
 };
 
-export const updateAsset = async (assetId: string, metadata: any) => {
+export const updateAsset = async (
+  assetId: string,
+  metadata: Record<string, unknown>
+) => {
   const response = await axios.patch(`${API_URL}/assets/${assetId}`, metadata, {
     headers: getAuthHeaders(),
   });
   return response.data;
 };
 
-export const createProject = async (assetId: string, metadata: any) => {
+export const createProject = async (
+  assetId: string,
+  metadata: Record<string, unknown>
+) => {
   const response = await axios.post(
     `${API_URL}/projects`,
     {
@@ -214,7 +220,12 @@ export const listProjects = async (assetId?: string) => {
 // ===== Segment Generation API (Async) =====
 
 export interface GenerationJob {
-  status: "pending" | "generating" | "completed" | "failed";
+  status:
+    | "pending"
+    | "detecting_scenes"
+    | "generating"
+    | "completed"
+    | "failed";
   jobId: string;
   startedAt: string;
   completedAt?: string;
@@ -230,7 +241,7 @@ export interface GenerateSegmentsResponse {
 
 export const generateSegments = async (
   projectId: string,
-  metadata: any
+  metadata: Record<string, unknown>
 ): Promise<GenerateSegmentsResponse> => {
   const response = await axios.post(
     `${API_URL}/projects/${projectId}/generate`,
@@ -264,7 +275,7 @@ export const pollGenerationStatus = async (
     onProgress,
     initialDelayMs = 30000, // Wait 30s before first poll
     pollIntervalMs = 10000, // Poll every 10s
-    maxWaitMs = 300000, // 5 min max
+    maxWaitMs = 600000, // 10 min max (matches Lambda timeout)
   } = options;
   const startTime = Date.now();
 
