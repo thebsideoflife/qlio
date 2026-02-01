@@ -34,7 +34,12 @@ import type { IconType } from "react-icons";
 import type { AspectRatio } from "@/remotion/types";
 
 interface GenerationStatus {
-  status: "pending" | "generating" | "completed" | "failed";
+  status:
+    | "pending"
+    | "detecting_scenes"
+    | "generating"
+    | "completed"
+    | "failed";
   jobId: string;
   startedAt: string;
   completedAt?: string;
@@ -51,7 +56,7 @@ interface InitialSelections {
 }
 
 interface MicrodramaGeneratorProps {
-  onGenerate: (selections: any) => Promise<void>;
+  onGenerate: (selections: Selections) => Promise<void>;
   isGenerating: boolean;
   generationStatus?: GenerationStatus | null;
   onAspectRatioChange?: (ratio: AspectRatio) => void;
@@ -179,7 +184,7 @@ const PERCENT_OPTIONS = [
   { value: "75", label: "75%", tooltip: "Three quarters" },
 ];
 
-type Selections = {
+export type Selections = {
   type: string;
   platform: string;
   purpose: string;
@@ -226,7 +231,8 @@ export function MicrodramaGenerator({
     selections.type &&
     selections.platform &&
     selections.purpose &&
-    (isFullVideo || (isCompactVideo ? selections.targetPercent : selections.duration));
+    (isFullVideo ||
+      (isCompactVideo ? selections.targetPercent : selections.duration));
 
   // Auto-scroll when selections change
   useEffect(() => {
@@ -460,6 +466,8 @@ export function MicrodramaGenerator({
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                 {generationStatus?.status === "pending" &&
                   "Starting Analysis..."}
+                {generationStatus?.status === "detecting_scenes" &&
+                  "Detecting Scenes..."}
                 {generationStatus?.status === "generating" &&
                   "Generating Segments..."}
                 {!generationStatus && "Analyzing Video..."}
@@ -473,7 +481,9 @@ export function MicrodramaGenerator({
           </Button>
           {isGenerating && generationStatus && (
             <p className="text-xs text-muted-foreground text-center mt-2">
-              This may take 1-2 minutes for longer videos
+              {generationStatus.status === "detecting_scenes"
+                ? "Scene detection may take a few minutes for longer videos"
+                : "This may take 1-2 minutes for longer videos"}
             </p>
           )}
         </div>
@@ -625,8 +635,7 @@ function PercentPicker({
   const [customValue, setCustomValue] = useState("");
 
   const isCustom =
-    selected &&
-    !PERCENT_OPTIONS.some((opt) => opt.value === selected);
+    selected && !PERCENT_OPTIONS.some((opt) => opt.value === selected);
 
   const submitCustom = () => {
     if (customValue.trim()) {

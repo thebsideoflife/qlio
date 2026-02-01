@@ -220,7 +220,12 @@ export const listProjects = async (assetId?: string) => {
 // ===== Segment Generation API (Async) =====
 
 export interface GenerationJob {
-  status: "pending" | "generating" | "completed" | "failed";
+  status:
+    | "pending"
+    | "detecting_scenes"
+    | "generating"
+    | "completed"
+    | "failed";
   jobId: string;
   startedAt: string;
   completedAt?: string;

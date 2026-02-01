@@ -8,7 +8,7 @@ import {
   setGlobalFraming,
   setLastSegmentRenders,
 } from "@/store/editorSlice";
-import { getProject } from "@/services/api";
+import { getProject, type GenerationJob } from "@/services/api";
 import type { CaptionWord } from "@/remotion/types";
 
 // Generation input metadata stored with project
@@ -24,7 +24,11 @@ export function useProjectData(projectId: string | undefined) {
   const dispatch = useDispatch();
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [transcription, setTranscription] = useState<CaptionWord[]>([]);
-  const [generationMetadata, setGenerationMetadata] = useState<GenerationMetadata | null>(null);
+  const [generationMetadata, setGenerationMetadata] =
+    useState<GenerationMetadata | null>(null);
+  const [generationJob, setGenerationJob] = useState<GenerationJob | null>(
+    null
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,13 +57,21 @@ export function useProjectData(projectId: string | undefined) {
       }
 
       // Load cached segment renders from last completed render job
-      if (project.lastRenderDownloads && project.lastRenderDownloads.length > 0) {
+      if (
+        project.lastRenderDownloads &&
+        project.lastRenderDownloads.length > 0
+      ) {
         dispatch(setLastSegmentRenders(project.lastRenderDownloads));
       }
 
       // Load generation metadata (last used generation inputs)
       if (project.metadata) {
         setGenerationMetadata(project.metadata);
+      }
+
+      // Load generation job status (for resuming polling after page refresh)
+      if (project.generationJob) {
+        setGenerationJob(project.generationJob);
       }
 
       dispatch(
@@ -101,5 +113,12 @@ export function useProjectData(projectId: string | undefined) {
     loadProject();
   }, [loadProject]);
 
-  return { videoUrl, transcription, generationMetadata, loading, error };
+  return {
+    videoUrl,
+    transcription,
+    generationMetadata,
+    generationJob,
+    loading,
+    error,
+  };
 }

@@ -1,6 +1,9 @@
 import React from "react";
 import { Timeline } from "@/components/editor/Timeline";
-import { MicrodramaGenerator } from "@/components/editor/MicrodramaGenerator";
+import {
+  MicrodramaGenerator,
+  type Selections,
+} from "@/components/editor/MicrodramaGenerator";
 import { CaptionOverlay } from "@/components/editor/CaptionOverlay";
 import { CaptionEditor } from "@/components/editor/CaptionEditor";
 import { FramingSlider } from "@/components/editor/FramingSlider";
@@ -74,7 +77,13 @@ export default function Editor() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Custom Hooks
-  const { videoUrl, transcription, generationMetadata, loading } = useProjectData(projectId);
+  const {
+    videoUrl,
+    transcription,
+    generationMetadata,
+    generationJob,
+    loading,
+  } = useProjectData(projectId);
   // Seamless playback only in preview mode
   useSeamlessPlayback(videoRef, previewMode ? segments : []);
 
@@ -296,6 +305,50 @@ export default function Editor() {
     };
   }, [projectId, dispatch]);
 
+  // Resume polling if there's an in-progress generation job (e.g., after page refresh)
+  useEffect(() => {
+    if (!projectId || !generationJob || loading) return;
+
+    const inProgressStatuses = ["pending", "detecting_scenes", "generating"];
+    if (!inProgressStatuses.includes(generationJob.status)) return;
+
+    // Already generating (user clicked button in this session)
+    if (isGenerating) return;
+
+    console.log(
+      `[Editor] Resuming polling for in-progress job: ${generationJob.jobId} (${generationJob.status})`
+    );
+
+    setIsGenerating(true);
+    setGenerationStatus(generationJob);
+
+    // Resume polling - use shorter initial delay since job is already running
+    pollGenerationStatus(projectId, {
+      initialDelayMs: 5000, // 5s initial delay (job already started)
+      pollIntervalMs: 10000, // 10s intervals
+      onProgress: (job) => {
+        console.log(`[Editor] Generation status: ${job.status}`);
+        setGenerationStatus(job);
+      },
+    })
+      .then((result) => {
+        if (result.segments.length > 0) {
+          dispatch(setSegments(result.segments));
+          console.log(
+            `[Editor] Generation complete (resumed): ${result.segments.length} segments`
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        console.error("Generation failed (resumed):", error);
+        // Don't show alert for resumed jobs that fail - might be stale
+      })
+      .finally(() => {
+        setIsGenerating(false);
+        setGenerationStatus(null);
+      });
+  }, [projectId, generationJob, loading, isGenerating, dispatch]);
+
   // Don't auto-seek when selecting segments - timeline handles seeking now
   // useEffect(() => {
   //   if (selectedSegmentId && videoRef.current) {
@@ -370,7 +423,7 @@ export default function Editor() {
   const [generationStatus, setGenerationStatus] =
     useState<GenerationJob | null>(null);
 
-  const handleGenerateSegments = async (selections: any) => {
+  const handleGenerateSegments = async (selections: Selections) => {
     if (!projectId) return;
     setIsGenerating(true);
     setGenerationStatus(null);
@@ -409,9 +462,13 @@ export default function Editor() {
 
       setIsGenerating(false);
       setGenerationStatus(null);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error("Failed to generate segments:", error);
-      alert(error.message || "Failed to generate segments. Please try again.");
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to generate segments. Please try again.";
+      alert(message);
       setIsGenerating(false);
       setGenerationStatus(null);
     }

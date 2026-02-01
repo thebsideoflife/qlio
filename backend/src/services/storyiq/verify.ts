@@ -119,11 +119,7 @@ export async function verifyAndRevise(
   }
 
   // 2c. Check total duration against target (for compact_video)
-  if (
-    needsStrictDuration &&
-    targetDuration &&
-    targetDuration > 0
-  ) {
+  if (needsStrictDuration && targetDuration && targetDuration > 0) {
     const totalIssue = checkTotalDuration(segments, targetDuration);
     if (totalIssue) {
       console.log(`[StoryIQ Verify] Total duration issue: ${totalIssue}`);
@@ -175,7 +171,8 @@ export async function verifyAndRevise(
   if (review.needsRevision && attempt >= MAX_REVISION_ATTEMPTS) {
     // Check if we have duration issues - use friendly wording for demos
     const hasDurationIssues = review.issues.some(
-      (i) => i.includes("minimum") || i.includes("maximum") || i.includes("duration")
+      (i) =>
+        i.includes("minimum") || i.includes("maximum") || i.includes("duration")
     );
     if (hasDurationIssues) {
       notes = ["Some segments may benefit from timing adjustments."];
@@ -273,17 +270,17 @@ async function reviseSegments(
 // ============================================================================
 
 /**
- * Check if segments meet duration constraints (60-180 seconds).
+ * Check if segments meet duration constraints (45-180 seconds).
  * Returns human-readable issues for Claude to fix.
  *
  * @param segments - The segments to check
- * @param minSeconds - Minimum segment duration (default 60s / 1 min)
+ * @param minSeconds - Minimum segment duration (default 45s)
  * @param maxSeconds - Maximum segment duration (default 180s / 3 min)
  * @returns Array of issue strings, empty if all segments are valid
  */
 export function checkDurations(
   segments: ProposedSegment[],
-  minSeconds: number = 60,
+  minSeconds: number = 45,
   maxSeconds: number = 180
 ): string[] {
   const issues: string[] = [];
@@ -296,14 +293,18 @@ export function checkDurations(
     if (duration < minSeconds) {
       const deficit = Math.round(minSeconds - duration);
       issues.push(
-        `Segment ${i + 1} "${seg.title}" is ${durationSec}s (${deficit}s under ${minSeconds}s minimum) - consider merging with adjacent segment`
+        `Segment ${i + 1} "${
+          seg.title
+        }" is ${durationSec}s (${deficit}s under ${minSeconds}s minimum) - consider merging with adjacent segment`
       );
     }
 
     if (duration > maxSeconds) {
       const excess = Math.round(duration - maxSeconds);
       issues.push(
-        `Segment ${i + 1} "${seg.title}" is ${durationSec}s (${excess}s over ${maxSeconds}s maximum) - find a scene break to split this segment`
+        `Segment ${i + 1} "${
+          seg.title
+        }" is ${durationSec}s (${excess}s over ${maxSeconds}s maximum) - find a scene break to split this segment`
       );
     }
   }
@@ -334,12 +335,20 @@ export function checkTotalDuration(
 
   if (totalDuration < minAllowed) {
     const deficit = Math.round(targetDuration - totalDuration);
-    return `Total duration ${Math.round(totalDuration)}s is ${deficit}s under target ${Math.round(targetDuration)}s - include more content`;
+    return `Total duration ${Math.round(
+      totalDuration
+    )}s is ${deficit}s under target ${Math.round(
+      targetDuration
+    )}s - include more content`;
   }
 
   if (totalDuration > maxAllowed) {
     const excess = Math.round(totalDuration - targetDuration);
-    return `Total duration ${Math.round(totalDuration)}s is ${excess}s over target ${Math.round(targetDuration)}s - cut less important content`;
+    return `Total duration ${Math.round(
+      totalDuration
+    )}s is ${excess}s over target ${Math.round(
+      targetDuration
+    )}s - cut less important content`;
   }
 
   return null;

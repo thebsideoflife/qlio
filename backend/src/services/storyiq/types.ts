@@ -100,9 +100,9 @@ export interface VideoUnderstanding {
  * Each maps to a specific prompt template and output format.
  */
 export enum Purpose {
-  /** Full video split into chapters (60-180 seconds each) */
+  /** Full video split into chapters (target 90s, max 3 min) */
   FULL_VIDEO = "full_video",
-  /** Compact video - condense to target percentage (e.g., 50% of original) */
+  /** Compact video - condense to target percentage (target 90s, max 3 min) */
   COMPACT_VIDEO = "compact_video",
   /** Legacy: kept for backwards compatibility, treated as compact_video */
   HIGHLIGHTS = "highlights",
@@ -254,6 +254,21 @@ export interface StoryIQOutput {
     processingTime: number;
     attempts: number;
   };
+}
+
+// ============================================================================
+// Custom Errors
+// ============================================================================
+
+/**
+ * Thrown when scene detection is in progress or just started.
+ * Handler should catch this and return 202 to frontend.
+ */
+export class SceneDetectionPendingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SceneDetectionPendingError";
+  }
 }
 
 // ============================================================================
