@@ -107,7 +107,7 @@ export interface ClaudeOptions {
  * Returns the text content from the response.
  */
 export async function callClaude(options: ClaudeOptions): Promise<string> {
-  const { model = "sonnet", maxTokens = 2000, messages } = options;
+  const { model = "sonnet", maxTokens = 8000, messages } = options;
 
   if (USE_ANTHROPIC_API) {
     return callClaudeViaAnthropic(model, maxTokens, messages);

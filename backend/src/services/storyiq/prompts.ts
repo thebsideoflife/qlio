@@ -12,7 +12,8 @@
 
 import {
   Purpose,
-  type VideoUnderstanding,
+  type VideoMetadata,
+  type TranscriptSegment,
   type ProposedSegment,
   type CoverageReport,
   type SegmentContent,
@@ -40,9 +41,16 @@ Schema:
 }`;
 
 const QUALITY_GUIDELINES = `
+CRITICAL INSTRUCTIONS:
+1. READ THE TRANSCRIPT CAREFULLY - it contains what is actually SAID in the video.
+2. Scene breaks describe VISUALS which may differ from audio (e.g., opening credits 
+   show scenes but play theme music - the AUDIO is music, not dialogue).
+3. Base segment titles on what is SAID in the transcript at those timestamps.
+4. Do NOT use external knowledge about this show. Only use the data provided.
+
 Quality Guidelines:
 - Each segment should have a clear narrative purpose
-- Titles should be compelling and descriptive
+- Titles should be compelling and describe what's SAID, not just what's shown
 - Segments should flow naturally when viewed in sequence
 - Prioritize emotional impact and narrative coherence over rigid timing
 `;
@@ -59,12 +67,13 @@ Quality Guidelines:
  * ALL content is included - no gaps.
  */
 function getFullVideoPrompt(
-  understanding: VideoUnderstanding,
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
   targetChapterSeconds: number,
-  sceneBreaks: SceneBreak[] = []
+  sceneBreaks: SceneBreak[] | null
 ): string {
-  const videoDurationSeconds = Math.round(understanding.duration);
-  const videoDurationMinutes = Math.round(understanding.duration / 60);
+  const videoDurationSeconds = Math.round(metadata.duration);
+  const videoDurationMinutes = Math.round(metadata.duration / 60);
 
   // Chapter constraints: 45-180 seconds (target 90s, prefer under 2 min, hard max 3 min)
   const minChapterSeconds = 45;
@@ -77,19 +86,9 @@ function getFullVideoPrompt(
   );
   const expectedChapters = Math.ceil(videoDurationSeconds / effectiveTarget);
 
-  // Format scene breaks as a clean list
-  const sceneList = sceneBreaks
-    .map((s) => {
-      const mins = Math.floor(s.time / 60);
-      const secs = Math.floor(s.time % 60);
-      return `  ${mins}:${String(secs).padStart(2, "0")} - ${s.description}`;
-    })
-    .join("\n");
-
   return `You are StoryIQ, an expert video editor dividing long-form content into chapters.
 
-VIDEO UNDERSTANDING:
-${formatUnderstandingCompact(understanding)}
+${formatContextForPlanning(metadata, transcript, sceneBreaks)}
 
 YOUR TASK:
 Divide this ${videoDurationMinutes}-minute video into chapters (like YouTube chapters).
@@ -103,15 +102,9 @@ CHAPTER LENGTH RULES:
 - ALL content must be included - no gaps, no overlaps
 - First chapter starts at 0, last ends at ${videoDurationSeconds}
 
-AVAILABLE SCENE BREAKS:
-${
-  sceneList ||
-  "  No scene breaks detected - use your judgment based on the content"
-}
-
 CHAPTER REQUIREMENTS:
 1. Use scene breaks as boundaries when possible
-2. If a scene runs long, split at a dialogue pause or beat
+2. If a scene runs long, split at a dialogue pause or natural beat in the transcript
 3. Give each chapter a compelling, descriptive title
 4. Prefer ending on cliffhangers or natural pauses
 
@@ -123,30 +116,17 @@ ${OUTPUT_SCHEMA}`;
  * C1.b - Highlights: Extract best moments with narrative flow
  */
 function getHighlightsPrompt(
-  understanding: VideoUnderstanding,
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
   targetDurationSeconds: number
 ): string {
-  // Determine content style for format-aware guidance
-  const isSerialFormat =
-    understanding.genre?.toLowerCase().includes("reality") ||
-    understanding.genre?.toLowerCase().includes("competition") ||
-    understanding.logline?.toLowerCase().includes("island") ||
-    understanding.logline?.toLowerCase().includes("contestants");
-
-  const narrativeGuidance = isSerialFormat
-    ? `This appears to be episodic/reality content. Focus on the key dramatic beats and character moments that define THIS episode. The viewer should understand what happened and why it matters.`
-    : `This appears to be narrative/scripted content. Create a condensed story that has a beginning, middle, and end. The viewer should feel like they watched a complete mini-story, not just random clips.`;
-
   return `You are StoryIQ, an expert video editor creating a compelling HIGHLIGHTS REEL.
 
-VIDEO UNDERSTANDING:
-${formatUnderstandingCompact(understanding)}
+${formatContextForPlanning(metadata, transcript, null)}
 
 TASK: Create a ${Math.round(
     targetDurationSeconds / 60
   )}-minute highlights package that tells a complete story.
-
-${narrativeGuidance}
 
 STRUCTURE YOUR HIGHLIGHTS LIKE A MINI-STORY:
 1. HOOK (first 10-15s): Start with something that grabs attention and sets up the stakes
@@ -155,10 +135,10 @@ STRUCTURE YOUR HIGHLIGHTS LIKE A MINI-STORY:
 4. RESOLUTION: End with a satisfying conclusion or cliffhanger
 
 Selection Criteria:
-- Emotional peaks marked as "high" or "peak" intensity
+- Read the transcript to identify emotional peaks in dialogue
 - Moments that CONNECT to each other narratively (cause → effect)
 - Character-defining scenes that show growth or conflict
-- Visual spectacle and memorable dialogue
+- Memorable dialogue and dramatic moments
 
 Requirements:
 - MUST feel like a complete viewing experience, not choppy clips
@@ -179,49 +159,46 @@ ${OUTPUT_SCHEMA}`;
  * Viewer should be able to watch all segments in order and follow the story.
  */
 function getCompactVideoPrompt(
-  understanding: VideoUnderstanding,
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
   targetPercent: number,
-  sceneBreaks: SceneBreak[]
+  sceneBreaks: SceneBreak[] | null
 ): string {
-  const targetSeconds = Math.round(
-    (understanding.duration * targetPercent) / 100
-  );
+  const targetSeconds = Math.round((metadata.duration * targetPercent) / 100);
   const targetMinutes = Math.round(targetSeconds / 60);
   const expectedSegments = Math.round(targetSeconds / 90); // ~1.5 min each
 
-  // Format scene breaks as a clean list
-  const sceneList = sceneBreaks
-    .map((s) => {
-      const mins = Math.floor(s.time / 60);
-      const secs = Math.floor(s.time % 60);
-      return `  ${mins}:${String(secs).padStart(2, "0")} - ${s.description}`;
-    })
-    .join("\n");
-
   return `You are StoryIQ, an expert video editor creating a COMPACT VERSION of this video.
 
-Your job is to CUT THE FLUFF and keep only what earns its screen time.
+CRITICAL: You must SELECT the best ${targetPercent}% of the video, NOT chapter the whole thing.
+Your job is to CUT ${
+    100 - targetPercent
+  }% OF THE CONTENT - keep only what earns its screen time.
 
-ORIGINAL VIDEO: ${Math.round(understanding.duration / 60)} minutes
-TARGET OUTPUT: ${targetPercent}% = ~${targetMinutes} minutes
-SEGMENTS: Aim for approximately ${expectedSegments} segments
+ORIGINAL VIDEO: ${Math.round(metadata.duration / 60)} minutes (${Math.round(
+    metadata.duration
+  )}s)
+TARGET OUTPUT: ${targetPercent}% = ~${targetMinutes} minutes (~${targetSeconds}s total)
+SEGMENTS: Approximately ${expectedSegments} segments × ~90s each = ~${targetSeconds}s
+
+MATH CHECK: Your segments MUST add up to approximately ${targetSeconds}s (within 15%).
+If your segments total ${Math.round(
+    metadata.duration
+  )}s, you have NOT cut anything - this is WRONG.
 
 SEGMENT LENGTH RULES:
-- Target: 90 seconds (1.5 min)
+- Target: 90 seconds (1.5 min) per segment
 - Preferred max: 2 minutes
 - Hard max: 3 minutes (segments over 3 min will be rejected)
 - Minimum: 45 seconds
 
-Total output should be within 15% of ${targetMinutes} minutes.
 Segments must be chronological and tell a coherent story when watched in order.
+There WILL BE GAPS between segments - that's the point of compacting.
 
-AVAILABLE SCENE BREAKS (use these as cut points):
-${
-  sceneList ||
-  "  No scene breaks detected - use your judgment based on the content"
-}
+SCENE BREAKS (visual analysis):
+${formatSceneBreaks(sceneBreaks)}
 
-Use scene breaks to find natural cut points. If a scene runs long, split at a dialogue pause or beat.
+Use scene breaks to find natural cut points.
 
 WHAT TO KEEP:
 - High-impact moments: emotional peaks, reveals, humor, tension
@@ -233,8 +210,7 @@ WHAT TO CUT:
 - Extended B-roll, low-energy filler, disconnected subplots
 - Anything a viewer would skip through
 
-VIDEO UNDERSTANDING:
-${formatUnderstandingCompact(understanding)}
+${formatContextForPlanning(metadata, transcript, sceneBreaks)}
 
 ${QUALITY_GUIDELINES}
 ${OUTPUT_SCHEMA}`;
@@ -243,11 +219,13 @@ ${OUTPUT_SCHEMA}`;
 /**
  * C2 - Trailer: Movie trailer structure
  */
-function getTrailerPrompt(understanding: VideoUnderstanding): string {
+function getTrailerPrompt(
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[]
+): string {
   return `You are StoryIQ, creating a movie trailer that builds curiosity and excitement.
 
-VIDEO UNDERSTANDING:
-${formatUnderstandingCompact(understanding)}
+${formatContextForPlanning(metadata, transcript, null)}
 
 TASK: Create a 2-2.5 minute trailer following this structure:
 
@@ -277,7 +255,8 @@ ${OUTPUT_SCHEMA}`;
  * C3 - Tune-In: Short promotional spot
  */
 function getTuneInPrompt(
-  understanding: VideoUnderstanding,
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
   targetSeconds: number
 ): string {
   const is30s = targetSeconds >= 25;
@@ -286,8 +265,7 @@ function getTuneInPrompt(
     is30s ? "30" : "15"
   } second tune-in spot designed for conversion.
 
-VIDEO UNDERSTANDING:
-${formatUnderstandingCompact(understanding)}
+${formatContextForPlanning(metadata, transcript, null)}
 
 TASK: Create a ${is30s ? "30" : "15"} second spot following this structure:
 
@@ -313,13 +291,13 @@ ${OUTPUT_SCHEMA}`;
  * C4 - Bridge: Recap & Tease
  */
 function getBridgePrompt(
-  understanding: VideoUnderstanding,
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
   targetSeconds: number
 ): string {
   return `You are StoryIQ, creating a recap video that reactivates interest and teases what's ahead.
 
-VIDEO UNDERSTANDING:
-${formatUnderstandingCompact(understanding)}
+${formatContextForPlanning(metadata, transcript, null)}
 
 TASK: Create a ${Math.round(
     targetSeconds / 60
@@ -350,13 +328,13 @@ ${OUTPUT_SCHEMA}`;
  * C5 - Episode Recap: "Previously on..." style
  */
 function getEpisodeRecapPrompt(
-  understanding: VideoUnderstanding,
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
   targetSeconds: number
 ): string {
   return `You are StoryIQ, creating a "Previously on..." episode recap.
 
-VIDEO UNDERSTANDING:
-${formatUnderstandingCompact(understanding)}
+${formatContextForPlanning(metadata, transcript, null)}
 
 TASK: Create a ${Math.round(
     targetSeconds
@@ -387,13 +365,13 @@ ${OUTPUT_SCHEMA}`;
  * C6 - Season Recap: Full season summary
  */
 function getSeasonRecapPrompt(
-  understanding: VideoUnderstanding,
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
   targetSeconds: number
 ): string {
   return `You are StoryIQ, creating a comprehensive season recap.
 
-VIDEO UNDERSTANDING:
-${formatUnderstandingCompact(understanding)}
+${formatContextForPlanning(metadata, transcript, null)}
 
 TASK: Create a ${Math.round(
     targetSeconds / 60
@@ -427,13 +405,13 @@ ${OUTPUT_SCHEMA}`;
  * C7 - Social Segment: Retention-optimized clip
  */
 function getSocialSegmentPrompt(
-  understanding: VideoUnderstanding,
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
   targetSeconds: number
 ): string {
   return `You are StoryIQ, creating a social media clip optimized for retention and engagement.
 
-VIDEO UNDERSTANDING:
-${formatUnderstandingCompact(understanding)}
+${formatContextForPlanning(metadata, transcript, null)}
 
 TASK: Create a ${targetSeconds} second social clip following this structure:
 
@@ -527,9 +505,6 @@ ${
         .join(", ")}`
     : "- No gaps"
 }
-- Emotional peaks covered: ${coverage.emotionalCoverage.peaksCovered}/${
-    coverage.emotionalCoverage.peaksTotal
-  }
 ${
   coverage.issues.length > 0
     ? `- ISSUES: ${coverage.issues.join("; ")}`
@@ -537,10 +512,10 @@ ${
 }
 
 EVALUATE:
-1. Does each segment deliver on its title and reasoning?
-2. Given the purpose description above, are the selections appropriate?
-3. Are there obvious improvements (better break points, missed peaks)?
-4. Is the overall quality high enough?
+1. Does the ACTUAL CONTENT match the segment title and reasoning?
+2. Is the total duration within 15% of target?
+3. Are the selections appropriate for the purpose?
+4. Are there obvious improvements?
 
 Output JSON:
 {
@@ -553,8 +528,10 @@ Output JSON:
 
 export function getRevisionPrompt(
   originalSegments: ProposedSegment[],
+  segmentContent: SegmentContent[],
   issues: string[],
-  understanding: VideoUnderstanding,
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
   purpose: Purpose
 ): string {
   // Check if there are duration-related issues
@@ -570,27 +547,33 @@ export function getRevisionPrompt(
     ? `\nREMINDER: Target 90s, prefer under 2 min, hard max 3 min. Split long segments at natural breaks.\n`
     : "";
 
+  // Format original segments with what the verifier saw
+  const segmentDetails = originalSegments
+    .map((s, i) => {
+      const content = segmentContent[i];
+      return `- "${s.title}" [${s.startTime}-${s.endTime}s] (${Math.round(
+        s.endTime - s.startTime
+      )}s)
+    Reasoning: ${s.reasoning}
+    Content: ${content?.transcript?.substring(0, 300) || "No transcript"}...`;
+    })
+    .join("\n\n");
+
   return `You are revising your segment selections based on identified issues.
 
-ORIGINAL SEGMENTS:
-${originalSegments
-  .map(
-    (s) =>
-      `- "${s.title}" [${s.startTime}-${s.endTime}s] (${Math.round(
-        s.endTime - s.startTime
-      )}s): ${s.reasoning}`
-  )
-  .join("\n")}
+ORIGINAL SEGMENTS (with content preview):
+${segmentDetails}
 
 ISSUES TO FIX:
 ${issues.map((i) => `- ${i}`).join("\n")}
 ${durationReminder}
-VIDEO UNDERSTANDING:
-${formatUnderstandingCompact(understanding)}
+FULL VIDEO CONTEXT:
+${formatContextForPlanning(metadata, transcript, null)}
 
 PURPOSE: ${purpose}
 
 Create revised segments that address these issues while maintaining quality.
+Use the full transcript above to find better alternatives.
 
 ${OUTPUT_SCHEMA}`;
 }
@@ -601,19 +584,21 @@ ${OUTPUT_SCHEMA}`;
 
 export interface PlanningPromptOptions {
   purpose: Purpose;
-  understanding: VideoUnderstanding;
+  metadata: VideoMetadata;
+  transcript: TranscriptSegment[];
+  sceneBreaks: SceneBreak[] | null;
   targetDuration?: number;
   targetPercent?: number;
   userInstructions?: string;
-  sceneBreaks?: SceneBreak[];
 }
 
 export function getPlanningPrompt(
   purpose: Purpose,
-  understanding: VideoUnderstanding,
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
+  sceneBreaks: SceneBreak[] | null,
   targetDuration?: number,
   userInstructions?: string,
-  sceneBreaks?: SceneBreak[],
   targetPercent?: number
 ): string {
   let basePrompt: string;
@@ -624,9 +609,10 @@ export function getPlanningPrompt(
       // Target range is 45-120 seconds per chapter (max 2 min)
       const chapterSeconds = targetDuration || 90;
       basePrompt = getFullVideoPrompt(
-        understanding,
+        metadata,
+        transcript,
         chapterSeconds,
-        sceneBreaks || []
+        sceneBreaks
       );
       break;
 
@@ -636,49 +622,58 @@ export function getPlanningPrompt(
       // Default to 50% if not specified
       const percent = targetPercent || 50;
       basePrompt = getCompactVideoPrompt(
-        understanding,
+        metadata,
+        transcript,
         percent,
-        sceneBreaks || []
+        sceneBreaks
       );
       break;
 
     case Purpose.TRAILER:
-      basePrompt = getTrailerPrompt(understanding);
+      basePrompt = getTrailerPrompt(metadata, transcript);
       break;
 
     case Purpose.TUNEIN:
       // Default to 30 seconds
       const tuneInSeconds = targetDuration || 30;
-      basePrompt = getTuneInPrompt(understanding, tuneInSeconds);
+      basePrompt = getTuneInPrompt(metadata, transcript, tuneInSeconds);
       break;
 
     case Purpose.BRIDGE:
       // Default to 90 seconds
       const bridgeSeconds = targetDuration || 90;
-      basePrompt = getBridgePrompt(understanding, bridgeSeconds);
+      basePrompt = getBridgePrompt(metadata, transcript, bridgeSeconds);
       break;
 
     case Purpose.EPISODE_RECAP:
       // Default to 60 seconds
       const episodeRecapSeconds = targetDuration || 60;
-      basePrompt = getEpisodeRecapPrompt(understanding, episodeRecapSeconds);
+      basePrompt = getEpisodeRecapPrompt(
+        metadata,
+        transcript,
+        episodeRecapSeconds
+      );
       break;
 
     case Purpose.SEASON_RECAP:
       // Default to 3 minutes
       const seasonRecapSeconds = targetDuration || 180;
-      basePrompt = getSeasonRecapPrompt(understanding, seasonRecapSeconds);
+      basePrompt = getSeasonRecapPrompt(
+        metadata,
+        transcript,
+        seasonRecapSeconds
+      );
       break;
 
     case Purpose.SOCIAL_SEGMENT:
       // Default to 30 seconds
       const socialSeconds = targetDuration || 30;
-      basePrompt = getSocialSegmentPrompt(understanding, socialSeconds);
+      basePrompt = getSocialSegmentPrompt(metadata, transcript, socialSeconds);
       break;
 
     default:
       // Fallback to highlights
-      basePrompt = getHighlightsPrompt(understanding, 60);
+      basePrompt = getHighlightsPrompt(metadata, transcript, 60);
   }
 
   // Inject user instructions if provided
@@ -695,62 +690,71 @@ ${userInstructions.trim()}
 }
 
 // ============================================================================
-// Helper: Compact Understanding Format
+// Helper: Format Context for Planning (includes transcript)
 // ============================================================================
 
-function formatUnderstandingCompact(understanding: VideoUnderstanding): string {
+/**
+ * Format video metadata, transcript, and scene breaks for planning prompts.
+ * This is the primary context Claude uses to make segment decisions.
+ */
+function formatContextForPlanning(
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
+  sceneBreaks: SceneBreak[] | null
+): string {
   const parts: string[] = [];
 
-  parts.push(`TITLE: ${understanding.title}`);
+  // Basic metadata
+  parts.push(`TITLE: ${metadata.title}`);
   parts.push(
-    `DURATION: ${Math.round(understanding.duration)}s (${Math.round(
-      understanding.duration / 60
+    `DURATION: ${Math.round(metadata.duration)}s (${Math.round(
+      metadata.duration / 60
     )} min)`
   );
-  parts.push(`LOGLINE: ${understanding.logline}`);
-  parts.push(
-    `TONE: ${understanding.tone} | THEMES: ${understanding.themes.join(", ")}`
-  );
   parts.push("");
 
-  parts.push("SCENES:");
-  for (const scene of understanding.scenes.slice(0, 30)) {
-    const chars =
-      scene.characters.length > 0 ? ` [${scene.characters.join(", ")}]` : "";
-    parts.push(
-      `  [${scene.startTime}-${scene.endTime}s] ${scene.location}${chars}`
-    );
-    parts.push(`    ${scene.description}`);
-  }
-  if (understanding.scenes.length > 30) {
-    parts.push(`  ... and ${understanding.scenes.length - 30} more scenes`);
-  }
-  parts.push("");
-
-  if (understanding.characters.length > 0) {
-    parts.push("CHARACTERS:");
-    for (const char of understanding.characters.slice(0, 10)) {
-      parts.push(`  • ${char.name}: ${char.description}`);
+  // Scene breaks (if available)
+  if (sceneBreaks && sceneBreaks.length > 0) {
+    parts.push("SCENE BREAKS (what's visually happening):");
+    for (const scene of sceneBreaks) {
+      const mins = Math.floor(scene.time / 60);
+      const secs = Math.floor(scene.time % 60);
+      const timestamp = `${mins}:${String(secs).padStart(2, "0")}`;
+      parts.push(
+        `  ${timestamp} | ${scene.who} | ${scene.action} | ${scene.mood} | ${scene.audio}`
+      );
     }
     parts.push("");
   }
 
-  parts.push("EMOTIONAL ARC:");
-  for (const beat of understanding.emotionalArc) {
-    const marker =
-      beat.intensity === "peak" ? "★★" : beat.intensity === "high" ? "★" : "•";
-    parts.push(
-      `  ${marker} [${beat.startTime}-${beat.endTime}s] ${beat.emotion} (${beat.intensity})`
-    );
-  }
-  parts.push("");
-
-  if (understanding.peakMoments.length > 0) {
-    parts.push("PEAK MOMENTS (must-include candidates):");
-    for (const peak of understanding.peakMoments.slice(0, 10)) {
-      parts.push(`  ★ ${peak.timestamp}s: ${peak.reason}`);
-    }
+  // Full transcript
+  parts.push("TRANSCRIPT (what's being said):");
+  for (const seg of transcript) {
+    const mins = Math.floor(seg.startTime / 60);
+    const secs = Math.floor(seg.startTime % 60);
+    const timestamp = `${mins}:${String(secs).padStart(2, "0")}`;
+    const speaker = seg.speaker ? `[${seg.speaker}] ` : "";
+    parts.push(`  ${timestamp} ${speaker}${seg.text}`);
   }
 
   return parts.join("\n");
+}
+
+/**
+ * Format scene breaks as a list for prompts that need just scene info.
+ */
+function formatSceneBreaks(sceneBreaks: SceneBreak[] | null): string {
+  if (!sceneBreaks || sceneBreaks.length === 0) {
+    return "  No scene breaks detected - use your judgment based on the transcript";
+  }
+
+  return sceneBreaks
+    .map((s) => {
+      const mins = Math.floor(s.time / 60);
+      const secs = Math.floor(s.time % 60);
+      return `  ${mins}:${String(secs).padStart(2, "0")} | ${s.who} | ${
+        s.action
+      } | ${s.mood}`;
+    })
+    .join("\n");
 }

@@ -3,25 +3,22 @@
  *
  * Main orchestration module for the StoryIQ agent.
  *
- * Pipeline:
- * 1. Deep Understanding - Query 12Labs for comprehensive video analysis
- * 2. Synthesis - Build unified VideoUnderstanding
- * 3. Planning - Generate segment proposals based on purpose
- * 4. Verification - Self-review and revise if needed
+ * Simplified Pipeline:
+ * 1. Read transcript (from S3 cache)
+ * 2. Get scene breaks (optional, from cache)
+ * 3. Planning - Generate segment proposals with full transcript context
+ * 4. Verification - Self-review and revise with transcript context
  *
- * Design Principles (12-Factor Agents):
- * - JSON extraction as foundation
- * - Explicit prompts (owned, not buried in frameworks)
- * - Clear control flow: prompt → parse → validate → loop
- * - Stateless design (all state passed explicitly)
- * - Small, focused operations
+ * Design Principles:
+ * - Give Claude the actual content (transcript + scenes)
+ * - No synthesis step - direct data flow
+ * - Scenes are optional, transcript is required
  */
 
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { TwelveLabsWrapper, type SceneBreak } from "../twelvelabs";
 import { createStoryIQTools } from "./tools";
-import { synthesizeVideoUnderstanding } from "./synthesize";
 import { getPlanningPrompt } from "./prompts";
 import {
   verifyAndRevise,
@@ -36,7 +33,8 @@ import {
   type StoryIQOutput,
   type StoryIQGoals,
   type ProposedSegment,
-  type VideoUnderstanding,
+  type VideoMetadata,
+  type TranscriptSegment,
 } from "./types";
 import { callClaude } from "./claude-client";
 
@@ -122,28 +120,31 @@ export async function generateWithStoryIQ(
 
   console.log(`[StoryIQ] Video duration: ${videoDuration}s`);
 
-  // Create tools with duration for cache validation
+  // Create tools for transcript access
   const tools = createStoryIQTools(twelvelabs, assetId, {
     transcriptS3Uri: input.transcriptS3Uri,
-    videoDuration,
   });
 
-  // Phase 1 & 2: Build video understanding (or use provided)
-  let understanding: VideoUnderstanding;
-  if (input.videoUnderstanding) {
-    console.log("[StoryIQ] Using provided VideoUnderstanding");
-    understanding = input.videoUnderstanding;
-  } else {
-    console.log("[StoryIQ] Phase 1-2: Building VideoUnderstanding...");
+  // Build simple metadata (replaces VideoUnderstanding)
+  const metadata: VideoMetadata = {
+    assetId,
+    duration: videoDuration,
+    title: input.title || "Untitled Video",
+  };
 
-    understanding = await synthesizeVideoUnderstanding({
-      assetId,
-      duration: videoDuration,
-      tools,
-    });
+  // Phase 1: Read transcript (required)
+  console.log("[StoryIQ] Phase 1: Reading transcript...");
+  const transcript = await tools.read_full_transcript();
+  console.log(`[StoryIQ] Got ${transcript.length} transcript segments`);
+
+  if (transcript.length === 0) {
+    throw new Error(
+      `Cannot generate segments: No transcript found for asset ${assetId}. ` +
+        `The video may not have been indexed properly, or it may have no audible speech.`
+    );
   }
 
-  // Phase 2b: Detect scenes for full_video/compact_video/highlights (provides cut points for Claude)
+  // Phase 2: Get scene breaks (optional)
   let sceneBreaks: SceneBreak[] = [];
   const needsSceneDetection =
     goals.purpose === Purpose.FULL_VIDEO ||
@@ -160,6 +161,17 @@ export async function generateWithStoryIQ(
       // Cache hit - use cached scenes
       sceneBreaks = cacheCheck.result.brief;
       console.log(`[StoryIQ] Scene cache hit: ${sceneBreaks.length} scenes`);
+
+      // Log scene cache metadata for debugging
+      const meta = cacheCheck.result.meta;
+      if (meta) {
+        console.log(
+          `[StoryIQ] Scene cache meta: ${meta.windowsSucceeded}/${meta.windowsTotal} windows, complete=${meta.isComplete}, rateLimit=${meta.hitRateLimit}`
+        );
+      }
+      console.log(
+        `[StoryIQ] Scene cache detectedAt: ${cacheCheck.result.detectedAt}`
+      );
     } else if (cacheCheck.failed) {
       // Detection failed (e.g., rate limit) - proceed without scenes
       // Claude can still make good decisions using transcript data
@@ -190,16 +202,40 @@ export async function generateWithStoryIQ(
 
   // Phase 3: Generate initial segment proposals
   console.log("[StoryIQ] Phase 3: Generating segment proposals...");
+
+  // Log sample of input data for debugging
+  if (sceneBreaks.length > 0) {
+    console.log(`[StoryIQ] Sample scene breaks (first 3):`);
+    sceneBreaks.slice(0, 3).forEach((s, i) => {
+      console.log(
+        `  ${i + 1}. ${Math.floor(s.time / 60)}:${String(
+          Math.floor(s.time % 60)
+        ).padStart(2, "0")} | ${s.who} | ${s.action} | ${s.mood}`
+      );
+    });
+  }
+  if (transcript.length > 0) {
+    console.log(`[StoryIQ] Sample transcript (first 3 segments):`);
+    transcript.slice(0, 3).forEach((t, i) => {
+      console.log(
+        `  ${i + 1}. ${Math.floor(t.startTime / 60)}:${String(
+          Math.floor(t.startTime % 60)
+        ).padStart(2, "0")} "${t.text.substring(0, 80)}..."`
+      );
+    });
+  }
+
   const proposedSegments = await generateSegmentProposals(
-    understanding,
-    goals,
-    sceneBreaks
+    metadata,
+    transcript,
+    sceneBreaks,
+    goals
   );
 
   // Validate structure
   const { valid: validatedSegments, errors } = validateSegmentStructure(
     proposedSegments,
-    understanding.duration
+    metadata.duration
   );
 
   if (errors.length > 0) {
@@ -213,7 +249,9 @@ export async function generateWithStoryIQ(
   console.log("[StoryIQ] Phase 4: Verification loop...");
   const finalResult = await verifyAndRevise({
     segments: resolvedSegments,
-    understanding,
+    metadata,
+    transcript,
+    sceneBreaks,
     purpose: goals.purpose,
     targetDuration: goals.targetDuration,
     tools,
@@ -232,7 +270,6 @@ export async function generateWithStoryIQ(
 
   return {
     segments: finalResult,
-    videoUnderstanding: understanding,
     metadata: {
       purpose: goals.purpose,
       targetDuration: goals.targetDuration,
@@ -248,27 +285,31 @@ export async function generateWithStoryIQ(
 // ============================================================================
 
 async function generateSegmentProposals(
-  understanding: VideoUnderstanding,
-  goals: StoryIQGoals,
-  sceneBreaks: SceneBreak[] = []
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
+  sceneBreaks: SceneBreak[] | null,
+  goals: StoryIQGoals
 ): Promise<ProposedSegment[]> {
   // Get the appropriate prompt for this purpose
   const prompt = getPlanningPrompt(
     goals.purpose,
-    understanding,
+    metadata,
+    transcript,
+    sceneBreaks,
     goals.targetDuration,
     goals.userInstructions,
-    sceneBreaks,
     goals.targetPercent
   );
 
-  // Determine max tokens based on purpose
-  // Full video and compact video modes may need many segments
-  const maxTokens =
-    goals.purpose === Purpose.FULL_VIDEO ||
-    goals.purpose === Purpose.COMPACT_VIDEO
-      ? 4000
-      : 2000;
+  // Log prompt size for debugging
+  const promptChars = prompt.length;
+  const estimatedTokens = Math.round(promptChars / 4); // rough estimate
+  console.log(
+    `[StoryIQ] Planning prompt: ${promptChars} chars (~${estimatedTokens} tokens)`
+  );
+
+  // Use generous max tokens - don't risk truncation
+  const maxTokens = 8000;
 
   try {
     const content = await callClaude({
@@ -284,6 +325,24 @@ async function generateSegmentProposals(
       console.log(
         `[StoryIQ] Generated ${parsed.plan.length} segment proposals`
       );
+
+      // Log each proposed segment for debugging
+      const totalDuration = parsed.plan.reduce(
+        (sum, s) => sum + (s.endTime - s.startTime),
+        0
+      );
+      console.log(
+        `[StoryIQ] Proposed segments (total ${Math.round(totalDuration)}s):`
+      );
+      parsed.plan.forEach((seg, i) => {
+        const duration = Math.round(seg.endTime - seg.startTime);
+        console.log(
+          `  ${i + 1}. [${Math.round(seg.startTime)}s-${Math.round(
+            seg.endTime
+          )}s] (${duration}s) "${seg.title}"`
+        );
+      });
+
       return parsed.plan;
     }
 
@@ -543,7 +602,8 @@ export type {
   StoryIQOutput,
   StoryIQGoals,
   ProposedSegment,
-  VideoUnderstanding,
+  VideoMetadata,
+  TranscriptSegment,
   Purpose,
 } from "./types";
 

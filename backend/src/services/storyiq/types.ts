@@ -16,79 +16,28 @@ export const MODEL_SONNET = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
 export const MODEL_HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 
 // ============================================================================
-// Video Understanding Types (Output of Phase 1 & 2)
+// Video Metadata (Simple - replaces VideoUnderstanding)
 // ============================================================================
 
-export interface SceneBreakdown {
-  sceneNumber: number;
-  startTime: number;
-  endTime: number;
-  location: string;
-  characters: string[];
-  description: string;
-  keyActions: string[];
-  dialogue?: string; // Notable dialogue if any
+/**
+ * Simple video metadata - just what we need for prompts.
+ * Replaces the bloated VideoUnderstanding type.
+ */
+export interface VideoMetadata {
+  assetId: string;
+  duration: number; // seconds
+  title: string;
 }
 
-export interface CharacterInfo {
-  name: string;
-  description: string;
-  firstAppearance: number; // timestamp
-  keyMoments: Array<{
-    timestamp: number;
-    description: string;
-  }>;
-  relationships?: string[];
-}
-
-export interface EmotionalBeat {
-  startTime: number;
-  endTime: number;
-  intensity: "low" | "medium" | "high" | "peak";
-  emotion: string; // e.g., "tension", "joy", "sadness", "excitement"
-  description: string;
-}
-
-export interface VisualNote {
-  startTime: number;
-  endTime: number;
-  style: string; // e.g., "close-up", "wide shot", "montage"
-  pacing: "slow" | "medium" | "fast";
-  notes: string;
-}
+// ============================================================================
+// Transcript Types
+// ============================================================================
 
 export interface TranscriptSegment {
   startTime: number;
   endTime: number;
   speaker?: string;
   text: string;
-}
-
-/**
- * Unified understanding of the video content.
- * Built from multiple 12Labs queries and synthesized by LLM.
- */
-export interface VideoUnderstanding {
-  // Metadata
-  assetId: string;
-  duration: number;
-  title: string;
-
-  // High-level understanding
-  logline: string; // One sentence summary
-  themes: string[];
-  tone: string;
-  genre?: string;
-
-  // Detailed breakdowns
-  scenes: SceneBreakdown[];
-  characters: CharacterInfo[];
-  emotionalArc: EmotionalBeat[];
-  visualNotes: VisualNote[];
-  transcript: TranscriptSegment[];
-
-  // Quick lookups (built during synthesis)
-  peakMoments: Array<{ timestamp: number; reason: string }>;
 }
 
 // ============================================================================
@@ -166,10 +115,6 @@ export interface CoverageReport {
   totalDuration: number;
   targetDuration?: number;
   gaps?: Array<{ start: number; end: number }>; // For full_video mode
-  emotionalCoverage: {
-    peaksCovered: number;
-    peaksTotal: number;
-  };
   issues: string[];
   isValid: boolean;
 }
@@ -202,20 +147,12 @@ export interface TimeRange {
 }
 
 /**
- * Human-readable tool interface for StoryIQ agent.
- * These abstract away 12Labs complexity and chunk handling.
+ * Tool interface for StoryIQ agent.
+ * Provides access to transcript and verification utilities.
  */
 export interface StoryIQTools {
-  // Deep understanding tools (Phase 1)
-  read_scene_breakdown(): Promise<SceneBreakdown[]>;
+  // Primary data source
   read_full_transcript(): Promise<TranscriptSegment[]>;
-  read_character_analysis(): Promise<CharacterInfo[]>;
-  read_emotional_beats(): Promise<EmotionalBeat[]>;
-  read_visual_style_notes(): Promise<VisualNote[]>;
-
-  // Scene detail tool (for Compact Video mode)
-  // Claude can call this to get full scene info for a time range
-  get_scene_details(startTime: number, endTime: number): Promise<string>;
 
   // Verification tools (Phase 4)
   read_transcript_for_segments(
@@ -224,8 +161,7 @@ export interface StoryIQTools {
   check_segment_coverage(
     segments: TimeRange[],
     purpose: Purpose,
-    videoDuration: number,
-    emotionalBeats?: EmotionalBeat[]
+    videoDuration: number
   ): Promise<CoverageReport>;
 }
 
@@ -236,17 +172,16 @@ export interface StoryIQTools {
 export interface StoryIQInput {
   assetId: string;
   goals: StoryIQGoals;
-  // Optional: pre-computed understanding (for retries)
-  videoUnderstanding?: VideoUnderstanding;
   // Optional: S3 URI for cached transcript (faster than re-fetching from 12Labs)
   transcriptS3Uri?: string;
   // Optional: video duration in seconds (from frontend or asset record)
   videoDuration?: number;
+  // Optional: video title (for prompts)
+  title?: string;
 }
 
 export interface StoryIQOutput {
   segments: FinalSegments;
-  videoUnderstanding: VideoUnderstanding;
   metadata: {
     purpose: Purpose;
     targetDuration?: number;
