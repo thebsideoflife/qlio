@@ -165,6 +165,16 @@ export async function verifyAndRevise(
     }
   }
 
+  // 2d. Check for overlapping segments (CRITICAL - segments must never overlap)
+  const overlapIssues = checkOverlaps(segments);
+  if (overlapIssues.length > 0) {
+    console.warn(
+      `[StoryIQ Verify] OVERLAP DETECTED: ${overlapIssues.length} overlapping segment(s)`
+    );
+    coverage.issues.push(...overlapIssues);
+    coverage.isValid = false;
+  }
+
   // 3. Agent reviews its own work
   const review = await reviewSegments(
     segments,
@@ -434,6 +444,34 @@ export function checkTotalDuration(
   }
 
   return null;
+}
+
+/**
+ * Check for overlapping segments (segments must never overlap).
+ */
+function checkOverlaps(segments: ProposedSegment[]): string[] {
+  if (segments.length <= 1) return [];
+
+  const issues: string[] = [];
+  const sorted = [...segments].sort((a, b) => a.startTime - b.startTime);
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const curr = sorted[i];
+
+    if (curr.startTime < prev.endTime) {
+      const overlapDuration = Math.round(prev.endTime - curr.startTime);
+      issues.push(
+        `OVERLAP: "${prev.title}" (ends ${Math.round(
+          prev.endTime
+        )}s) overlaps with "${curr.title}" (starts ${Math.round(
+          curr.startTime
+        )}s) by ${overlapDuration}s - segments must not overlap`
+      );
+    }
+  }
+
+  return issues;
 }
 
 // ============================================================================

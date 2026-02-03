@@ -48,6 +48,7 @@ CRITICAL INSTRUCTIONS:
    show scenes but play theme music - the AUDIO is music, not dialogue).
 3. Base segment titles on what is SAID in the transcript at those timestamps.
 4. Do NOT use external knowledge about this show. Only use the data provided.
+5. SEGMENTS MUST NOT OVERLAP - each segment's startTime must be >= the previous segment's endTime.
 
 Quality Guidelines:
 - Each segment should have a clear narrative purpose
