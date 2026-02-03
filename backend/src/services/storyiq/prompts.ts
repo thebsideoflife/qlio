@@ -722,6 +722,69 @@ ${userInstructions.trim()}
 // ============================================================================
 
 /**
+ * Batch word-level transcript segments into sentences for token efficiency.
+ * Groups by punctuation (. ? !) or time gaps (>2s pause).
+ */
+function batchTranscriptIntoSentences(
+  transcript: TranscriptSegment[]
+): { startTime: number; endTime: number; text: string }[] {
+  if (transcript.length === 0) return [];
+
+  const sentences: { startTime: number; endTime: number; text: string }[] = [];
+  let currentWords: string[] = [];
+  let startTime = transcript[0].startTime;
+  let endTime = transcript[0].endTime;
+
+  for (let i = 0; i < transcript.length; i++) {
+    const seg = transcript[i];
+    const text = seg.text.trim();
+
+    // Check for time gap (>2s pause indicates new thought)
+    const prevEndTime = i > 0 ? transcript[i - 1].endTime : seg.startTime;
+    const timeGap = seg.startTime - prevEndTime;
+
+    // Flush current sentence if there's a big time gap
+    if (timeGap > 2 && currentWords.length > 0) {
+      sentences.push({
+        startTime,
+        endTime,
+        text: currentWords.join(" "),
+      });
+      currentWords = [];
+      startTime = seg.startTime;
+    }
+
+    // Add word to current sentence
+    if (currentWords.length === 0) {
+      startTime = seg.startTime;
+    }
+    currentWords.push(text);
+    endTime = seg.endTime;
+
+    // Check if this word ends a sentence (punctuation)
+    if (text.match(/[.?!]$/)) {
+      sentences.push({
+        startTime,
+        endTime,
+        text: currentWords.join(" "),
+      });
+      currentWords = [];
+    }
+  }
+
+  // Don't forget remaining words
+  if (currentWords.length > 0) {
+    sentences.push({
+      startTime,
+      endTime,
+      text: currentWords.join(" "),
+    });
+  }
+
+  return sentences;
+}
+
+/**
  * Format video metadata, transcript, and scene breaks for planning prompts.
  * This is the primary context Claude uses to make segment decisions.
  */
@@ -755,14 +818,12 @@ function formatContextForPlanning(
     parts.push("");
   }
 
-  // Full transcript
-  parts.push("TRANSCRIPT (what's being said):");
-  for (const seg of transcript) {
-    const mins = Math.floor(seg.startTime / 60);
-    const secs = Math.floor(seg.startTime % 60);
-    const timestamp = `${mins}:${String(secs).padStart(2, "0")}`;
-    const speaker = seg.speaker ? `[${seg.speaker}] ` : "";
-    parts.push(`  ${timestamp} ${speaker}${seg.text}`);
+  // Transcript - batched into sentences for token efficiency
+  const sentences = batchTranscriptIntoSentences(transcript);
+  parts.push(`TRANSCRIPT (${sentences.length} lines):`);
+  for (const sentence of sentences) {
+    const timestamp = formatTimestamp(sentence.startTime);
+    parts.push(`  ${timestamp} ${sentence.text}`);
   }
 
   return parts.join("\n");
