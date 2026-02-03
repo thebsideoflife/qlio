@@ -198,17 +198,30 @@ export interface VideoMetadata {
 // ============================================================================
 
 /**
- * Brief scene break info - timestamp + one sentence
- * This is what Claude sees by default
+ * Enriched scene break with visual/audio context.
+ * Uses pipe-delimited format from 12Labs for token efficiency.
+ *
+ * Fields:
+ * - time: timestamp in seconds
+ * - who: people visible (2-5 words)
+ * - action: what's happening visually (3-8 words)
+ * - mood: emotional tone (tense/calm/funny/sad/exciting/dramatic/romantic/scary)
+ * - audio: notable sounds (2-5 words, or "dialogue" if just talking)
  */
 export interface SceneBreak {
   time: number; // seconds
-  description: string; // one sentence
+  who: string; // people visible
+  action: string; // what's happening visually
+  mood: string; // emotional tone
+  audio: string; // notable sounds
 }
 
 /**
  * Full scene detail - all available info
  * Available via get_scene_details() tool
+ *
+ * Includes enriched fields from pipe-delimited 12Labs response:
+ * who, action, mood, audio
  */
 export interface SceneDetail {
   time: number; // seconds
@@ -217,6 +230,11 @@ export interface SceneDetail {
   characters: string[];
   description: string;
   visualNotes?: string;
+  // Enriched fields from new pipe-delimited format
+  who?: string;
+  action?: string;
+  mood?: string;
+  audio?: string;
 }
 
 /**
@@ -1165,7 +1183,10 @@ export class TwelveLabsWrapper {
       assetId,
       brief: mergedScenes.map((s) => ({
         time: s.time,
-        description: s.description,
+        who: s.who || "",
+        action: s.action || "",
+        mood: s.mood || "",
+        audio: s.audio || "",
       })),
       detailed: mergedScenes,
       detectedAt: new Date().toISOString(),
@@ -1188,39 +1209,38 @@ export class TwelveLabsWrapper {
   /**
    * Detect all scenes in a video with a single API call.
    * This is more efficient than windowed calls since 12Labs bills full video duration per call.
+   *
+   * Uses pipe-delimited format for ~40-50% token savings vs JSON.
+   * Target: ~65 scenes per hour chunk (1 per ~55s).
    */
   private async detectScenesForEntireVideo(
     videoId: string,
     duration: number
   ): Promise<SceneDetail[]> {
-    // Balanced scene detection - roughly 1 per 2 minutes, concise output
-    const targetScenes = Math.max(20, Math.round(duration / 120)); // ~1 per 2 minutes, min 20
-    const prompt = `Analyze this ${Math.round(duration)} second video.
+    // Target ~1 scene per 55 seconds, min 15, max 70 per chunk
+    const targetScenes = Math.min(70, Math.max(15, Math.round(duration / 55)));
 
-Identify approximately ${targetScenes} key scene changes. Mark scenes for: hard cuts, location changes, time jumps, or topic shifts.
+    // Pipe-delimited prompt for token efficiency
+    const prompt = `Analyze this ${Math.round(
+      duration
+    )} second video for scene changes.
 
-For each scene: time (seconds), location (brief), description (1 short sentence).
+For each scene, provide these fields separated by | (pipe):
+1. time: timestamp in seconds (integer)
+2. who: people visible (2-5 words)
+3. action: what's happening visually (3-8 words)
+4. mood: one word (tense/calm/funny/sad/exciting/dramatic/romantic/scary/neutral)
+5. audio: notable sounds (2-5 words, or "dialogue" if just talking)
 
-Spread scenes across the video timeline.`;
+Output format - first line is header, then one scene per line:
+time|who|action|mood|audio
+0|HBO logo|static logo on screen|neutral|theme music
+45|man in robe|walking to bathroom|calm|silence
+120|two men|arguing in car|tense|radio playing
 
-    const schema = {
-      type: "object",
-      properties: {
-        scenes: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              time: { type: "number" },
-              location: { type: "string" },
-              description: { type: "string" },
-            },
-            required: ["time", "description"],
-          },
-        },
-      },
-      required: ["scenes"],
-    };
+Target ~${targetScenes} scenes spread across the full video.
+Mark scenes for: hard cuts, location changes, time jumps, or significant mood shifts.
+Be concise. No extra text or explanation.`;
 
     // Retry loop for rate limits
     const maxAttempts = 3;
@@ -1233,7 +1253,7 @@ Spread scenes across the video timeline.`;
           {
             videoId,
             prompt,
-            responseFormat: { type: "json_schema", jsonSchema: schema },
+            // No JSON schema - using plain text pipe-delimited format
             temperature: 0.1,
             maxTokens: 4096,
           },
@@ -1251,44 +1271,16 @@ Spread scenes across the video timeline.`;
         const data = fullText;
         if (!data) return [];
 
-        // Parse response (data is always a string from streaming)
-        let parsed: { scenes?: any[] };
-        try {
-          parsed = JSON.parse(data);
-        } catch {
-          // Try to extract JSON from markdown code blocks
-          const jsonMatch = data.match(/```(?:json)?\s*([\s\S]*?)```/);
-          if (jsonMatch) {
-            parsed = JSON.parse(jsonMatch[1].trim());
-          } else {
-            // Try to find JSON object in response
-            const objMatch = data.match(/\{[\s\S]*"scenes"[\s\S]*\}/);
-            if (objMatch) {
-              parsed = JSON.parse(objMatch[0]);
-            } else {
-              throw new Error("No JSON found in response");
-            }
-          }
-        }
-
-        if (!parsed.scenes || !Array.isArray(parsed.scenes)) {
-          return [];
-        }
+        // Parse pipe-delimited response
+        const scenes = this.parsePipeDelimitedScenes(data);
 
         console.log(
-          `[12Labs] Detected ${parsed.scenes.length} scenes in ${Math.round(
+          `[12Labs] Detected ${scenes.length} scenes in ${Math.round(
             duration
           )}s video`
         );
 
-        return parsed.scenes.map((s: any) => ({
-          time: s.time || 0,
-          endTime: undefined, // Not requesting endTime for now to save tokens
-          location: s.location || "Unknown",
-          characters: [], // Not requesting characters for now to save tokens
-          description: s.description || "",
-          visualNotes: "", // Not requesting visualNotes for now to save tokens
-        }));
+        return scenes;
       } catch (err: any) {
         const is429 =
           err?.status === 429 ||
@@ -1350,6 +1342,56 @@ Spread scenes across the video timeline.`;
     }
 
     throw lastError || new Error("Scene detection failed after retries");
+  }
+
+  /**
+   * Parse pipe-delimited scene response from 12Labs.
+   * Format: time|who|action|mood|audio (one scene per line, header row first)
+   */
+  private parsePipeDelimitedScenes(response: string): SceneDetail[] {
+    const lines = response.trim().split("\n");
+    const scenes: SceneDetail[] = [];
+
+    for (const line of lines) {
+      // Skip header row and empty lines
+      if (
+        !line.trim() ||
+        line.toLowerCase().startsWith("time|") ||
+        line.toLowerCase().includes("|who|")
+      ) {
+        continue;
+      }
+
+      const parts = line.split("|");
+      if (parts.length < 5) continue;
+
+      const time = parseInt(parts[0].trim(), 10);
+      if (isNaN(time)) continue;
+
+      const who = parts[1]?.trim() || "";
+      const action = parts[2]?.trim() || "";
+      const mood = parts[3]?.trim() || "";
+      const audio = parts[4]?.trim() || "";
+
+      // Build description from the enriched fields for backwards compatibility
+      const description = `${who} - ${action}`.trim();
+
+      scenes.push({
+        time,
+        endTime: undefined,
+        location: "", // Not used in new format
+        characters: who ? [who] : [],
+        description,
+        visualNotes: mood ? `Mood: ${mood}` : "",
+        // Enriched fields for new SceneBreak format
+        who,
+        action,
+        mood,
+        audio,
+      });
+    }
+
+    return scenes;
   }
 
   /**

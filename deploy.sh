@@ -104,3 +104,35 @@ echo ""
 echo "API URL: https://4bvanrvph5.execute-api.us-west-2.amazonaws.com"
 echo ""
 
+# ============================================================================
+# OPERATIONS REFERENCE
+# ============================================================================
+#
+# Scene Detection Commands:
+# -------------------------
+# Scene detection runs automatically on first segment generation, but you can
+# trigger it manually or clear caches as needed.
+#
+# Trigger scene detection for an asset:
+#   aws lambda invoke \
+#     --function-name zeevee-detect-scenes \
+#     --invocation-type Event \
+#     --cli-binary-format raw-in-base64-out \
+#     --payload '{"assetId": "YOUR_ASSET_ID"}' \
+#     /dev/null
+#
+# Clear scene cache for a single asset:
+#   aws s3 rm s3://${BUCKET}/scene-cache/${ASSET_ID}.json
+#
+# Clear ALL scene caches (do this before deploying SceneBreak schema changes):
+#   aws s3 rm s3://zeevee-assets/scene-cache/ --recursive
+#
+# Check scene cache status:
+#   aws s3 cp s3://zeevee-assets/scene-cache/${ASSET_ID}.json - | jq .
+#
+# View Lambda logs:
+#   aws logs tail /aws/lambda/zeevee-detect-scenes --follow
+#   aws logs tail /aws/lambda/zeevee-generate-segments --follow
+#
+# ============================================================================
+

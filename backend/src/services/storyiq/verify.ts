@@ -15,13 +15,15 @@ import {
   parseJSONFromLLM,
   Purpose,
   type ProposedSegment,
-  type VideoUnderstanding,
+  type VideoMetadata,
+  type TranscriptSegment,
   type StoryIQTools,
   type ReviewResult,
   type FinalSegments,
   type SegmentContent,
   type CoverageReport,
 } from "./types";
+import { type SceneBreak } from "../twelvelabs";
 import { getReviewPrompt, getRevisionPrompt } from "./prompts";
 import { callClaude } from "./claude-client";
 
@@ -33,7 +35,9 @@ const MAX_REVISION_ATTEMPTS = 3;
 
 export interface VerifyOptions {
   segments: ProposedSegment[];
-  understanding: VideoUnderstanding;
+  metadata: VideoMetadata;
+  transcript: TranscriptSegment[];
+  sceneBreaks: SceneBreak[] | null;
   purpose: Purpose;
   targetDuration?: number;
   tools: StoryIQTools;
@@ -49,7 +53,9 @@ export async function verifyAndRevise(
 ): Promise<FinalSegments> {
   const {
     segments,
-    understanding,
+    metadata,
+    transcript,
+    sceneBreaks,
     purpose,
     targetDuration,
     tools,
@@ -77,14 +83,29 @@ export async function verifyAndRevise(
     }));
   }
 
-  // 2. Check coverage requirements (pass emotional beats to avoid re-querying)
+  // Log what the reviewer will see for first few segments
+  console.log(
+    `[StoryIQ Verify] Comparing proposed vs actual content (first 3):`
+  );
+  segments.slice(0, 3).forEach((seg, i) => {
+    const content = segmentContent[i];
+    const actualPreview =
+      content?.transcript?.substring(0, 100) || "(no transcript)";
+    console.log(`  Segment ${i + 1}: "${seg.title}"`);
+    console.log(
+      `    Proposed reasoning: ${seg.reasoning?.substring(0, 80)}...`
+    );
+    console.log(`    Actual transcript: "${actualPreview}..."`);
+  });
+
+  // 2. Check coverage requirements
   let coverage: CoverageReport;
   try {
     coverage = await tools.check_segment_coverage(
       timeRanges,
       purpose,
-      understanding.duration,
-      understanding.emotionalArc // Use cached emotional beats
+      metadata.duration
+      // No emotional beats - we now rely on transcript for content analysis
     );
     coverage.targetDuration = targetDuration;
   } catch (error) {
@@ -95,7 +116,6 @@ export async function verifyAndRevise(
         0
       ),
       targetDuration,
-      emotionalCoverage: { peaksCovered: 0, peaksTotal: 0 },
       issues: [],
       isValid: true,
     };
@@ -119,13 +139,40 @@ export async function verifyAndRevise(
   }
 
   // 2c. Check total duration against target (for compact_video)
+  let severeDurationViolation = false;
   if (needsStrictDuration && targetDuration && targetDuration > 0) {
     const totalIssue = checkTotalDuration(segments, targetDuration);
     if (totalIssue) {
       console.log(`[StoryIQ Verify] Total duration issue: ${totalIssue}`);
       coverage.issues.push(totalIssue);
       coverage.isValid = false;
+
+      // Check for severe violation (>50% over target) - this MUST be revised
+      const totalDuration = segments.reduce(
+        (sum, s) => sum + (s.endTime - s.startTime),
+        0
+      );
+      if (totalDuration > targetDuration * 1.5) {
+        severeDurationViolation = true;
+        console.warn(
+          `[StoryIQ Verify] SEVERE: Total ${Math.round(
+            totalDuration
+          )}s is >${Math.round(
+            targetDuration * 1.5
+          )}s (150% of target) - forcing revision`
+        );
+      }
     }
+  }
+
+  // 2d. Check for overlapping segments (CRITICAL - segments must never overlap)
+  const overlapIssues = checkOverlaps(segments);
+  if (overlapIssues.length > 0) {
+    console.warn(
+      `[StoryIQ Verify] OVERLAP DETECTED: ${overlapIssues.length} overlapping segment(s)`
+    );
+    coverage.issues.push(...overlapIssues);
+    coverage.isValid = false;
   }
 
   // 3. Agent reviews its own work
@@ -144,25 +191,60 @@ export async function verifyAndRevise(
   }
 
   // 4. Revise or finalize
-  if (review.needsRevision && attempt < MAX_REVISION_ATTEMPTS) {
+  // Force revision if severe duration violation, regardless of reviewer opinion
+  const mustRevise = review.needsRevision || severeDurationViolation;
+  if (mustRevise && attempt < MAX_REVISION_ATTEMPTS) {
     console.log("[StoryIQ Verify] Revising segments...");
+
+    const allIssues = severeDurationViolation
+      ? [
+          `CRITICAL: Total duration is ${Math.round(
+            segments.reduce((sum, s) => sum + (s.endTime - s.startTime), 0)
+          )}s but target is ${targetDuration}s. You MUST cut segments to reach the target.`,
+          ...review.issues,
+        ]
+      : review.issues;
 
     const revisedSegments = await reviseSegments(
       segments,
-      review.issues,
-      understanding,
+      segmentContent,
+      allIssues,
+      metadata,
+      transcript,
       purpose
     );
 
-    // Recursive verification with incremented attempt
-    return verifyAndRevise({
-      segments: revisedSegments,
-      understanding,
-      purpose,
-      targetDuration,
-      tools,
-      attempt: attempt + 1,
-    });
+    // Check if revision actually changed anything
+    const revisedDuration = revisedSegments.reduce(
+      (sum, s) => sum + (s.endTime - s.startTime),
+      0
+    );
+    const originalDuration = segments.reduce(
+      (sum, s) => sum + (s.endTime - s.startTime),
+      0
+    );
+
+    if (
+      revisedSegments.length === segments.length &&
+      Math.abs(revisedDuration - originalDuration) < 10
+    ) {
+      console.warn(
+        "[StoryIQ Verify] Revision did not change segments (possible parse failure) - skipping retry"
+      );
+      // Don't recurse with identical segments - it's a waste
+    } else {
+      // Recursive verification with incremented attempt
+      return verifyAndRevise({
+        segments: revisedSegments,
+        metadata,
+        transcript,
+        sceneBreaks,
+        purpose,
+        targetDuration,
+        tools,
+        attempt: attempt + 1,
+      });
+    }
   }
 
   // Finalize
@@ -206,7 +288,7 @@ async function reviewSegments(
   try {
     const content = await callClaude({
       model: "sonnet",
-      maxTokens: 1000,
+      maxTokens: 4000,
       messages: [{ role: "user", content: prompt }],
     });
 
@@ -235,29 +317,39 @@ async function reviewSegments(
 
 async function reviseSegments(
   originalSegments: ProposedSegment[],
+  segmentContent: SegmentContent[],
   issues: string[],
-  understanding: VideoUnderstanding,
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
   purpose: Purpose
 ): Promise<ProposedSegment[]> {
   const prompt = getRevisionPrompt(
     originalSegments,
+    segmentContent,
     issues,
-    understanding,
+    metadata,
+    transcript,
     purpose
   );
 
   try {
     const content = await callClaude({
       model: "sonnet",
-      maxTokens: 2000,
+      maxTokens: 8000,
       messages: [{ role: "user", content: prompt }],
     });
 
     const parsed = parseJSONFromLLM<{ plan?: ProposedSegment[] }>(content);
     if (parsed.plan && Array.isArray(parsed.plan)) {
+      console.log(
+        `[StoryIQ Verify] Revision produced ${parsed.plan.length} segments`
+      );
       return parsed.plan;
     }
 
+    console.warn(
+      "[StoryIQ Verify] Revision response missing 'plan' array, keeping original"
+    );
     return originalSegments;
   } catch (error) {
     console.error("[StoryIQ Verify] Revision failed:", error);
@@ -352,6 +444,34 @@ export function checkTotalDuration(
   }
 
   return null;
+}
+
+/**
+ * Check for overlapping segments (segments must never overlap).
+ */
+function checkOverlaps(segments: ProposedSegment[]): string[] {
+  if (segments.length <= 1) return [];
+
+  const issues: string[] = [];
+  const sorted = [...segments].sort((a, b) => a.startTime - b.startTime);
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const curr = sorted[i];
+
+    if (curr.startTime < prev.endTime) {
+      const overlapDuration = Math.round(prev.endTime - curr.startTime);
+      issues.push(
+        `OVERLAP: "${prev.title}" (ends ${Math.round(
+          prev.endTime
+        )}s) overlaps with "${curr.title}" (starts ${Math.round(
+          curr.startTime
+        )}s) by ${overlapDuration}s - segments must not overlap`
+      );
+    }
+  }
+
+  return issues;
 }
 
 // ============================================================================
