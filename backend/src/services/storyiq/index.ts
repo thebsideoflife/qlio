@@ -15,8 +15,6 @@
  * - Scenes are optional, transcript is required
  */
 
-import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { TwelveLabsWrapper, type SceneBreak } from "../twelvelabs";
 import { createStoryIQTools } from "./tools";
 import { getPlanningPrompt } from "./prompts";
@@ -28,7 +26,6 @@ import {
 import {
   parseJSONFromLLM,
   Purpose,
-  SceneDetectionPendingError,
   type StoryIQInput,
   type StoryIQOutput,
   type StoryIQGoals,
@@ -37,13 +34,6 @@ import {
   type TranscriptSegment,
 } from "./types";
 import { callClaude } from "./claude-client";
-
-// Lambda client for async scene detection
-const lambdaClient = new LambdaClient({});
-const s3Client = new S3Client({});
-const DETECT_SCENES_FUNCTION = process.env.DETECT_SCENES_FUNCTION;
-const SCENE_CACHE_BUCKET =
-  process.env.BUCKET_NAME || process.env.ASSETS_BUCKET || process.env.S3_BUCKET;
 
 // ============================================================================
 // Main Entry Point
@@ -154,7 +144,7 @@ export async function generateWithStoryIQ(
   if (needsSceneDetection) {
     console.log("[StoryIQ] Checking scene cache...");
 
-    // Check cache status
+    // Check cache status - scenes are optional, we never auto-trigger detection
     const cacheCheck = await twelvelabs.getSceneCacheFromS3(assetId);
 
     if (cacheCheck.result) {
@@ -172,31 +162,24 @@ export async function generateWithStoryIQ(
       console.log(
         `[StoryIQ] Scene cache detectedAt: ${cacheCheck.result.detectedAt}`
       );
-    } else if (cacheCheck.failed) {
-      // Detection failed (e.g., rate limit) - proceed without scenes
-      // Claude can still make good decisions using transcript data
-      console.warn(
-        `[StoryIQ] Scene detection previously failed: ${cacheCheck.failedReason}. ` +
-          `Proceeding without scene data - Claude will use transcript.`
-      );
-      sceneBreaks = [];
     } else {
-      // Need to wait for scene detection (either start it or wait for existing)
-      if (!cacheCheck.inProgress) {
-        // No cache and not in progress - start detection
-        console.log("[StoryIQ] Scene cache miss, starting async detection");
-        await markSceneDetectionInProgress(assetId);
-        await invokeDetectScenesLambda(assetId);
+      // No cache available - proceed without scenes
+      // Scene detection must be triggered manually via the detect-scenes Lambda
+      if (cacheCheck.failed) {
+        console.warn(
+          `[StoryIQ] Scene detection previously failed: ${cacheCheck.failedReason}. ` +
+            `Proceeding without scene data.`
+        );
+      } else if (cacheCheck.inProgress) {
+        console.log(
+          "[StoryIQ] Scene detection in progress but not waiting. Proceeding without scenes."
+        );
       } else {
-        console.log("[StoryIQ] Scene detection already in progress");
+        console.log(
+          "[StoryIQ] No scene cache found. Run detect-scenes Lambda manually to populate. Proceeding without scenes."
+        );
       }
-
-      // Update status to detecting_scenes and poll until ready
-      await onStatusChange?.("detecting_scenes");
-      sceneBreaks = await pollForSceneCache(twelvelabs, assetId);
-
-      // Update status back to generating
-      await onStatusChange?.("generating");
+      sceneBreaks = [];
     }
   }
 
@@ -492,133 +475,6 @@ export function mapMetadataToGoals(metadata: FrontendMetadata): StoryIQGoals {
     targetPercent,
     userInstructions,
   };
-}
-
-// ============================================================================
-// Async Scene Detection
-// ============================================================================
-
-/**
- * Write in_progress marker to S3 cache before invoking Lambda.
- * Prevents race condition where multiple requests start detection.
- */
-async function markSceneDetectionInProgress(assetId: string): Promise<void> {
-  if (!SCENE_CACHE_BUCKET) {
-    console.warn("[StoryIQ] No cache bucket configured");
-    return;
-  }
-
-  const key = `scene-cache/${assetId}.json`;
-  const body = JSON.stringify({
-    status: "in_progress",
-    startedAt: new Date().toISOString(),
-    assetId,
-  });
-
-  await s3Client.send(
-    new PutObjectCommand({
-      Bucket: SCENE_CACHE_BUCKET,
-      Key: key,
-      Body: body,
-      ContentType: "application/json",
-    })
-  );
-
-  console.log(`[StoryIQ] Marked scene detection in_progress for ${assetId}`);
-}
-
-/**
- * Invoke the detectScenes Lambda asynchronously.
- * Does not wait for completion - returns immediately.
- */
-async function invokeDetectScenesLambda(assetId: string): Promise<void> {
-  if (!DETECT_SCENES_FUNCTION) {
-    console.warn(
-      "[StoryIQ] DETECT_SCENES_FUNCTION not configured, cannot invoke async detection"
-    );
-    throw new Error("Scene detection not configured");
-  }
-
-  const payload = { assetId };
-
-  await lambdaClient.send(
-    new InvokeCommand({
-      FunctionName: DETECT_SCENES_FUNCTION,
-      InvocationType: "Event", // Async - fire and forget
-      Payload: JSON.stringify(payload),
-    })
-  );
-
-  console.log(`[StoryIQ] Invoked detectScenes Lambda for ${assetId} (async)`);
-}
-
-/**
- * Poll the S3 scene cache until detection completes.
- * Returns the detected scenes, or empty array if detection fails.
- *
- * This keeps the Lambda running and waiting, ensuring generation completes
- * in one execution rather than requiring frontend retry.
- */
-async function pollForSceneCache(
-  twelvelabs: TwelveLabsWrapper,
-  assetId: string,
-  options: {
-    maxWaitMs?: number;
-    pollIntervalMs?: number;
-  } = {}
-): Promise<SceneBreak[]> {
-  // 8 min max for scene polling, leaving ~2 min buffer for Claude generation
-  // (generateSegments Lambda has 10 min timeout)
-  const { maxWaitMs = 8 * 60 * 1000, pollIntervalMs = 15000 } = options;
-  const startTime = Date.now();
-
-  console.log(
-    `[StoryIQ] Polling for scene cache (max ${maxWaitMs / 1000}s, interval ${
-      pollIntervalMs / 1000
-    }s)...`
-  );
-
-  while (Date.now() - startTime < maxWaitMs) {
-    // Wait before checking (scene detection takes at least 30s)
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-
-    const elapsed = Math.round((Date.now() - startTime) / 1000);
-    console.log(`[StoryIQ] Checking scene cache... (${elapsed}s elapsed)`);
-
-    const cacheCheck = await twelvelabs.getSceneCacheFromS3(assetId);
-
-    if (cacheCheck.result) {
-      console.log(
-        `[StoryIQ] Scene cache ready after ${elapsed}s: ${cacheCheck.result.brief.length} scenes`
-      );
-      return cacheCheck.result.brief;
-    }
-
-    if (cacheCheck.failed) {
-      console.warn(
-        `[StoryIQ] Scene detection failed after ${elapsed}s: ${cacheCheck.failedReason}. ` +
-          `Proceeding without scene data.`
-      );
-      return [];
-    }
-
-    if (!cacheCheck.inProgress) {
-      // Unexpected state - cache disappeared but not complete or failed
-      console.warn(
-        `[StoryIQ] Unexpected cache state after ${elapsed}s - not in_progress, not complete, not failed. Proceeding without scenes.`
-      );
-      return [];
-    }
-
-    // Still in progress - continue polling
-  }
-
-  // Timeout - proceed without scenes rather than failing
-  const elapsed = Math.round((Date.now() - startTime) / 1000);
-  console.warn(
-    `[StoryIQ] Scene detection polling timed out after ${elapsed}s. Proceeding without scene data.`
-  );
-  return [];
 }
 
 // ============================================================================
