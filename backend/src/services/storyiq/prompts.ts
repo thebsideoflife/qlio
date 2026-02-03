@@ -17,6 +17,7 @@ import {
   type ProposedSegment,
   type CoverageReport,
   type SegmentContent,
+  type SceneWithDialogue,
 } from "./types";
 import { type SceneBreak } from "../twelvelabs";
 
@@ -86,9 +87,19 @@ function getFullVideoPrompt(
   );
   const expectedChapters = Math.ceil(videoDurationSeconds / effectiveTarget);
 
+  // Try to group dialogue by scene for better context
+  const groupedScenes = sceneBreaks
+    ? groupDialogueByScene(sceneBreaks, transcript, metadata.duration)
+    : null;
+
+  // Use scene-grouped format if available, otherwise fall back to existing format
+  const contextSection = groupedScenes
+    ? formatScenesForPlanning(metadata, groupedScenes)
+    : formatContextForPlanning(metadata, transcript, sceneBreaks);
+
   return `You are StoryIQ, an expert video editor dividing long-form content into chapters.
 
-${formatContextForPlanning(metadata, transcript, sceneBreaks)}
+${contextSection}
 
 YOUR TASK:
 Divide this ${videoDurationMinutes}-minute video into chapters (like YouTube chapters).
@@ -118,11 +129,22 @@ ${OUTPUT_SCHEMA}`;
 function getHighlightsPrompt(
   metadata: VideoMetadata,
   transcript: TranscriptSegment[],
-  targetDurationSeconds: number
+  targetDurationSeconds: number,
+  sceneBreaks: SceneBreak[] | null
 ): string {
+  // Try to group dialogue by scene for better context
+  const groupedScenes = sceneBreaks
+    ? groupDialogueByScene(sceneBreaks, transcript, metadata.duration)
+    : null;
+
+  // Use scene-grouped format if available, otherwise fall back to existing format
+  const contextSection = groupedScenes
+    ? formatScenesForPlanning(metadata, groupedScenes)
+    : formatContextForPlanning(metadata, transcript, sceneBreaks);
+
   return `You are StoryIQ, an expert video editor creating a compelling HIGHLIGHTS REEL.
 
-${formatContextForPlanning(metadata, transcript, null)}
+${contextSection}
 
 TASK: Create a ${Math.round(
     targetDurationSeconds / 60
@@ -168,6 +190,16 @@ function getCompactVideoPrompt(
   const targetMinutes = Math.round(targetSeconds / 60);
   const expectedSegments = Math.round(targetSeconds / 90); // ~1.5 min each
 
+  // Try to group dialogue by scene for better context
+  const groupedScenes = sceneBreaks
+    ? groupDialogueByScene(sceneBreaks, transcript, metadata.duration)
+    : null;
+
+  // Use scene-grouped format if available, otherwise fall back to existing format
+  const contextSection = groupedScenes
+    ? formatScenesForPlanning(metadata, groupedScenes)
+    : formatContextForPlanning(metadata, transcript, sceneBreaks);
+
   return `You are StoryIQ, an expert video editor creating a COMPACT VERSION of this video.
 
 CRITICAL: You must SELECT the best ${targetPercent}% of the video, NOT chapter the whole thing.
@@ -195,11 +227,6 @@ SEGMENT LENGTH RULES:
 Segments must be chronological and tell a coherent story when watched in order.
 There WILL BE GAPS between segments - that's the point of compacting.
 
-SCENE BREAKS (visual analysis):
-${formatSceneBreaks(sceneBreaks)}
-
-Use scene breaks to find natural cut points.
-
 WHAT TO KEEP:
 - High-impact moments: emotional peaks, reveals, humor, tension
 - Opening hook, major plot points, climax, resolution
@@ -210,7 +237,7 @@ WHAT TO CUT:
 - Extended B-roll, low-energy filler, disconnected subplots
 - Anything a viewer would skip through
 
-${formatContextForPlanning(metadata, transcript, sceneBreaks)}
+${contextSection}
 
 ${QUALITY_GUIDELINES}
 ${OUTPUT_SCHEMA}`;
@@ -673,7 +700,7 @@ export function getPlanningPrompt(
 
     default:
       // Fallback to highlights
-      basePrompt = getHighlightsPrompt(metadata, transcript, 60);
+      basePrompt = getHighlightsPrompt(metadata, transcript, 60, sceneBreaks);
   }
 
   // Inject user instructions if provided
@@ -735,6 +762,115 @@ function formatContextForPlanning(
     const timestamp = `${mins}:${String(secs).padStart(2, "0")}`;
     const speaker = seg.speaker ? `[${seg.speaker}] ` : "";
     parts.push(`  ${timestamp} ${speaker}${seg.text}`);
+  }
+
+  return parts.join("\n");
+}
+
+// ============================================================================
+// Helper: Format Scenes with Grouped Dialogue
+// ============================================================================
+
+/**
+ * Format timestamp as M:SS
+ */
+function formatTimestamp(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+/**
+ * Group transcript dialogue into scenes.
+ * Returns null if no scene breaks exist or if grouping fails.
+ */
+function groupDialogueByScene(
+  sceneBreaks: SceneBreak[],
+  transcript: TranscriptSegment[],
+  videoDuration: number
+): SceneWithDialogue[] | null {
+  // Fallback if no scenes
+  if (!sceneBreaks || sceneBreaks.length === 0) {
+    return null;
+  }
+
+  try {
+    // Sort scenes by time
+    const sorted = [...sceneBreaks].sort((a, b) => a.time - b.time);
+
+    return sorted.map((scene, i) => {
+      const startTime = scene.time;
+      const endTime =
+        i < sorted.length - 1 ? sorted[i + 1].time : videoDuration;
+
+      // Get transcript segments that START within this scene (no duplicates across scenes)
+      const dialogue = transcript.filter(
+        (t) => t.startTime >= startTime && t.startTime < endTime
+      );
+
+      const allText = dialogue.map((d) => d.text).join(" ");
+
+      return {
+        sceneIndex: i + 1,
+        startTime,
+        endTime,
+        who: scene.who,
+        action: scene.action,
+        mood: scene.mood,
+        audio: scene.audio,
+        dialogue,
+        wordCount: allText.split(/\s+/).filter((w) => w).length,
+      };
+    });
+  } catch (error) {
+    console.error("[StoryIQ] Failed to group dialogue by scene:", error);
+    return null; // Fallback to existing format
+  }
+}
+
+/**
+ * Format grouped scenes for planning prompts.
+ * Concatenates all dialogue into a single text block per scene for token efficiency.
+ */
+function formatScenesForPlanning(
+  metadata: VideoMetadata,
+  scenes: SceneWithDialogue[]
+): string {
+  const parts: string[] = [];
+
+  parts.push(`TITLE: ${metadata.title}`);
+  parts.push(
+    `DURATION: ${Math.round(metadata.duration)}s (${Math.round(
+      metadata.duration / 60
+    )} min)`
+  );
+  parts.push(`SCENES: ${scenes.length} total`);
+  parts.push("");
+  parts.push(
+    "NOTE: Cut at scene boundaries for clean visual transitions. Scene times are your primary cut points."
+  );
+  parts.push("");
+
+  for (const scene of scenes) {
+    const startTs = formatTimestamp(scene.startTime);
+    const endTs = formatTimestamp(scene.endTime);
+    const duration = Math.round(scene.endTime - scene.startTime);
+
+    parts.push(
+      `--- Scene ${scene.sceneIndex} (${startTs} - ${endTs}) | ${duration}s ---`
+    );
+    parts.push(
+      `Visual: ${scene.who} | ${scene.action} | ${scene.mood} | ${scene.audio}`
+    );
+
+    if (scene.dialogue.length > 0) {
+      // Concatenate all dialogue into one text block (much more token-efficient)
+      const dialogueText = scene.dialogue.map((d) => d.text).join(" ");
+      parts.push(`Dialogue: ${dialogueText}`);
+    } else {
+      parts.push("Dialogue: (none - visual/music only)");
+    }
+    parts.push("");
   }
 
   return parts.join("\n");

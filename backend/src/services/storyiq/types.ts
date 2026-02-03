@@ -40,6 +40,25 @@ export interface TranscriptSegment {
   text: string;
 }
 
+/**
+ * Scene with grouped dialogue - combines visual scene info with audio transcript.
+ * This structure helps Claude see what's happening visually AND audibly together.
+ */
+export interface SceneWithDialogue {
+  sceneIndex: number;
+  startTime: number; // When scene starts
+  endTime: number; // When scene ends (next scene starts or video ends)
+  // Visual info from SceneBreak
+  who: string;
+  action: string;
+  mood: string;
+  audio: string;
+  // ALL dialogue in this scene (no truncation)
+  dialogue: TranscriptSegment[];
+  // Summary stats
+  wordCount: number;
+}
+
 // ============================================================================
 // Purpose & Goal Types
 // ============================================================================

@@ -203,6 +203,16 @@ export async function generateWithStoryIQ(
   // Phase 3: Generate initial segment proposals
   console.log("[StoryIQ] Phase 3: Generating segment proposals...");
 
+  // Log input data stats
+  console.log(
+    `[StoryIQ] Input: ${sceneBreaks.length} scenes, ${transcript.length} transcript segments`
+  );
+  if (sceneBreaks.length > 0 && transcript.length > 0) {
+    console.log(
+      "[StoryIQ] Scenes will be grouped with dialogue for planning prompt"
+    );
+  }
+
   // Log sample of input data for debugging
   if (sceneBreaks.length > 0) {
     console.log(`[StoryIQ] Sample scene breaks (first 3):`);
@@ -244,6 +254,24 @@ export async function generateWithStoryIQ(
 
   // Resolve overlaps
   const resolvedSegments = resolveOverlaps(validatedSegments);
+
+  // Log if overlaps were resolved
+  if (resolvedSegments.length !== validatedSegments.length) {
+    console.log(
+      `[StoryIQ] Removed ${
+        validatedSegments.length - resolvedSegments.length
+      } segment(s) due to overlap`
+    );
+  }
+
+  // Log resolved duration
+  const resolvedDuration = resolvedSegments.reduce(
+    (sum, s) => sum + (s.endTime - s.startTime),
+    0
+  );
+  console.log(
+    `[StoryIQ] After overlap resolution: ${resolvedSegments.length} segments, ${resolvedDuration}s total`
+  );
 
   // Phase 4: Verify and revise
   console.log("[StoryIQ] Phase 4: Verification loop...");
