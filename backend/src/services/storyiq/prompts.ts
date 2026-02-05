@@ -31,8 +31,8 @@ Schema:
 {
   "plan": [
     {
-      "startTime": number (seconds),
-      "endTime": number (seconds),
+      "startTime": number (raw seconds like 83.4, NOT formatted like "1:23"),
+      "endTime": number (raw seconds like 156.7, NOT formatted like "2:36"),
       "title": string (creative, compelling title),
       "reasoning": string (why this segment works),
       "expectedContent": string (what happens in this segment),
@@ -49,6 +49,8 @@ CRITICAL INSTRUCTIONS:
 3. Base segment titles on what is SAID in the transcript at those timestamps.
 4. Do NOT use external knowledge about this show. Only use the data provided.
 5. SEGMENTS MUST NOT OVERLAP - each segment's startTime must be >= the previous segment's endTime.
+
+TIMING: Use timestamps from the data provided (scene boundaries, sentence end times). Do not round to nice numbers.
 
 Quality Guidelines:
 - Each segment should have a clear narrative purpose
@@ -72,7 +74,7 @@ function getFullVideoPrompt(
   metadata: VideoMetadata,
   transcript: TranscriptSegment[],
   targetChapterSeconds: number,
-  sceneBreaks: SceneBreak[] | null
+  sceneBreaks: SceneBreak[] | null,
 ): string {
   const videoDurationSeconds = Math.round(metadata.duration);
   const videoDurationMinutes = Math.round(metadata.duration / 60);
@@ -84,7 +86,7 @@ function getFullVideoPrompt(
   // Estimate expected chapters based on target (default 90s = 1.5 min)
   const effectiveTarget = Math.max(
     minChapterSeconds,
-    Math.min(maxChapterSeconds, targetChapterSeconds)
+    Math.min(maxChapterSeconds, targetChapterSeconds),
   );
   const expectedChapters = Math.ceil(videoDurationSeconds / effectiveTarget);
 
@@ -131,7 +133,7 @@ function getHighlightsPrompt(
   metadata: VideoMetadata,
   transcript: TranscriptSegment[],
   targetDurationSeconds: number,
-  sceneBreaks: SceneBreak[] | null
+  sceneBreaks: SceneBreak[] | null,
 ): string {
   // Try to group dialogue by scene for better context
   const groupedScenes = sceneBreaks
@@ -148,7 +150,7 @@ function getHighlightsPrompt(
 ${contextSection}
 
 TASK: Create a ${Math.round(
-    targetDurationSeconds / 60
+    targetDurationSeconds / 60,
   )}-minute highlights package that tells a complete story.
 
 STRUCTURE YOUR HIGHLIGHTS LIKE A MINI-STORY:
@@ -185,7 +187,7 @@ function getCompactVideoPrompt(
   metadata: VideoMetadata,
   transcript: TranscriptSegment[],
   targetPercent: number,
-  sceneBreaks: SceneBreak[] | null
+  sceneBreaks: SceneBreak[] | null,
 ): string {
   const targetSeconds = Math.round((metadata.duration * targetPercent) / 100);
   const targetMinutes = Math.round(targetSeconds / 60);
@@ -209,14 +211,14 @@ Your job is to CUT ${
   }% OF THE CONTENT - keep only what earns its screen time.
 
 ORIGINAL VIDEO: ${Math.round(metadata.duration / 60)} minutes (${Math.round(
-    metadata.duration
+    metadata.duration,
   )}s)
 TARGET OUTPUT: ${targetPercent}% = ~${targetMinutes} minutes (~${targetSeconds}s total)
 SEGMENTS: Approximately ${expectedSegments} segments × ~90s each = ~${targetSeconds}s
 
 MATH CHECK: Your segments MUST add up to approximately ${targetSeconds}s (within 15%).
 If your segments total ${Math.round(
-    metadata.duration
+    metadata.duration,
   )}s, you have NOT cut anything - this is WRONG.
 
 SEGMENT LENGTH RULES:
@@ -249,7 +251,7 @@ ${OUTPUT_SCHEMA}`;
  */
 function getTrailerPrompt(
   metadata: VideoMetadata,
-  transcript: TranscriptSegment[]
+  transcript: TranscriptSegment[],
 ): string {
   return `You are StoryIQ, creating a movie trailer that builds curiosity and excitement.
 
@@ -285,7 +287,7 @@ ${OUTPUT_SCHEMA}`;
 function getTuneInPrompt(
   metadata: VideoMetadata,
   transcript: TranscriptSegment[],
-  targetSeconds: number
+  targetSeconds: number,
 ): string {
   const is30s = targetSeconds >= 25;
 
@@ -321,14 +323,14 @@ ${OUTPUT_SCHEMA}`;
 function getBridgePrompt(
   metadata: VideoMetadata,
   transcript: TranscriptSegment[],
-  targetSeconds: number
+  targetSeconds: number,
 ): string {
   return `You are StoryIQ, creating a recap video that reactivates interest and teases what's ahead.
 
 ${formatContextForPlanning(metadata, transcript, null)}
 
 TASK: Create a ${Math.round(
-    targetSeconds / 60
+    targetSeconds / 60,
   )}-minute recap following this structure:
 
 1. ANCHOR (first 15% of duration)
@@ -358,14 +360,14 @@ ${OUTPUT_SCHEMA}`;
 function getEpisodeRecapPrompt(
   metadata: VideoMetadata,
   transcript: TranscriptSegment[],
-  targetSeconds: number
+  targetSeconds: number,
 ): string {
   return `You are StoryIQ, creating a "Previously on..." episode recap.
 
 ${formatContextForPlanning(metadata, transcript, null)}
 
 TASK: Create a ${Math.round(
-    targetSeconds
+    targetSeconds,
   )} second recap following this structure:
 
 1. TRIGGER (0:00-0:03) - 3 seconds
@@ -395,14 +397,14 @@ ${OUTPUT_SCHEMA}`;
 function getSeasonRecapPrompt(
   metadata: VideoMetadata,
   transcript: TranscriptSegment[],
-  targetSeconds: number
+  targetSeconds: number,
 ): string {
   return `You are StoryIQ, creating a comprehensive season recap.
 
 ${formatContextForPlanning(metadata, transcript, null)}
 
 TASK: Create a ${Math.round(
-    targetSeconds / 60
+    targetSeconds / 60,
   )} minute season recap following this structure:
 
 1. RE-INTRODUCTION (first 15% of duration)
@@ -435,7 +437,7 @@ ${OUTPUT_SCHEMA}`;
 function getSocialSegmentPrompt(
   metadata: VideoMetadata,
   transcript: TranscriptSegment[],
-  targetSeconds: number
+  targetSeconds: number,
 ): string {
   return `You are StoryIQ, creating a social media clip optimized for retention and engagement.
 
@@ -451,12 +453,12 @@ TASK: Create a ${targetSeconds} second social clip following this structure:
    Compressed setup. Focus on faces. Dialogue starts immediately.
    
 3. MEAT (0:10-0:${Math.round(targetSeconds * 0.7)}) - ${Math.round(
-    targetSeconds * 0.5
+    targetSeconds * 0.5,
   )} seconds
    The scene. Rapid cuts. Keep viewer from scrolling.
    
 4. PAYOFF (0:${Math.round(targetSeconds * 0.7)}-0:${Math.round(
-    targetSeconds * 0.9
+    targetSeconds * 0.9,
   )}) - ${Math.round(targetSeconds * 0.2)} seconds
    The dopamine hit. Punchline, kiss, kill, or mic drop.
    
@@ -490,7 +492,7 @@ export function getReviewPrompt(
   segments: ProposedSegment[],
   segmentContent: SegmentContent[],
   coverage: CoverageReport,
-  purpose: Purpose
+  purpose: Purpose,
 ): string {
   const segmentDetails = segments
     .map((seg, i) => {
@@ -498,8 +500,8 @@ export function getReviewPrompt(
       return `
 SEGMENT ${i + 1}: "${seg.title}"
   Time: ${seg.startTime}s - ${seg.endTime}s (${Math.round(
-        seg.endTime - seg.startTime
-      )}s)
+    seg.endTime - seg.startTime,
+  )}s)
   Section: ${seg.section || "N/A"}
   Your reasoning: ${seg.reasoning}
   
@@ -560,7 +562,7 @@ export function getRevisionPrompt(
   issues: string[],
   metadata: VideoMetadata,
   transcript: TranscriptSegment[],
-  purpose: Purpose
+  purpose: Purpose,
 ): string {
   // Check if there are duration-related issues
   const hasDurationIssues = issues.some(
@@ -568,11 +570,11 @@ export function getRevisionPrompt(
       i.includes("maximum") ||
       i.includes("minimum") ||
       i.includes("over") ||
-      i.includes("under")
+      i.includes("under"),
   );
 
   const durationReminder = hasDurationIssues
-    ? `\nREMINDER: Target 90s, prefer under 2 min, hard max 3 min. Split long segments at natural breaks.\n`
+    ? `\nREMINDER: Target 90s, hard max 3 min. Split at word/sentence boundaries using exact timestamps from the transcript.\n`
     : "";
 
   // Format original segments with what the verifier saw
@@ -580,7 +582,7 @@ export function getRevisionPrompt(
     .map((s, i) => {
       const content = segmentContent[i];
       return `- "${s.title}" [${s.startTime}-${s.endTime}s] (${Math.round(
-        s.endTime - s.startTime
+        s.endTime - s.startTime,
       )}s)
     Reasoning: ${s.reasoning}
     Content: ${content?.transcript?.substring(0, 300) || "No transcript"}...`;
@@ -601,7 +603,7 @@ ${formatContextForPlanning(metadata, transcript, null)}
 PURPOSE: ${purpose}
 
 Create revised segments that address these issues while maintaining quality.
-Use the full transcript above to find better alternatives.
+Use the full transcript above to find better alternatives with precise timings.
 
 ${OUTPUT_SCHEMA}`;
 }
@@ -627,7 +629,7 @@ export function getPlanningPrompt(
   sceneBreaks: SceneBreak[] | null,
   targetDuration?: number,
   userInstructions?: string,
-  targetPercent?: number
+  targetPercent?: number,
 ): string {
   let basePrompt: string;
 
@@ -640,7 +642,7 @@ export function getPlanningPrompt(
         metadata,
         transcript,
         chapterSeconds,
-        sceneBreaks
+        sceneBreaks,
       );
       break;
 
@@ -653,7 +655,7 @@ export function getPlanningPrompt(
         metadata,
         transcript,
         percent,
-        sceneBreaks
+        sceneBreaks,
       );
       break;
 
@@ -679,7 +681,7 @@ export function getPlanningPrompt(
       basePrompt = getEpisodeRecapPrompt(
         metadata,
         transcript,
-        episodeRecapSeconds
+        episodeRecapSeconds,
       );
       break;
 
@@ -689,7 +691,7 @@ export function getPlanningPrompt(
       basePrompt = getSeasonRecapPrompt(
         metadata,
         transcript,
-        seasonRecapSeconds
+        seasonRecapSeconds,
       );
       break;
 
@@ -726,7 +728,7 @@ ${userInstructions.trim()}
  * Groups by punctuation (. ? !) or time gaps (>2s pause).
  */
 function batchTranscriptIntoSentences(
-  transcript: TranscriptSegment[]
+  transcript: TranscriptSegment[],
 ): { startTime: number; endTime: number; text: string }[] {
   if (transcript.length === 0) return [];
 
@@ -791,7 +793,7 @@ function batchTranscriptIntoSentences(
 function formatContextForPlanning(
   metadata: VideoMetadata,
   transcript: TranscriptSegment[],
-  sceneBreaks: SceneBreak[] | null
+  sceneBreaks: SceneBreak[] | null,
 ): string {
   const parts: string[] = [];
 
@@ -799,8 +801,8 @@ function formatContextForPlanning(
   parts.push(`TITLE: ${metadata.title}`);
   parts.push(
     `DURATION: ${Math.round(metadata.duration)}s (${Math.round(
-      metadata.duration / 60
-    )} min)`
+      metadata.duration / 60,
+    )} min)`,
   );
   parts.push("");
 
@@ -812,7 +814,7 @@ function formatContextForPlanning(
       const secs = Math.floor(scene.time % 60);
       const timestamp = `${mins}:${String(secs).padStart(2, "0")}`;
       parts.push(
-        `  ${timestamp} | ${scene.who} | ${scene.action} | ${scene.mood} | ${scene.audio}`
+        `  ${timestamp} | ${scene.who} | ${scene.action} | ${scene.mood} | ${scene.audio}`,
       );
     }
     parts.push("");
@@ -821,9 +823,11 @@ function formatContextForPlanning(
   // Transcript - batched into sentences for token efficiency
   const sentences = batchTranscriptIntoSentences(transcript);
   parts.push(`TRANSCRIPT (${sentences.length} lines):`);
+  parts.push("");
   for (const sentence of sentences) {
-    const timestamp = formatTimestamp(sentence.startTime);
-    parts.push(`  ${timestamp} ${sentence.text}`);
+    const startTs = formatTimestamp(sentence.startTime);
+    const endTs = formatTimestamp(sentence.endTime);
+    parts.push(`  [${startTs}-${endTs}] ${sentence.text}`);
   }
 
   return parts.join("\n");
@@ -834,12 +838,13 @@ function formatContextForPlanning(
 // ============================================================================
 
 /**
- * Format timestamp as M:SS
+ * Format timestamp as M:SS.d (with one decimal for sub-second precision)
  */
 function formatTimestamp(seconds: number): string {
   const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${mins}:${String(secs).padStart(2, "0")}`;
+  const secs = seconds % 60;
+  // Show one decimal place for precision
+  return `${mins}:${secs.toFixed(1).padStart(4, "0")}`;
 }
 
 /**
@@ -849,7 +854,7 @@ function formatTimestamp(seconds: number): string {
 function groupDialogueByScene(
   sceneBreaks: SceneBreak[],
   transcript: TranscriptSegment[],
-  videoDuration: number
+  videoDuration: number,
 ): SceneWithDialogue[] | null {
   // Fallback if no scenes
   if (!sceneBreaks || sceneBreaks.length === 0) {
@@ -867,7 +872,7 @@ function groupDialogueByScene(
 
       // Get transcript segments that START within this scene (no duplicates across scenes)
       const dialogue = transcript.filter(
-        (t) => t.startTime >= startTime && t.startTime < endTime
+        (t) => t.startTime >= startTime && t.startTime < endTime,
       );
 
       const allText = dialogue.map((d) => d.text).join(" ");
@@ -896,20 +901,20 @@ function groupDialogueByScene(
  */
 function formatScenesForPlanning(
   metadata: VideoMetadata,
-  scenes: SceneWithDialogue[]
+  scenes: SceneWithDialogue[],
 ): string {
   const parts: string[] = [];
 
   parts.push(`TITLE: ${metadata.title}`);
   parts.push(
     `DURATION: ${Math.round(metadata.duration)}s (${Math.round(
-      metadata.duration / 60
-    )} min)`
+      metadata.duration / 60,
+    )} min)`,
   );
   parts.push(`SCENES: ${scenes.length} total`);
   parts.push("");
   parts.push(
-    "NOTE: Cut at scene boundaries for clean visual transitions. Scene times are your primary cut points."
+    "Use timestamps from the data below (scene boundaries, sentence end times). Do not round.",
   );
   parts.push("");
 
@@ -919,18 +924,22 @@ function formatScenesForPlanning(
     const duration = Math.round(scene.endTime - scene.startTime);
 
     parts.push(
-      `--- Scene ${scene.sceneIndex} (${startTs} - ${endTs}) | ${duration}s ---`
+      `--- Scene ${scene.sceneIndex} (${startTs} - ${endTs}) | ${duration}s ---`,
     );
     parts.push(
-      `Visual: ${scene.who} | ${scene.action} | ${scene.mood} | ${scene.audio}`
+      `Visual: ${scene.who} | ${scene.action} | ${scene.mood} | ${scene.audio}`,
     );
 
     if (scene.dialogue.length > 0) {
-      // Concatenate all dialogue into one text block (much more token-efficient)
-      const dialogueText = scene.dialogue.map((d) => d.text).join(" ");
-      parts.push(`Dialogue: ${dialogueText}`);
+      // Batch dialogue into sentences - same as transcript-only mode for consistency
+      const sentences = batchTranscriptIntoSentences(scene.dialogue);
+      for (const sentence of sentences) {
+        const startTs = formatTimestamp(sentence.startTime);
+        const endTs = formatTimestamp(sentence.endTime);
+        parts.push(`  [${startTs}-${endTs}] ${sentence.text}`);
+      }
     } else {
-      parts.push("Dialogue: (none - visual/music only)");
+      parts.push("  (visual/music only - no dialogue)");
     }
     parts.push("");
   }
@@ -940,10 +949,11 @@ function formatScenesForPlanning(
 
 /**
  * Format scene breaks as a list for prompts that need just scene info.
+ * Returns empty string if no scene breaks - we don't mention their absence.
  */
 function formatSceneBreaks(sceneBreaks: SceneBreak[] | null): string {
   if (!sceneBreaks || sceneBreaks.length === 0) {
-    return "  No scene breaks detected - use your judgment based on the transcript";
+    return "";
   }
 
   return sceneBreaks

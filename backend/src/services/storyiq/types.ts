@@ -175,12 +175,12 @@ export interface StoryIQTools {
 
   // Verification tools (Phase 4)
   read_transcript_for_segments(
-    segments: TimeRange[]
+    segments: TimeRange[],
   ): Promise<SegmentContent[]>;
   check_segment_coverage(
     segments: TimeRange[],
     purpose: Purpose,
-    videoDuration: number
+    videoDuration: number,
   ): Promise<CoverageReport>;
 }
 
@@ -238,8 +238,8 @@ export function extractLLMContent(responseBody: any): string {
     throw new Error(
       `Invalid LLM response structure: ${JSON.stringify(responseBody).substring(
         0,
-        200
-      )}`
+        200,
+      )}`,
     );
   }
   return responseBody.content[0].text;
@@ -253,13 +253,46 @@ export function parseJSONFromLLM<T>(content: string): T {
   // Try to extract JSON object
   const objectMatch = content.match(/\{[\s\S]*\}/);
   if (objectMatch) {
-    return JSON.parse(objectMatch[0]);
+    try {
+      return JSON.parse(objectMatch[0]);
+    } catch (error) {
+      // Log the problematic JSON for debugging
+      const errorPos =
+        error instanceof SyntaxError
+          ? parseInt(error.message.match(/position (\d+)/)?.[1] || "0")
+          : 0;
+      const context = objectMatch[0].substring(
+        Math.max(0, errorPos - 100),
+        Math.min(objectMatch[0].length, errorPos + 100),
+      );
+      console.error(
+        `[parseJSONFromLLM] JSON parse error near position ${errorPos}:`,
+      );
+      console.error(`[parseJSONFromLLM] Context: ...${context}...`);
+      throw error;
+    }
   }
 
   // Try to extract JSON array
   const arrayMatch = content.match(/\[[\s\S]*\]/);
   if (arrayMatch) {
-    return JSON.parse(arrayMatch[0]);
+    try {
+      return JSON.parse(arrayMatch[0]);
+    } catch (error) {
+      const errorPos =
+        error instanceof SyntaxError
+          ? parseInt(error.message.match(/position (\d+)/)?.[1] || "0")
+          : 0;
+      const context = arrayMatch[0].substring(
+        Math.max(0, errorPos - 100),
+        Math.min(arrayMatch[0].length, errorPos + 100),
+      );
+      console.error(
+        `[parseJSONFromLLM] JSON parse error near position ${errorPos}:`,
+      );
+      console.error(`[parseJSONFromLLM] Context: ...${context}...`);
+      throw error;
+    }
   }
 
   // Try parsing as-is

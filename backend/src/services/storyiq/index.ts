@@ -44,7 +44,7 @@ import { callClaude } from "./claude-client";
  * Allows the caller to update DynamoDB job status.
  */
 export type GenerationStatusCallback = (
-  status: "detecting_scenes" | "generating"
+  status: "detecting_scenes" | "generating",
 ) => Promise<void>;
 
 /**
@@ -62,7 +62,7 @@ export type GenerationStatusCallback = (
 export async function generateWithStoryIQ(
   twelvelabs: TwelveLabsWrapper,
   input: StoryIQInput,
-  onStatusChange?: GenerationStatusCallback
+  onStatusChange?: GenerationStatusCallback,
 ): Promise<StoryIQOutput> {
   const startTime = Date.now();
   const { assetId, goals } = input;
@@ -71,14 +71,14 @@ export async function generateWithStoryIQ(
   console.log(
     `[StoryIQ] Purpose: ${goals.purpose}, Target: ${
       goals.targetDuration || "auto"
-    }s`
+    }s`,
   );
   if (goals.userInstructions) {
     console.log(
       `[StoryIQ] User instructions: "${goals.userInstructions.substring(
         0,
-        100
-      )}..."`
+        100,
+      )}..."`,
     );
   }
 
@@ -104,7 +104,7 @@ export async function generateWithStoryIQ(
   if (videoDuration <= 0) {
     throw new Error(
       `Cannot generate segments: Video duration is ${videoDuration}s. ` +
-        `Asset may not have been properly indexed. Please re-upload or manually set the duration.`
+        `Asset may not have been properly indexed. Please re-upload or manually set the duration.`,
     );
   }
 
@@ -130,7 +130,7 @@ export async function generateWithStoryIQ(
   if (transcript.length === 0) {
     throw new Error(
       `Cannot generate segments: No transcript found for asset ${assetId}. ` +
-        `The video may not have been indexed properly, or it may have no audible speech.`
+        `The video may not have been indexed properly, or it may have no audible speech.`,
     );
   }
 
@@ -156,11 +156,11 @@ export async function generateWithStoryIQ(
       const meta = cacheCheck.result.meta;
       if (meta) {
         console.log(
-          `[StoryIQ] Scene cache meta: ${meta.windowsSucceeded}/${meta.windowsTotal} windows, complete=${meta.isComplete}, rateLimit=${meta.hitRateLimit}`
+          `[StoryIQ] Scene cache meta: ${meta.windowsSucceeded}/${meta.windowsTotal} windows, complete=${meta.isComplete}, rateLimit=${meta.hitRateLimit}`,
         );
       }
       console.log(
-        `[StoryIQ] Scene cache detectedAt: ${cacheCheck.result.detectedAt}`
+        `[StoryIQ] Scene cache detectedAt: ${cacheCheck.result.detectedAt}`,
       );
     } else {
       // No cache available - proceed without scenes
@@ -168,15 +168,15 @@ export async function generateWithStoryIQ(
       if (cacheCheck.failed) {
         console.warn(
           `[StoryIQ] Scene detection previously failed: ${cacheCheck.failedReason}. ` +
-            `Proceeding without scene data.`
+            `Proceeding without scene data.`,
         );
       } else if (cacheCheck.inProgress) {
         console.log(
-          "[StoryIQ] Scene detection in progress but not waiting. Proceeding without scenes."
+          "[StoryIQ] Scene detection in progress but not waiting. Proceeding without scenes.",
         );
       } else {
         console.log(
-          "[StoryIQ] No scene cache found. Run detect-scenes Lambda manually to populate. Proceeding without scenes."
+          "[StoryIQ] No scene cache found. Run detect-scenes Lambda manually to populate. Proceeding without scenes.",
         );
       }
       sceneBreaks = [];
@@ -188,11 +188,11 @@ export async function generateWithStoryIQ(
 
   // Log input data stats
   console.log(
-    `[StoryIQ] Input: ${sceneBreaks.length} scenes, ${transcript.length} transcript segments`
+    `[StoryIQ] Input: ${sceneBreaks.length} scenes, ${transcript.length} transcript segments`,
   );
   if (sceneBreaks.length > 0 && transcript.length > 0) {
     console.log(
-      "[StoryIQ] Scenes will be grouped with dialogue for planning prompt"
+      "[StoryIQ] Scenes will be grouped with dialogue for planning prompt",
     );
   }
 
@@ -202,8 +202,8 @@ export async function generateWithStoryIQ(
     sceneBreaks.slice(0, 3).forEach((s, i) => {
       console.log(
         `  ${i + 1}. ${Math.floor(s.time / 60)}:${String(
-          Math.floor(s.time % 60)
-        ).padStart(2, "0")} | ${s.who} | ${s.action} | ${s.mood}`
+          Math.floor(s.time % 60),
+        ).padStart(2, "0")} | ${s.who} | ${s.action} | ${s.mood}`,
       );
     });
   }
@@ -212,8 +212,8 @@ export async function generateWithStoryIQ(
     transcript.slice(0, 3).forEach((t, i) => {
       console.log(
         `  ${i + 1}. ${Math.floor(t.startTime / 60)}:${String(
-          Math.floor(t.startTime % 60)
-        ).padStart(2, "0")} "${t.text.substring(0, 80)}..."`
+          Math.floor(t.startTime % 60),
+        ).padStart(2, "0")} "${t.text.substring(0, 80)}..."`,
       );
     });
   }
@@ -222,13 +222,13 @@ export async function generateWithStoryIQ(
     metadata,
     transcript,
     sceneBreaks,
-    goals
+    goals,
   );
 
   // Validate structure
   const { valid: validatedSegments, errors } = validateSegmentStructure(
     proposedSegments,
-    metadata.duration
+    metadata.duration,
   );
 
   if (errors.length > 0) {
@@ -243,17 +243,17 @@ export async function generateWithStoryIQ(
     console.log(
       `[StoryIQ] Removed ${
         validatedSegments.length - resolvedSegments.length
-      } segment(s) due to overlap`
+      } segment(s) due to overlap`,
     );
   }
 
   // Log resolved duration
   const resolvedDuration = resolvedSegments.reduce(
     (sum, s) => sum + (s.endTime - s.startTime),
-    0
+    0,
   );
   console.log(
-    `[StoryIQ] After overlap resolution: ${resolvedSegments.length} segments, ${resolvedDuration}s total`
+    `[StoryIQ] After overlap resolution: ${resolvedSegments.length} segments, ${resolvedDuration}s total`,
   );
 
   // Phase 4: Verify and revise
@@ -270,13 +270,13 @@ export async function generateWithStoryIQ(
 
   const processingTime = Date.now() - startTime;
   console.log(
-    `[StoryIQ] Complete in ${processingTime}ms, ${finalResult.attempts} attempt(s)`
+    `[StoryIQ] Complete in ${processingTime}ms, ${finalResult.attempts} attempt(s)`,
   );
 
   // Calculate actual duration
   const actualDuration = finalResult.segments.reduce(
     (sum, s) => sum + (s.endTime - s.startTime),
-    0
+    0,
   );
 
   return {
@@ -299,7 +299,7 @@ async function generateSegmentProposals(
   metadata: VideoMetadata,
   transcript: TranscriptSegment[],
   sceneBreaks: SceneBreak[] | null,
-  goals: StoryIQGoals
+  goals: StoryIQGoals,
 ): Promise<ProposedSegment[]> {
   // Get the appropriate prompt for this purpose
   const prompt = getPlanningPrompt(
@@ -309,14 +309,14 @@ async function generateSegmentProposals(
     sceneBreaks,
     goals.targetDuration,
     goals.userInstructions,
-    goals.targetPercent
+    goals.targetPercent,
   );
 
   // Log prompt size for debugging
   const promptChars = prompt.length;
   const estimatedTokens = Math.round(promptChars / 4); // rough estimate
   console.log(
-    `[StoryIQ] Planning prompt: ${promptChars} chars (~${estimatedTokens} tokens)`
+    `[StoryIQ] Planning prompt: ${promptChars} chars (~${estimatedTokens} tokens)`,
   );
 
   // Use generous max tokens - don't risk truncation
@@ -334,23 +334,23 @@ async function generateSegmentProposals(
 
     if (parsed.plan && Array.isArray(parsed.plan)) {
       console.log(
-        `[StoryIQ] Generated ${parsed.plan.length} segment proposals`
+        `[StoryIQ] Generated ${parsed.plan.length} segment proposals`,
       );
 
       // Log each proposed segment for debugging
       const totalDuration = parsed.plan.reduce(
         (sum, s) => sum + (s.endTime - s.startTime),
-        0
+        0,
       );
       console.log(
-        `[StoryIQ] Proposed segments (total ${Math.round(totalDuration)}s):`
+        `[StoryIQ] Proposed segments (total ${Math.round(totalDuration)}s):`,
       );
       parsed.plan.forEach((seg, i) => {
         const duration = Math.round(seg.endTime - seg.startTime);
         console.log(
           `  ${i + 1}. [${Math.round(seg.startTime)}s-${Math.round(
-            seg.endTime
-          )}s] (${duration}s) "${seg.title}"`
+            seg.endTime,
+          )}s] (${duration}s) "${seg.title}"`,
         );
       });
 
@@ -377,7 +377,7 @@ async function generateSegmentProposals(
  * Returns duration in seconds, or undefined for "Auto" or invalid input
  */
 export function parseDurationString(
-  duration: string | number | undefined | null
+  duration: string | number | undefined | null,
 ): number | undefined {
   // Handle null/undefined
   if (duration === null || duration === undefined) {
