@@ -1,574 +1,653 @@
 /**
- * StoryIQ Verification Loop
+ * StoryIQ Constraint Enforcer
  *
- * Phase 4 of the StoryIQ pipeline.
- * The agent reviews its own work and revises if needed.
+ * Deterministic constraint enforcement for video segments.
+ * All creative/quality decisions happen elsewhere (tool conversation, quality review).
+ * This module only guarantees hard constraints are met.
  *
- * Flow:
- * 1. Get actual content for proposed segments
- * 2. Check coverage requirements
- * 3. Agent reviews its choices
- * 4. Revise or finalize
+ * Used by tool-generation.ts as the final safety net after the tool conversation.
  */
 
 import {
-  parseJSONFromLLM,
   Purpose,
+  getPurposeConstraints,
   type ProposedSegment,
   type VideoMetadata,
   type TranscriptSegment,
-  type StoryIQTools,
-  type ReviewResult,
-  type FinalSegments,
-  type SegmentContent,
-  type CoverageReport,
 } from "./types";
-import { type SceneBreak } from "../twelvelabs";
-import { getReviewPrompt, getRevisionPrompt } from "./prompts";
-import { callClaude } from "./claude-client";
-
-const MAX_REVISION_ATTEMPTS = 3;
 
 // ============================================================================
-// Main Verification Function
+// Types
 // ============================================================================
 
-export interface VerifyOptions {
-  segments: ProposedSegment[];
-  metadata: VideoMetadata;
-  transcript: TranscriptSegment[];
-  sceneBreaks: SceneBreak[] | null;
-  purpose: Purpose;
-  targetDuration?: number;
-  tools: StoryIQTools;
-  attempt?: number;
+/** Record of what the enforcer changed, so callers can report/log */
+export interface EnforcerChange {
+  type: "clamped" | "overlap" | "split" | "dropped" | "added";
+  detail: string;
 }
 
+export interface EnforceResult {
+  segments: ProposedSegment[];
+  changes: EnforcerChange[];
+}
+
+// ============================================================================
+// Enforcer: Deterministic Constraint Fixing
+// ============================================================================
+
 /**
- * Verify proposed segments and revise if needed.
- * Returns final segments with confidence score.
+ * Run all deterministic constraint fixes and return what was changed.
+ * This is the safety net — it runs AFTER the tool conversation and quality review.
+ *
+ * Self-guarding: derives constraint rules from `purpose` so callers can't
+ * accidentally enforce total duration for full_video, etc.
+ *
+ * Order matters:
+ * 1. Clamp to video duration (discard/trim out-of-bounds)
+ * 2. Resolve overlaps (split at midpoint, snap to word boundary)
+ * 3. Split oversized segments (>180s → multiple segments)
+ * 4. Enforce total duration (drop/add segments to hit target)
  */
-export async function verifyAndRevise(
-  options: VerifyOptions
-): Promise<FinalSegments> {
-  const {
-    segments,
-    metadata,
-    transcript,
-    sceneBreaks,
-    purpose,
-    targetDuration,
-    tools,
-    attempt = 1,
-  } = options;
+export function enforceConstraints(
+  segments: ProposedSegment[],
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
+  purpose: Purpose,
+  targetDuration?: number,
+): EnforceResult {
+  const { needsSegmentDuration, needsTotalDuration } =
+    getPurposeConstraints(purpose);
+  const changes: EnforcerChange[] = [];
+  let current = segments.map((s) => ({ ...s })); // deep copy
 
-  console.log(`[StoryIQ Verify] Attempt ${attempt}/${MAX_REVISION_ATTEMPTS}`);
+  // 1. Clamp to video duration
+  const beforeClamp = current.length;
+  current = clampToVideoDuration(current, metadata.duration);
+  if (current.length < beforeClamp) {
+    changes.push({
+      type: "clamped",
+      detail: `Removed ${beforeClamp - current.length} segment(s) past video end (${Math.round(metadata.duration)}s)`,
+    });
+  }
 
-  // 1. Get actual content for proposed segments
-  const timeRanges = segments.map((s) => ({
+  // 2. Resolve overlaps
+  const beforeOverlap = current.length;
+  const beforeOverlapSegments = current.map((s) => ({
     start: s.startTime,
     end: s.endTime,
   }));
-
-  let segmentContent: SegmentContent[];
-  try {
-    segmentContent = await tools.read_transcript_for_segments(timeRanges);
-  } catch (error) {
-    console.warn("[StoryIQ Verify] Failed to get segment content:", error);
-    segmentContent = timeRanges.map((r) => ({
-      startTime: r.start,
-      endTime: r.end,
-      transcript: "",
-      sceneDescriptions: [],
-    }));
-  }
-
-  // Log what the reviewer will see for first few segments
-  console.log(
-    `[StoryIQ Verify] Comparing proposed vs actual content (first 3):`
+  current = resolveOverlaps(current, transcript);
+  // Check if any boundaries actually moved
+  const overlapsFixed = current.some(
+    (s, i) =>
+      i < beforeOverlapSegments.length &&
+      (Math.abs(s.startTime - beforeOverlapSegments[i].start) > 0.1 ||
+        Math.abs(s.endTime - beforeOverlapSegments[i].end) > 0.1),
   );
-  segments.slice(0, 3).forEach((seg, i) => {
-    const content = segmentContent[i];
-    const actualPreview =
-      content?.transcript?.substring(0, 100) || "(no transcript)";
-    console.log(`  Segment ${i + 1}: "${seg.title}"`);
-    console.log(
-      `    Proposed reasoning: ${seg.reasoning?.substring(0, 80)}...`
-    );
-    console.log(`    Actual transcript: "${actualPreview}..."`);
-  });
-
-  // 2. Check coverage requirements
-  let coverage: CoverageReport;
-  try {
-    coverage = await tools.check_segment_coverage(
-      timeRanges,
-      purpose,
-      metadata.duration
-      // No emotional beats - we now rely on transcript for content analysis
-    );
-    coverage.targetDuration = targetDuration;
-  } catch (error) {
-    console.warn("[StoryIQ Verify] Failed to check coverage:", error);
-    coverage = {
-      totalDuration: segments.reduce(
-        (sum, s) => sum + (s.endTime - s.startTime),
-        0
-      ),
-      targetDuration,
-      issues: [],
-      isValid: true,
-    };
+  if (overlapsFixed || current.length < beforeOverlap) {
+    changes.push({
+      type: "overlap",
+      detail: `Resolved overlapping segments`,
+    });
   }
 
-  // 2b. Check duration constraints (1-3 minute segments) - ONLY for full_video and compact_video
-  const needsStrictDuration =
-    purpose === Purpose.FULL_VIDEO ||
-    purpose === Purpose.COMPACT_VIDEO ||
-    purpose === Purpose.HIGHLIGHTS;
-
-  if (needsStrictDuration) {
-    const durationIssues = checkDurations(segments);
-    if (durationIssues.length > 0) {
-      console.log(
-        `[StoryIQ Verify] Duration issues found: ${durationIssues.length}`
-      );
-      coverage.issues.push(...durationIssues);
-      coverage.isValid = false;
-    }
-  }
-
-  // 2c. Check total duration against target (for compact_video)
-  let severeDurationViolation = false;
-  if (needsStrictDuration && targetDuration && targetDuration > 0) {
-    const totalIssue = checkTotalDuration(segments, targetDuration);
-    if (totalIssue) {
-      console.log(`[StoryIQ Verify] Total duration issue: ${totalIssue}`);
-      coverage.issues.push(totalIssue);
-      coverage.isValid = false;
-
-      // Check for severe violation (>50% over target) - this MUST be revised
-      const totalDuration = segments.reduce(
-        (sum, s) => sum + (s.endTime - s.startTime),
-        0
-      );
-      if (totalDuration > targetDuration * 1.5) {
-        severeDurationViolation = true;
-        console.warn(
-          `[StoryIQ Verify] SEVERE: Total ${Math.round(
-            totalDuration
-          )}s is >${Math.round(
-            targetDuration * 1.5
-          )}s (150% of target) - forcing revision`
-        );
-      }
-    }
-  }
-
-  // 2d. Check for overlapping segments (CRITICAL - segments must never overlap)
-  const overlapIssues = checkOverlaps(segments);
-  if (overlapIssues.length > 0) {
-    console.warn(
-      `[StoryIQ Verify] OVERLAP DETECTED: ${overlapIssues.length} overlapping segment(s)`
-    );
-    coverage.issues.push(...overlapIssues);
-    coverage.isValid = false;
-  }
-
-  // 3. Agent reviews its own work
-  const review = await reviewSegments(
-    segments,
-    segmentContent,
-    coverage,
-    purpose
-  );
-
-  console.log(
-    `[StoryIQ Verify] Review result: confidence=${review.confidence}, needsRevision=${review.needsRevision}`
-  );
-  if (review.issues.length > 0) {
-    console.log(`[StoryIQ Verify] Issues: ${review.issues.join("; ")}`);
-  }
-
-  // 4. Revise or finalize
-  // Force revision if severe duration violation, regardless of reviewer opinion
-  const mustRevise = review.needsRevision || severeDurationViolation;
-  if (mustRevise && attempt < MAX_REVISION_ATTEMPTS) {
-    console.log("[StoryIQ Verify] Revising segments...");
-
-    const allIssues = severeDurationViolation
-      ? [
-          `CRITICAL: Total duration is ${Math.round(
-            segments.reduce((sum, s) => sum + (s.endTime - s.startTime), 0)
-          )}s but target is ${targetDuration}s. You MUST cut segments to reach the target.`,
-          ...review.issues,
-        ]
-      : review.issues;
-
-    const revisedSegments = await reviseSegments(
-      segments,
-      segmentContent,
-      allIssues,
-      metadata,
-      transcript,
-      purpose
-    );
-
-    // Check if revision actually changed anything
-    const revisedDuration = revisedSegments.reduce(
-      (sum, s) => sum + (s.endTime - s.startTime),
-      0
-    );
-    const originalDuration = segments.reduce(
-      (sum, s) => sum + (s.endTime - s.startTime),
-      0
-    );
-
-    if (
-      revisedSegments.length === segments.length &&
-      Math.abs(revisedDuration - originalDuration) < 10
-    ) {
-      console.warn(
-        "[StoryIQ Verify] Revision did not change segments (possible parse failure) - skipping retry"
-      );
-      // Don't recurse with identical segments - it's a waste
-    } else {
-      // Recursive verification with incremented attempt
-      return verifyAndRevise({
-        segments: revisedSegments,
-        metadata,
-        transcript,
-        sceneBreaks,
-        purpose,
-        targetDuration,
-        tools,
-        attempt: attempt + 1,
+  // 3. Split oversized segments
+  if (needsSegmentDuration) {
+    const beforeSplit = current.length;
+    current = splitOversizedSegments(current, transcript);
+    if (current.length > beforeSplit) {
+      changes.push({
+        type: "split",
+        detail: `Split ${current.length - beforeSplit} oversized segment(s) exceeding 180s`,
       });
     }
   }
 
-  // Finalize
-  // Build friendly notes if there are remaining issues
-  let notes: string[] = [];
-  if (review.needsRevision && attempt >= MAX_REVISION_ATTEMPTS) {
-    // Check if we have duration issues - use friendly wording for demos
-    const hasDurationIssues = review.issues.some(
-      (i) =>
-        i.includes("minimum") || i.includes("maximum") || i.includes("duration")
+  // 4. Enforce total duration (only for purposes that need it)
+  if (needsTotalDuration && targetDuration && targetDuration > 0) {
+    const beforeEnforce = current.length;
+    const beforeDuration = current.reduce(
+      (sum, s) => sum + (s.endTime - s.startTime),
+      0,
     );
-    if (hasDurationIssues) {
-      notes = ["Some segments may benefit from timing adjustments."];
-    } else {
-      notes = ["Minor adjustments may improve results."];
-    }
-  } else {
-    notes = review.suggestions;
-  }
-
-  return {
-    segments,
-    confidence: review.confidence,
-    notes,
-    attempts: attempt,
-  };
-}
-
-// ============================================================================
-// Review Function
-// ============================================================================
-
-async function reviewSegments(
-  segments: ProposedSegment[],
-  segmentContent: SegmentContent[],
-  coverage: CoverageReport,
-  purpose: Purpose
-): Promise<ReviewResult> {
-  const prompt = getReviewPrompt(segments, segmentContent, coverage, purpose);
-
-  try {
-    const content = await callClaude({
-      model: "sonnet",
-      maxTokens: 4000,
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    const parsed = parseJSONFromLLM<Partial<ReviewResult>>(content);
-    return {
-      needsRevision: parsed.needsRevision ?? false,
-      confidence: parsed.confidence ?? 0.7,
-      issues: parsed.issues ?? [],
-      suggestions: parsed.suggestions ?? [],
-    };
-  } catch (error) {
-    console.error("[StoryIQ Verify] Review failed:", error);
-    // On failure, assume segments are okay to avoid infinite loops
-    return {
-      needsRevision: false,
-      confidence: 0.5,
-      issues: ["Review failed - proceeding with current segments"],
-      suggestions: [],
-    };
-  }
-}
-
-// ============================================================================
-// Revision Function
-// ============================================================================
-
-async function reviseSegments(
-  originalSegments: ProposedSegment[],
-  segmentContent: SegmentContent[],
-  issues: string[],
-  metadata: VideoMetadata,
-  transcript: TranscriptSegment[],
-  purpose: Purpose
-): Promise<ProposedSegment[]> {
-  const prompt = getRevisionPrompt(
-    originalSegments,
-    segmentContent,
-    issues,
-    metadata,
-    transcript,
-    purpose
-  );
-
-  try {
-    const content = await callClaude({
-      model: "sonnet",
-      maxTokens: 8000,
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    const parsed = parseJSONFromLLM<{ plan?: ProposedSegment[] }>(content);
-    if (parsed.plan && Array.isArray(parsed.plan)) {
-      console.log(
-        `[StoryIQ Verify] Revision produced ${parsed.plan.length} segments`
-      );
-      return parsed.plan;
-    }
-
-    console.warn(
-      "[StoryIQ Verify] Revision response missing 'plan' array, keeping original"
+    current = enforceTotalDuration(
+      current,
+      targetDuration,
+      transcript,
+      metadata.duration,
     );
-    return originalSegments;
-  } catch (error) {
-    console.error("[StoryIQ Verify] Revision failed:", error);
-    return originalSegments;
-  }
-}
+    const afterDuration = current.reduce(
+      (sum, s) => sum + (s.endTime - s.startTime),
+      0,
+    );
 
-// ============================================================================
-// Duration Validation
-// ============================================================================
-
-/**
- * Check if segments meet duration constraints (45-180 seconds).
- * Returns human-readable issues for Claude to fix.
- *
- * @param segments - The segments to check
- * @param minSeconds - Minimum segment duration (default 45s)
- * @param maxSeconds - Maximum segment duration (default 180s / 3 min)
- * @returns Array of issue strings, empty if all segments are valid
- */
-export function checkDurations(
-  segments: ProposedSegment[],
-  minSeconds: number = 45,
-  maxSeconds: number = 180
-): string[] {
-  const issues: string[] = [];
-
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    const duration = seg.endTime - seg.startTime;
-    const durationSec = Math.round(duration);
-
-    if (duration < minSeconds) {
-      const deficit = Math.round(minSeconds - duration);
-      issues.push(
-        `Segment ${i + 1} "${
-          seg.title
-        }" is ${durationSec}s (${deficit}s under ${minSeconds}s minimum) - consider merging with adjacent segment`
-      );
+    if (current.length < beforeEnforce) {
+      changes.push({
+        type: "dropped",
+        detail: `Dropped ${beforeEnforce - current.length} segment(s) to meet target duration (${Math.round(beforeDuration)}s → ${Math.round(afterDuration)}s, target ${Math.round(targetDuration)}s)`,
+      });
     }
-
-    if (duration > maxSeconds) {
-      const excess = Math.round(duration - maxSeconds);
-      issues.push(
-        `Segment ${i + 1} "${
-          seg.title
-        }" is ${durationSec}s (${excess}s over ${maxSeconds}s maximum) - find a scene break to split this segment`
-      );
+    if (current.length > beforeEnforce) {
+      changes.push({
+        type: "added",
+        detail: `Added ${current.length - beforeEnforce} segment(s) to meet target duration (${Math.round(beforeDuration)}s → ${Math.round(afterDuration)}s, target ${Math.round(targetDuration)}s)`,
+      });
     }
   }
 
-  return issues;
-}
-
-/**
- * Check if total duration is within tolerance of target.
- *
- * @param segments - The segments to check
- * @param targetDuration - Target total duration in seconds
- * @param tolerancePercent - Acceptable variance (default 15%)
- * @returns Issue string if out of tolerance, null if within
- */
-export function checkTotalDuration(
-  segments: ProposedSegment[],
-  targetDuration: number,
-  tolerancePercent: number = 15
-): string | null {
-  const totalDuration = segments.reduce(
-    (sum, s) => sum + (s.endTime - s.startTime),
-    0
-  );
-
-  const minAllowed = targetDuration * (1 - tolerancePercent / 100);
-  const maxAllowed = targetDuration * (1 + tolerancePercent / 100);
-
-  if (totalDuration < minAllowed) {
-    const deficit = Math.round(targetDuration - totalDuration);
-    return `Total duration ${Math.round(
-      totalDuration
-    )}s is ${deficit}s under target ${Math.round(
-      targetDuration
-    )}s - include more content`;
-  }
-
-  if (totalDuration > maxAllowed) {
-    const excess = Math.round(totalDuration - targetDuration);
-    return `Total duration ${Math.round(
-      totalDuration
-    )}s is ${excess}s over target ${Math.round(
-      targetDuration
-    )}s - cut less important content`;
-  }
-
-  return null;
-}
-
-/**
- * Check for overlapping segments (segments must never overlap).
- */
-function checkOverlaps(segments: ProposedSegment[]): string[] {
-  if (segments.length <= 1) return [];
-
-  const issues: string[] = [];
-  const sorted = [...segments].sort((a, b) => a.startTime - b.startTime);
-
-  for (let i = 1; i < sorted.length; i++) {
-    const prev = sorted[i - 1];
-    const curr = sorted[i];
-
-    if (curr.startTime < prev.endTime) {
-      const overlapDuration = Math.round(prev.endTime - curr.startTime);
-      issues.push(
-        `OVERLAP: "${prev.title}" (ends ${Math.round(
-          prev.endTime
-        )}s) overlaps with "${curr.title}" (starts ${Math.round(
-          curr.startTime
-        )}s) by ${overlapDuration}s - segments must not overlap`
-      );
-    }
-  }
-
-  return issues;
+  return { segments: current, changes };
 }
 
 // ============================================================================
-// Validation Utilities
+// Clamp to Video Duration
 // ============================================================================
 
 /**
- * Basic validation of segment structure.
- * Catches obvious LLM errors before verification loop.
+ * Clamp all segments to the actual video duration.
+ * Discards segments entirely outside the video, clamps partial segments.
+ * This is critical because Claude can generate timestamps past the video end
+ * during revision (especially for well-known content where it "remembers" more scenes).
  */
-export function validateSegmentStructure(
+function clampToVideoDuration(
   segments: ProposedSegment[],
-  videoDuration: number
-): { valid: ProposedSegment[]; errors: string[] } {
-  const errors: string[] = [];
-  const valid: ProposedSegment[] = [];
+  videoDuration: number,
+): ProposedSegment[] {
+  const clamped: ProposedSegment[] = [];
 
   for (const seg of segments) {
-    // Check required fields
-    if (typeof seg.startTime !== "number" || typeof seg.endTime !== "number") {
-      errors.push(`Segment missing timestamps: ${seg.title || "untitled"}`);
-      continue;
-    }
-
-    // Check bounds
-    if (seg.startTime < 0) {
-      seg.startTime = 0;
-      errors.push(`Fixed negative start time for: ${seg.title}`);
-    }
-
-    if (seg.endTime > videoDuration) {
-      seg.endTime = videoDuration;
-      errors.push(`Fixed end time exceeding duration for: ${seg.title}`);
-    }
-
-    // Check minimum duration (5 seconds)
-    if (seg.endTime - seg.startTime < 5) {
-      errors.push(
-        `Segment too short (${seg.endTime - seg.startTime}s): ${seg.title}`
+    // Skip segments that start at or past the video end
+    if (seg.startTime >= videoDuration) {
+      console.log(
+        `[StoryIQ Enforcer] Discarding segment "${seg.title}" - starts at ${Math.round(seg.startTime)}s, past video end ${Math.round(videoDuration)}s`,
       );
       continue;
     }
 
-    // Check order
-    if (seg.endTime <= seg.startTime) {
-      errors.push(`Invalid segment (end <= start): ${seg.title}`);
+    // Clamp start time
+    const startTime = Math.max(0, seg.startTime);
+
+    // Clamp end time
+    const endTime = Math.min(seg.endTime, videoDuration);
+
+    // Ensure segment is still long enough after clamping
+    if (endTime - startTime < 5) {
+      console.log(
+        `[StoryIQ Enforcer] Discarding segment "${seg.title}" - too short after clamping (${Math.round(endTime - startTime)}s)`,
+      );
       continue;
     }
 
-    // Ensure required string fields
-    if (!seg.title) {
-      seg.title = `Segment ${valid.length + 1}`;
-    }
-    if (!seg.reasoning) {
-      seg.reasoning = "Selected for narrative value";
-    }
-    if (!seg.expectedContent) {
-      seg.expectedContent = "Content from this time range";
-    }
-
-    valid.push(seg);
+    clamped.push({ ...seg, startTime, endTime });
   }
 
-  return { valid, errors };
+  if (clamped.length < segments.length) {
+    console.warn(
+      `[StoryIQ Enforcer] Clamped ${segments.length - clamped.length} segment(s) that exceeded video duration of ${Math.round(videoDuration)}s`,
+    );
+  }
+
+  return clamped;
 }
 
+// ============================================================================
+// Overlap Resolution
+// ============================================================================
+
 /**
- * Check for overlapping segments and merge or reject.
+ * Deterministically resolve overlapping segments by splitting at the midpoint
+ * of the overlap, snapping to the nearest word boundary if transcript is available.
+ *
+ * @param segments - The segments to fix
+ * @param transcript - Optional transcript for word boundary snapping
+ * @returns Segments with no overlaps
  */
 export function resolveOverlaps(
-  segments: ProposedSegment[]
+  segments: ProposedSegment[],
+  transcript?: TranscriptSegment[],
 ): ProposedSegment[] {
   if (segments.length <= 1) return segments;
 
   // Sort by start time
   const sorted = [...segments].sort((a, b) => a.startTime - b.startTime);
-  const resolved: ProposedSegment[] = [sorted[0]];
+  const resolved = sorted.map((s) => ({ ...s })); // Deep copy
 
-  for (let i = 1; i < sorted.length; i++) {
-    const current = sorted[i];
-    const previous = resolved[resolved.length - 1];
+  for (let i = 1; i < resolved.length; i++) {
+    const prev = resolved[i - 1];
+    const curr = resolved[i];
 
-    // Check for overlap
-    if (current.startTime < previous.endTime) {
-      // Adjust current to start after previous
-      const adjustedStart = previous.endTime;
-      if (current.endTime - adjustedStart >= 5) {
-        resolved.push({
-          ...current,
-          startTime: adjustedStart,
-        });
+    if (curr.startTime < prev.endTime) {
+      // Overlap detected - split at midpoint
+      const overlapMid = (prev.endTime + curr.startTime) / 2;
+
+      // Try to snap to nearest word boundary
+      let splitPoint = overlapMid;
+      if (transcript && transcript.length > 0) {
+        splitPoint = findNearestWordBoundary(overlapMid, transcript);
       }
-      // Otherwise skip this segment (too short after adjustment)
-    } else {
-      resolved.push(current);
+
+      // Ensure split point is between the two segments' non-overlapping regions
+      // prev must keep at least its startTime + 5s
+      // curr must keep at least 5s before its endTime
+      const minSplit = prev.startTime + 5;
+      const maxSplit = curr.endTime - 5;
+      splitPoint = Math.max(minSplit, Math.min(maxSplit, splitPoint));
+
+      prev.endTime = splitPoint;
+      curr.startTime = splitPoint;
+
+      console.log(
+        `[StoryIQ Enforcer] Resolved overlap: "${prev.title}" now ends at ${splitPoint.toFixed(1)}s, "${curr.title}" now starts at ${splitPoint.toFixed(1)}s`,
+      );
     }
   }
 
-  return resolved;
+  // Remove any segments that became too short (< 5s) after adjustment
+  return resolved.filter((s) => s.endTime - s.startTime >= 5);
+}
+
+/**
+ * Find the nearest word end time to a target timestamp.
+ * Used for snapping overlap split points to word boundaries.
+ */
+function findNearestWordBoundary(
+  target: number,
+  transcript: TranscriptSegment[],
+): number {
+  let closest = target;
+  let minDist = Infinity;
+
+  for (const seg of transcript) {
+    const dist = Math.abs(seg.endTime - target);
+    if (dist < minDist) {
+      minDist = dist;
+      closest = seg.endTime;
+    }
+    // Also check start times
+    const startDist = Math.abs(seg.startTime - target);
+    if (startDist < minDist) {
+      minDist = startDist;
+      closest = seg.startTime;
+    }
+  }
+
+  return closest;
+}
+
+// ============================================================================
+// Split Oversized Segments
+// ============================================================================
+
+/**
+ * Split any segments exceeding maxDuration into smaller pieces.
+ * Splits at sentence boundaries when possible, falling back to word boundaries.
+ * This is the programmatic safety net for when Claude leaves oversized segments
+ * (e.g., a 656s "End Credits" segment that should have been split during revision).
+ */
+function splitOversizedSegments(
+  segments: ProposedSegment[],
+  transcript: TranscriptSegment[],
+  maxDuration: number = 180,
+): ProposedSegment[] {
+  const result: ProposedSegment[] = [];
+
+  for (const seg of segments) {
+    const duration = seg.endTime - seg.startTime;
+
+    if (duration <= maxDuration) {
+      result.push(seg);
+      continue;
+    }
+
+    // How many pieces do we need?
+    const numParts = Math.ceil(duration / maxDuration);
+    const targetPartDuration = duration / numParts;
+
+    console.log(
+      `[StoryIQ Enforcer] Splitting "${seg.title}" (${Math.round(duration)}s) into ${numParts} segments (~${Math.round(targetPartDuration)}s each)`,
+    );
+
+    let currentStart = seg.startTime;
+    for (let p = 0; p < numParts; p++) {
+      const isLast = p === numParts - 1;
+      let partEnd = isLast ? seg.endTime : currentStart + targetPartDuration;
+
+      // Snap to sentence/word boundary if not the last piece
+      if (!isLast && transcript.length > 0) {
+        partEnd = findBestSplitPoint(
+          currentStart,
+          partEnd,
+          seg.endTime,
+          transcript,
+          60, // min segment duration
+        );
+      }
+
+      // Generate a title from transcript content, or fall back to "(Part N)" suffix
+      const partTitle =
+        numParts <= 1
+          ? seg.title
+          : getFirstSentenceInRange(transcript, currentStart, partEnd) ||
+            `${seg.title} (Part ${p + 1})`;
+
+      result.push({
+        startTime: currentStart,
+        endTime: partEnd,
+        title: partTitle,
+        reasoning:
+          p === 0
+            ? seg.reasoning
+            : `Continuation of "${seg.title}" - split to meet duration limits`,
+        expectedContent: seg.expectedContent || "Content from this time range",
+      });
+
+      currentStart = partEnd;
+    }
+  }
+
+  if (result.length > segments.length) {
+    console.log(
+      `[StoryIQ Enforcer] Split oversized segments: ${segments.length} → ${result.length} segments`,
+    );
+  }
+
+  return result;
+}
+
+/**
+ * Find the best timestamp to split a segment, preferring sentence boundaries.
+ * Looks for sentence-ending punctuation (.?!) in transcript near the target split point,
+ * then falls back to the nearest word boundary.
+ *
+ * @param segStart - Start of the current segment (to enforce minimum duration)
+ * @param target - The ideal split point
+ * @param segEnd - End of the original segment (to enforce minimum remainder)
+ * @param transcript - Transcript segments for boundary snapping
+ * @param minPartDuration - Minimum duration for each resulting part (default 60s)
+ */
+function findBestSplitPoint(
+  segStart: number,
+  target: number,
+  segEnd: number,
+  transcript: TranscriptSegment[],
+  minPartDuration: number = 60,
+): number {
+  // Hard bounds: each side must be at least minPartDuration
+  const minSplit = segStart + minPartDuration;
+  const maxSplit = segEnd - minPartDuration;
+
+  if (minSplit >= maxSplit) {
+    // Can't satisfy both - just split at target
+    return Math.max(segStart + 5, Math.min(segEnd - 5, target));
+  }
+
+  const clampedTarget = Math.max(minSplit, Math.min(maxSplit, target));
+
+  // Search window: +/- 15 seconds around the target
+  const searchStart = Math.max(minSplit, clampedTarget - 15);
+  const searchEnd = Math.min(maxSplit, clampedTarget + 15);
+
+  // First pass: look for sentence boundaries (punctuation at end of text)
+  let bestSentence: number | null = null;
+  let bestSentenceDist = Infinity;
+
+  for (const seg of transcript) {
+    if (seg.endTime >= searchStart && seg.endTime <= searchEnd) {
+      const text = seg.text.trim();
+      if (text.match(/[.?!]$/)) {
+        const dist = Math.abs(seg.endTime - clampedTarget);
+        if (dist < bestSentenceDist) {
+          bestSentenceDist = dist;
+          bestSentence = seg.endTime;
+        }
+      }
+    }
+  }
+
+  if (bestSentence !== null) {
+    return bestSentence;
+  }
+
+  // Second pass: nearest word boundary
+  return findNearestWordBoundary(clampedTarget, transcript);
+}
+
+// ============================================================================
+// Total Duration Enforcement
+// ============================================================================
+
+/**
+ * Enforce total duration by dropping or adding segments.
+ * Called as a last resort after the tool conversation.
+ *
+ * If over: drop shortest eligible middle segments (deterministic)
+ * If under: add segments in largest gaps using transcript data
+ *
+ * @param videoDuration - Total video length in seconds (required to find gaps at start/end)
+ */
+export function enforceTotalDuration(
+  segments: ProposedSegment[],
+  targetDuration: number,
+  transcript: TranscriptSegment[],
+  videoDuration: number,
+): ProposedSegment[] {
+  if (!targetDuration || targetDuration <= 0 || segments.length === 0) {
+    return segments;
+  }
+
+  let result = segments.map((s) => ({ ...s })); // Deep copy
+
+  // --- OVER TARGET: drop segments ---
+  const MAX_DROP_ITERATIONS = 20; // Safety valve
+  let dropIterations = 0;
+  while (dropIterations < MAX_DROP_ITERATIONS) {
+    const total = result.reduce((sum, s) => sum + (s.endTime - s.startTime), 0);
+    if (total <= targetDuration * 1.15) break; // Within 15% tolerance
+    if (result.length <= 1) break; // Can't drop the only segment
+
+    const dropped = dropOneSegment(result);
+    if (dropped.length === result.length) break; // Nothing was dropped (safety)
+    result = dropped;
+    dropIterations++;
+  }
+
+  if (dropIterations > 0) {
+    console.warn(
+      `[StoryIQ Enforcer] Dropped ${dropIterations} segment(s) to meet total duration target`,
+    );
+  }
+
+  // --- UNDER TARGET: add segments in gaps ---
+  const MAX_ADD_ITERATIONS = 20; // Safety valve
+  let addIterations = 0;
+  while (addIterations < MAX_ADD_ITERATIONS) {
+    const total = result.reduce((sum, s) => sum + (s.endTime - s.startTime), 0);
+    if (total >= targetDuration * 0.85) break; // Within 15% tolerance
+
+    const added = addOneSegment(result, transcript, videoDuration);
+    if (added.length === result.length) break; // No gap large enough
+    result = added;
+    addIterations++;
+  }
+
+  if (addIterations > 0) {
+    console.warn(
+      `[StoryIQ Enforcer] Added ${addIterations} segment(s) to meet total duration target`,
+    );
+  }
+
+  return result;
+}
+
+/**
+ * Drop one segment from the list (deterministic).
+ * Rules:
+ * - Never drop first or last (unless <= 3 segments)
+ * - Always drop the shortest eligible middle segment
+ *   (deterministic — same input always produces same output)
+ */
+function dropOneSegment(segments: ProposedSegment[]): ProposedSegment[] {
+  if (segments.length <= 1) return segments;
+
+  // Determine eligible indices
+  let eligible: number[] = [];
+  if (segments.length <= 3) {
+    // Small set: all segments are eligible
+    eligible = segments.map((_, i) => i);
+  } else {
+    // Skip first and last
+    eligible = segments
+      .map((_, i) => i)
+      .filter((i) => i > 0 && i < segments.length - 1);
+  }
+
+  if (eligible.length === 0) return segments;
+
+  // Sort eligible by duration (shortest first) — deterministic tiebreaker by index
+  eligible.sort((a, b) => {
+    const durA = segments[a].endTime - segments[a].startTime;
+    const durB = segments[b].endTime - segments[b].startTime;
+    if (Math.abs(durA - durB) < 0.01) return a - b; // stable tiebreaker
+    return durA - durB;
+  });
+
+  // Always drop the shortest eligible segment (deterministic)
+  const dropIdx = eligible[0];
+
+  console.log(
+    `[StoryIQ Enforcer] Dropping segment ${dropIdx + 1}: "${segments[dropIdx].title}" (${Math.round(segments[dropIdx].endTime - segments[dropIdx].startTime)}s)`,
+  );
+
+  return segments.filter((_, i) => i !== dropIdx);
+}
+
+/**
+ * Add one segment in the largest gap (including before first and after last segment).
+ * Uses transcript to get a title from the first sentence in the gap.
+ *
+ * @param videoDuration - Total video length to detect gap after last segment
+ */
+function addOneSegment(
+  segments: ProposedSegment[],
+  transcript: TranscriptSegment[],
+  videoDuration: number,
+): ProposedSegment[] {
+  // Sort segments by start time
+  const sorted = [...segments].sort((a, b) => a.startTime - b.startTime);
+
+  // Find ALL gaps: before first, between segments, and after last
+  const gaps: { start: number; end: number; size: number }[] = [];
+
+  // Gap before first segment (0 → first.startTime)
+  if (sorted.length === 0) {
+    // No segments at all — entire video is a gap
+    if (videoDuration >= 60) {
+      gaps.push({ start: 0, end: videoDuration, size: videoDuration });
+    }
+  } else {
+    // Gap before first segment
+    if (sorted[0].startTime >= 60) {
+      gaps.push({
+        start: 0,
+        end: sorted[0].startTime,
+        size: sorted[0].startTime,
+      });
+    }
+
+    // Gaps between segments
+    for (let i = 1; i < sorted.length; i++) {
+      const gapStart = sorted[i - 1].endTime;
+      const gapEnd = sorted[i].startTime;
+      if (gapEnd - gapStart >= 60) {
+        gaps.push({ start: gapStart, end: gapEnd, size: gapEnd - gapStart });
+      }
+    }
+
+    // Gap after last segment (last.endTime → videoDuration)
+    const lastEnd = sorted[sorted.length - 1].endTime;
+    if (videoDuration - lastEnd >= 60) {
+      gaps.push({
+        start: lastEnd,
+        end: videoDuration,
+        size: videoDuration - lastEnd,
+      });
+    }
+  }
+
+  if (gaps.length === 0) {
+    console.log("[StoryIQ Enforcer] No gaps >= 60s found, cannot add segments");
+    return segments; // No valid gaps
+  }
+
+  // Pick the largest gap
+  gaps.sort((a, b) => b.size - a.size);
+  const gap = gaps[0];
+
+  // Create segment: fill the gap (max 120s, from gap start)
+  const segDuration = Math.min(120, gap.size);
+  const segStart = gap.start;
+  const segEnd = Math.min(gap.end, gap.start + segDuration);
+
+  // Try to get a title from transcript
+  const title = getFirstSentenceInRange(transcript, segStart, segEnd);
+
+  const newSegment: ProposedSegment = {
+    startTime: segStart,
+    endTime: segEnd,
+    title: title || `Scene at ${formatTime(segStart)}`,
+    reasoning: "Added by enforcer to meet target duration",
+    expectedContent: "Content from this time range",
+  };
+
+  console.log(
+    `[StoryIQ Enforcer] Adding segment: "${newSegment.title}" (${Math.round(segStart)}s - ${Math.round(segEnd)}s, ${Math.round(segDuration)}s)`,
+  );
+
+  // Insert in sorted order
+  const result = [...segments, newSegment].sort(
+    (a, b) => a.startTime - b.startTime,
+  );
+  return result;
+}
+
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+/**
+ * Get the first sentence from transcript within a time range for use as a title.
+ */
+function getFirstSentenceInRange(
+  transcript: TranscriptSegment[],
+  start: number,
+  end: number,
+): string | null {
+  const words: string[] = [];
+
+  for (const seg of transcript) {
+    if (seg.startTime >= start && seg.startTime < end) {
+      const text = seg.text.trim();
+      if (text) {
+        words.push(text);
+        // Stop at first sentence-ending punctuation
+        if (text.match(/[.?!]$/)) break;
+        // Limit to ~10 words for a title
+        if (words.length >= 10) break;
+      }
+    }
+  }
+
+  if (words.length === 0) return null;
+
+  const sentence = words.join(" ");
+  // Truncate to reasonable title length
+  return sentence.length > 60 ? sentence.substring(0, 57) + "..." : sentence;
+}
+
+/**
+ * Simple time formatter for titles: M:SS
+ */
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }

@@ -88,6 +88,24 @@ export enum Purpose {
   SOCIAL_SEGMENT = "social_segment",
 }
 
+/**
+ * Derive constraint rules from a Purpose.
+ * Single source of truth — used by enforcer, tool builder, and tool-generation.
+ */
+export function getPurposeConstraints(purpose: Purpose): {
+  needsSegmentDuration: boolean;
+  needsTotalDuration: boolean;
+} {
+  const needsSegmentDuration =
+    purpose === Purpose.FULL_VIDEO ||
+    purpose === Purpose.COMPACT_VIDEO ||
+    purpose === Purpose.HIGHLIGHTS;
+  const needsTotalDuration =
+    purpose !== Purpose.FULL_VIDEO &&
+    (purpose === Purpose.COMPACT_VIDEO || purpose === Purpose.HIGHLIGHTS);
+  return { needsSegmentDuration, needsTotalDuration };
+}
+
 export type ContentType = "tv" | "movie" | "ugc";
 
 export type Platform =

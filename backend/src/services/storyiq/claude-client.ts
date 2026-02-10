@@ -123,7 +123,7 @@ export async function callClaude(options: ClaudeOptions): Promise<string> {
 async function callClaudeViaAnthropic(
   model: "sonnet" | "haiku",
   maxTokens: number,
-  messages: ClaudeMessage[]
+  messages: ClaudeMessage[],
 ): Promise<string> {
   const client = await getAnthropicClient();
   const modelId =
@@ -150,13 +150,157 @@ async function callClaudeViaAnthropic(
 }
 
 // ============================================================================
+// Tool Use Interface
+// ============================================================================
+
+/**
+ * Tool definition for Claude tool use.
+ * Matches Anthropic API tool schema format.
+ */
+export interface ClaudeTool {
+  name: string;
+  description: string;
+  input_schema: {
+    type: "object";
+    properties: Record<string, unknown>;
+    required?: string[];
+  };
+}
+
+/**
+ * A tool_use block from Claude's response.
+ */
+export interface ToolUseBlock {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+/**
+ * A tool_result block to send back to Claude.
+ */
+export interface ToolResultBlock {
+  type: "tool_result";
+  tool_use_id: string;
+  content: string;
+  is_error?: boolean;
+}
+
+/**
+ * A text block from Claude's response.
+ * Can include cache_control for prompt caching.
+ */
+export interface TextBlock {
+  type: "text";
+  text: string;
+  cache_control?: { type: "ephemeral" };
+}
+
+/** A content block in Claude's response */
+export type ContentBlock = TextBlock | ToolUseBlock;
+
+/**
+ * Full response from a tool-use Claude call.
+ */
+export interface ClaudeToolResponse {
+  content: ContentBlock[];
+  stop_reason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
+}
+
+/**
+ * Message format for tool-use conversations.
+ * Content can be a string (user text) or an array of content blocks (tool results).
+ */
+export interface ToolMessage {
+  role: "user" | "assistant";
+  content: string | (TextBlock | ToolUseBlock | ToolResultBlock)[];
+}
+
+export interface ClaudeToolOptions {
+  model?: "sonnet" | "haiku";
+  maxTokens?: number;
+  tools: ClaudeTool[];
+  messages: ToolMessage[];
+}
+
+/**
+ * Call Claude with tool definitions. Returns the full response
+ * including stop_reason and all content blocks (text + tool_use).
+ *
+ * Used for multi-turn tool conversations where we need to process
+ * tool_use blocks and send back tool_result blocks.
+ */
+export async function callClaudeWithTools(
+  options: ClaudeToolOptions,
+): Promise<ClaudeToolResponse> {
+  const { model = "sonnet", maxTokens = 8000, tools, messages } = options;
+
+  if (USE_ANTHROPIC_API) {
+    return callClaudeWithToolsViaAnthropic(model, maxTokens, tools, messages);
+  } else {
+    return callClaudeWithToolsViaBedrock(model, maxTokens, tools, messages);
+  }
+}
+
+// ============================================================================
+// Anthropic API - Tool Use Implementation
+// ============================================================================
+
+async function callClaudeWithToolsViaAnthropic(
+  model: "sonnet" | "haiku",
+  maxTokens: number,
+  tools: ClaudeTool[],
+  messages: ToolMessage[],
+): Promise<ClaudeToolResponse> {
+  const client = await getAnthropicClient();
+  const modelId =
+    model === "sonnet" ? ANTHROPIC_MODEL_SONNET : ANTHROPIC_MODEL_HAIKU;
+
+  console.log(
+    `[Claude Tools] Using Anthropic API with model: ${modelId}, ${tools.length} tools`,
+  );
+
+  // Our ClaudeTool/ToolMessage types are structurally compatible with the SDK's
+  // Anthropic.MessageCreateParams but not nominally identical (we define our own
+  // for Bedrock portability). Use SDK parameter types for a narrow cast that will
+  // break at compile time if the SDK changes its shape.
+  type CreateParams = Parameters<typeof client.messages.create>[0];
+
+      const response = await client.messages.create({
+        model: modelId,
+        max_tokens: maxTokens,
+        tools: tools as CreateParams["tools"],
+        messages: messages as CreateParams["messages"],
+      });
+
+      // Log cache stats if available
+      const usage = response.usage as {
+        input_tokens: number;
+        output_tokens: number;
+        cache_creation_input_tokens?: number;
+        cache_read_input_tokens?: number;
+      };
+      if (usage.cache_read_input_tokens || usage.cache_creation_input_tokens) {
+        console.log(
+          `[Claude Tools] Cache: ${usage.cache_read_input_tokens || 0} read, ${usage.cache_creation_input_tokens || 0} created, ${usage.input_tokens} uncached`,
+        );
+      }
+
+      return {
+        content: response.content as ContentBlock[],
+        stop_reason: response.stop_reason as ClaudeToolResponse["stop_reason"],
+      };
+}
+
+// ============================================================================
 // Bedrock Implementation
 // ============================================================================
 
 async function callClaudeViaBedrock(
   model: "sonnet" | "haiku",
   maxTokens: number,
-  messages: ClaudeMessage[]
+  messages: ClaudeMessage[],
 ): Promise<string> {
   const client = getBedrockClient();
   const modelId = model === "sonnet" ? MODEL_SONNET : MODEL_HAIKU;
@@ -181,4 +325,57 @@ async function callClaudeViaBedrock(
   const responseBody = JSON.parse(new TextDecoder().decode(response.body));
 
   return extractLLMContent(responseBody);
+}
+
+// ============================================================================
+// Bedrock - Tool Use Implementation
+// ============================================================================
+
+async function callClaudeWithToolsViaBedrock(
+  model: "sonnet" | "haiku",
+  maxTokens: number,
+  tools: ClaudeTool[],
+  messages: ToolMessage[],
+): Promise<ClaudeToolResponse> {
+  const client = getBedrockClient();
+  const modelId = model === "sonnet" ? MODEL_SONNET : MODEL_HAIKU;
+
+  console.log(
+    `[Claude Tools] Using AWS Bedrock with model: ${modelId}, ${tools.length} tools`,
+  );
+
+  const command = new InvokeModelCommand({
+    modelId,
+    contentType: "application/json",
+    accept: "application/json",
+    body: JSON.stringify({
+      anthropic_version: "bedrock-2023-05-31",
+      max_tokens: maxTokens,
+      tools,
+      messages,
+    }),
+  });
+
+  const response = await client.send(command);
+  const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+
+  // Validate response structure — Bedrock can return errors, throttles, or
+  // malformed bodies that would silently propagate as undefined downstream.
+  if (!responseBody.content || !Array.isArray(responseBody.content)) {
+    throw new Error(
+      `Invalid Bedrock tool-use response: missing 'content' array. ` +
+        `Response: ${JSON.stringify(responseBody).substring(0, 300)}`,
+    );
+  }
+  if (!responseBody.stop_reason) {
+    throw new Error(
+      `Invalid Bedrock tool-use response: missing 'stop_reason'. ` +
+        `Response: ${JSON.stringify(responseBody).substring(0, 300)}`,
+    );
+  }
+
+  return {
+    content: responseBody.content as ContentBlock[],
+    stop_reason: responseBody.stop_reason as ClaudeToolResponse["stop_reason"],
+  };
 }
