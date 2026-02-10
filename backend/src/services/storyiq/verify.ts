@@ -135,7 +135,211 @@ export function enforceConstraints(
     }
   }
 
+  // 5. Fill gaps for FULL_VIDEO (must cover entire video)
+  if (purpose === Purpose.FULL_VIDEO) {
+    const beforeFill = current.length;
+    const { segments: filled, gapsFilled } = fillGapsForFullVideo(
+      current,
+      transcript,
+      metadata.duration,
+    );
+    current = filled;
+    if (gapsFilled > 0) {
+      changes.push({
+        type: "added",
+        detail: `Filled ${gapsFilled} gap(s) for full video coverage`,
+      });
+    }
+    if (current.length > beforeFill) {
+      console.log(
+        `[StoryIQ Enforcer] FULL_VIDEO: Added ${current.length - beforeFill} segment(s) to fill gaps`,
+      );
+    }
+  }
+
   return { segments: current, changes };
+}
+
+// ============================================================================
+// Fill Gaps for FULL_VIDEO
+// ============================================================================
+
+/**
+ * Fill all gaps for FULL_VIDEO purpose.
+ * - Small gaps (5s < gap < 60s): extend an adjacent segment
+ * - Large gaps (>= 60s): add new segment(s)
+ * - Ensures first segment starts at 0 and last ends at videoDuration
+ */
+function fillGapsForFullVideo(
+  segments: ProposedSegment[],
+  transcript: TranscriptSegment[],
+  videoDuration: number,
+): { segments: ProposedSegment[]; gapsFilled: number } {
+  if (segments.length === 0) {
+    // No segments at all - create one covering the whole video (will be split later if needed)
+    return {
+      segments: [
+        {
+          startTime: 0,
+          endTime: videoDuration,
+          title: getFirstSentenceInRange(transcript, 0, 120) || "Full Video",
+          reasoning: "Created by enforcer - no segments provided",
+          expectedContent: "Content from this time range",
+        },
+      ],
+      gapsFilled: 1,
+    };
+  }
+
+  let result = segments.map((s) => ({ ...s })); // Deep copy
+  result.sort((a, b) => a.startTime - b.startTime);
+  let gapsFilled = 0;
+
+  // 1. Handle gap at start (0 → first segment)
+  if (result[0].startTime > 5) {
+    const gapSize = result[0].startTime;
+    if (gapSize < 60) {
+      // Small gap: extend first segment backward
+      console.log(
+        `[StoryIQ Enforcer] FULL_VIDEO: Extending first segment backward from ${result[0].startTime.toFixed(1)}s to 0s`,
+      );
+      result[0].startTime = 0;
+      gapsFilled++;
+    } else {
+      // Large gap: add new segment(s)
+      const newSegs = createSegmentsForGap(0, result[0].startTime, transcript);
+      result = [...newSegs, ...result];
+      gapsFilled += newSegs.length;
+    }
+  } else if (result[0].startTime > 0) {
+    // Tiny gap, just extend to 0
+    result[0].startTime = 0;
+  }
+
+  // 2. Handle gaps between segments
+  // Re-sort after potential additions
+  result.sort((a, b) => a.startTime - b.startTime);
+
+  let i = 0;
+  while (i < result.length - 1) {
+    const curr = result[i];
+    const next = result[i + 1];
+    const gapSize = next.startTime - curr.endTime;
+
+    if (gapSize > 5) {
+      if (gapSize < 60) {
+        // Small gap: extend one of the neighbors
+        // Prefer extending the shorter one (keeps segments balanced)
+        const currDuration = curr.endTime - curr.startTime;
+        const nextDuration = next.endTime - next.startTime;
+
+        if (currDuration <= nextDuration && currDuration + gapSize <= 180) {
+          // Extend current forward
+          console.log(
+            `[StoryIQ Enforcer] FULL_VIDEO: Extending "${curr.title}" forward by ${gapSize.toFixed(1)}s`,
+          );
+          curr.endTime = next.startTime;
+          gapsFilled++;
+        } else if (nextDuration + gapSize <= 180) {
+          // Extend next backward
+          console.log(
+            `[StoryIQ Enforcer] FULL_VIDEO: Extending "${next.title}" backward by ${gapSize.toFixed(1)}s`,
+          );
+          next.startTime = curr.endTime;
+          gapsFilled++;
+        } else {
+          // Both would exceed 180s, split the gap between them
+          const midpoint = curr.endTime + gapSize / 2;
+          console.log(
+            `[StoryIQ Enforcer] FULL_VIDEO: Splitting ${gapSize.toFixed(1)}s gap between "${curr.title}" and "${next.title}"`,
+          );
+          curr.endTime = midpoint;
+          next.startTime = midpoint;
+          gapsFilled++;
+        }
+      } else {
+        // Large gap: insert new segment(s)
+        const newSegs = createSegmentsForGap(
+          curr.endTime,
+          next.startTime,
+          transcript,
+        );
+        result.splice(i + 1, 0, ...newSegs);
+        gapsFilled += newSegs.length;
+        i += newSegs.length; // Skip past inserted segments
+      }
+    }
+    i++;
+  }
+
+  // 3. Handle gap at end (last segment → videoDuration)
+  result.sort((a, b) => a.startTime - b.startTime);
+  const last = result[result.length - 1];
+  if (last.endTime < videoDuration - 5) {
+    const gapSize = videoDuration - last.endTime;
+    if (gapSize < 60) {
+      // Small gap: extend last segment forward
+      console.log(
+        `[StoryIQ Enforcer] FULL_VIDEO: Extending last segment forward from ${last.endTime.toFixed(1)}s to ${videoDuration.toFixed(1)}s`,
+      );
+      last.endTime = videoDuration;
+      gapsFilled++;
+    } else {
+      // Large gap: add new segment(s)
+      const newSegs = createSegmentsForGap(
+        last.endTime,
+        videoDuration,
+        transcript,
+      );
+      result = [...result, ...newSegs];
+      gapsFilled += newSegs.length;
+    }
+  } else if (last.endTime < videoDuration) {
+    // Tiny gap, just extend to end
+    last.endTime = videoDuration;
+  }
+
+  return { segments: result, gapsFilled };
+}
+
+/**
+ * Create segment(s) to fill a gap. For gaps > 180s, creates multiple segments.
+ */
+function createSegmentsForGap(
+  gapStart: number,
+  gapEnd: number,
+  transcript: TranscriptSegment[],
+): ProposedSegment[] {
+  const gapSize = gapEnd - gapStart;
+  const segments: ProposedSegment[] = [];
+
+  // How many segments do we need? Target ~90s each, max 180s
+  const numSegments = Math.ceil(gapSize / 150); // ~150s target for comfortable fit under 180s
+  const segmentDuration = gapSize / numSegments;
+
+  let currentStart = gapStart;
+  for (let i = 0; i < numSegments; i++) {
+    const isLast = i === numSegments - 1;
+    const currentEnd = isLast ? gapEnd : currentStart + segmentDuration;
+
+    const title = getFirstSentenceInRange(transcript, currentStart, currentEnd);
+
+    segments.push({
+      startTime: currentStart,
+      endTime: currentEnd,
+      title: title || `Scene at ${formatTime(currentStart)}`,
+      reasoning: "Added by enforcer to fill gap for full video coverage",
+      expectedContent: "Content from this time range",
+    });
+
+    console.log(
+      `[StoryIQ Enforcer] FULL_VIDEO: Adding segment "${segments[segments.length - 1].title}" (${currentStart.toFixed(1)}s - ${currentEnd.toFixed(1)}s)`,
+    );
+
+    currentStart = currentEnd;
+  }
+
+  return segments;
 }
 
 // ============================================================================

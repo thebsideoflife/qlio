@@ -36,8 +36,8 @@ import { enforceConstraints } from "./verify";
 // Constants
 // ============================================================================
 
-/** Max tool conversation rounds — may need more if Claude needs nudging to meet target */
-const MAX_TOOL_ROUNDS = 6;
+/** Max tool conversation rounds — enforcer handles remaining gaps/issues */
+const MAX_TOOL_ROUNDS = 4;
 /** Max fix rounds after quality review — 1 is usually enough */
 const MAX_FIX_ROUNDS = 1;
 const MAX_SEGMENT_DURATION = 180;
