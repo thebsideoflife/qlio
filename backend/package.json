@@ -1,7 +1,7 @@
 {
-  "name": "zeevee-backend",
+  "name": "qlio-backend",
   "version": "1.0.0",
-  "description": "Serverless backend for ZeeVee",
+  "description": "Serverless backend for Qlio",
   "main": "index.js",
   "scripts": {
     "build": "esbuild src/handlers/*.ts --bundle --platform=node --target=node18 --outdir=dist --external:@remotion/lambda --external:@remotion/renderer",
