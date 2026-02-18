@@ -72,11 +72,20 @@ const stageLabels: Record<string, string> = {
 };
 
 // Favorites localStorage helpers
-const FAVORITES_KEY = "zeevee-favorites";
+const FAVORITES_KEY = "qlio-favorites";
+const FAVORITES_KEY_LEGACY = "zeevee-favorites";
 
 function getFavorites(): Record<string, boolean> {
   try {
-    const stored = localStorage.getItem(FAVORITES_KEY);
+    let stored = localStorage.getItem(FAVORITES_KEY);
+    // One-time migration from old key after rename zeevee → qlio
+    if (!stored) {
+      const legacy = localStorage.getItem(FAVORITES_KEY_LEGACY);
+      if (legacy) {
+        localStorage.setItem(FAVORITES_KEY, legacy);
+        stored = legacy;
+      }
+    }
     return stored ? JSON.parse(stored) : {};
   } catch {
     return {};
@@ -116,11 +125,13 @@ function VideoThumbnail({
   const cacheKey = `${videoUrl}:${time}`;
 
   useEffect(() => {
-    // Check cache first
+    // Check cache first — defer setState to avoid synchronous updates in effect
     const cached = thumbnailCache.get(cacheKey);
     if (cached) {
-      setThumbnailUrl(cached);
-      setLoading(false);
+      queueMicrotask(() => {
+        setThumbnailUrl(cached);
+        setLoading(false);
+      });
       return;
     }
 
@@ -199,7 +210,7 @@ function VideoThumbnail({
         <div
           className={cn(
             "bg-slate-800 animate-pulse flex items-center justify-center",
-            className
+            className,
           )}
         >
           <Loader2 className="h-3 w-3 animate-spin text-slate-600" />
@@ -239,7 +250,7 @@ export function AssetCard({
   };
 
   const [localAssetTitle, setLocalAssetTitle] = useState(
-    getDisplayTitle(asset.title)
+    getDisplayTitle(asset.title),
   );
 
   const currentStageLabel = asset.processing?.stage
@@ -291,7 +302,7 @@ export function AssetCard({
           } catch {
             return project;
           }
-        })
+        }),
       );
       setProjects(projectsWithSegments);
     } catch (error) {
@@ -347,13 +358,13 @@ export function AssetCard({
 
   const handleUpdateProjectTitle = async (
     projectId: string,
-    newTitle: string
+    newTitle: string,
   ) => {
     // Optimistic update
     setProjects(
       projects.map((p) =>
-        p.projectId === projectId ? { ...p, title: newTitle } : p
-      )
+        p.projectId === projectId ? { ...p, title: newTitle } : p,
+      ),
     );
     try {
       await updateProject(projectId, { title: newTitle });
@@ -366,8 +377,8 @@ export function AssetCard({
           projects.map((p) =>
             p.projectId === projectId
               ? { ...p, title: originalProject.title }
-              : p
-          )
+              : p,
+          ),
         );
       }
     }
@@ -391,7 +402,7 @@ export function AssetCard({
       <div
         className={cn(
           "rounded-xl overflow-hidden bg-card border-2 border-border cursor-pointer transition-all duration-200 hover:border-blue-500/50 hover:shadow-lg",
-          "group"
+          "group",
         )}
         onClick={onSelect}
       >
@@ -580,11 +591,10 @@ export function AssetCard({
             </div>
           ) : projects.length === 0 ? (
             <div className="text-center py-8">
-              <p className="text-sm text-muted-foreground mb-4">No microdramas yet</p>
-              <Button
-                size="sm"
-                onClick={handleCreateProject}
-              >
+              <p className="text-sm text-muted-foreground mb-4">
+                No microdramas yet
+              </p>
+              <Button size="sm" onClick={handleCreateProject}>
                 <PlusCircle className="h-4 w-4 mr-2" />
                 Create First
               </Button>
@@ -659,7 +669,7 @@ export function AssetCard({
                           "h-4 w-4",
                           favorites[project.projectId]
                             ? "fill-pink-500 text-pink-500"
-                            : "text-muted-foreground"
+                            : "text-muted-foreground",
                         )}
                       />
                     </Button>
@@ -697,7 +707,9 @@ export function AssetCard({
           onClick={(e) => e.stopPropagation()}
         >
           <DialogHeader>
-            <DialogTitle className="text-lg font-bold">Delete Asset?</DialogTitle>
+            <DialogTitle className="text-lg font-bold">
+              Delete Asset?
+            </DialogTitle>
             <DialogDescription className="text-muted-foreground">
               This will permanently delete "{asset.title}" and all associated
               data. This action cannot be undone.
@@ -737,7 +749,9 @@ export function AssetCard({
           onClick={(e) => e.stopPropagation()}
         >
           <DialogHeader>
-            <DialogTitle className="text-lg font-bold">Delete Project?</DialogTitle>
+            <DialogTitle className="text-lg font-bold">
+              Delete Project?
+            </DialogTitle>
             <DialogDescription className="text-muted-foreground">
               This will permanently delete "
               {projectToDelete?.title || "Untitled"}". This action cannot be

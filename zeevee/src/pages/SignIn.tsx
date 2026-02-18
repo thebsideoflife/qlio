@@ -21,8 +21,11 @@ export default function SignIn() {
     <div className="flex h-screen w-full items-center justify-center bg-gray-100 dark:bg-gray-900">
       <Card className="w-full max-w-md">
         <CardHeader>
+          <div className="flex justify-center mb-2">
+            <img src="/qlio.svg" alt="Qlio" className="h-12 w-12" />
+          </div>
           <CardTitle className="text-center text-2xl font-bold">
-            Sign In to ZeeVee
+            Sign In to Qlio
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -45,4 +48,3 @@ export default function SignIn() {
     </div>
   );
 }
-

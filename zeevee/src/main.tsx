@@ -1,13 +1,13 @@
-import React from 'react'
-import ReactDOM from 'react-dom/client'
-import App from './App.tsx'
-import './index.css'
-import { ThemeProvider } from "@/components/theme-provider"
+import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./App.tsx";
+import "./index.css";
+import { ThemeProvider } from "@/components/theme-provider";
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
+ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <ThemeProvider defaultTheme="dark" storageKey="zeevee-ui-theme">
+    <ThemeProvider defaultTheme="dark" storageKey="qlio-ui-theme">
       <App />
     </ThemeProvider>
   </React.StrictMode>,
-)
+);

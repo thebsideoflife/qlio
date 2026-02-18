@@ -1,6 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
 import {
-  Activity,
   LogOut,
   KeyRound,
   Plus,
@@ -53,7 +52,7 @@ export function MainLayout({ children }: MainLayoutProps) {
   const dispatch = useDispatch<AppDispatch>();
   const { items: assets } = useSelector((state: RootState) => state.assets);
   const { projectTitle, assetName } = useSelector(
-    (state: RootState) => state.editor
+    (state: RootState) => state.editor,
   );
 
   const isEditorPage = location.pathname.startsWith("/editor");
@@ -74,16 +73,16 @@ export function MainLayout({ children }: MainLayoutProps) {
         (a) =>
           a.status === "processing" ||
           a.status === "uploading" ||
-          a.status === "indexing"
+          a.status === "indexing",
       ).length,
-    [assets]
+    [assets],
   );
 
   const completedCount = useMemo(
     () =>
       assets.filter((a) => a.status === "completed" || a.status === "READY")
         .length,
-    [assets]
+    [assets],
   );
 
   // Listen for custom event to open upload wizard from other components
@@ -115,10 +114,8 @@ export function MainLayout({ children }: MainLayoutProps) {
           to="/"
           className="flex items-center gap-3 font-bold hover:opacity-80 transition-opacity"
         >
-          <div className="rounded-lg bg-blue-600 p-2">
-            <Activity className="h-5 w-5 text-white" />
-          </div>
-          <span className="text-xl">ZeeVee</span>
+          <img src="/qlio.svg" alt="" className="h-8 w-8" />
+          <span className="text-xl">Qlio</span>
         </Link>
 
         {/* Editor page info and actions in header */}
@@ -149,10 +146,7 @@ export function MainLayout({ children }: MainLayoutProps) {
               </div>
             </div>
             <div className="flex gap-3">
-              <Button
-                size="sm"
-                onClick={() => setExportOpen(true)}
-              >
+              <Button size="sm" onClick={() => setExportOpen(true)}>
                 <Film className="h-4 w-4 mr-2" />
                 Export Video
               </Button>
@@ -216,17 +210,24 @@ export function MainLayout({ children }: MainLayoutProps) {
             <DropdownMenuTrigger asChild>
               <Avatar className="h-9 w-9 cursor-pointer border-2 border-border hover:border-blue-500 transition-colors">
                 <AvatarImage src="/placeholder-user.jpg" alt="User" />
-                <AvatarFallback className="bg-muted font-bold">U</AvatarFallback>
+                <AvatarFallback className="bg-muted font-bold">
+                  U
+                </AvatarFallback>
               </Avatar>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="bg-card border-border">
-              <DropdownMenuLabel className="font-bold">My Account</DropdownMenuLabel>
+              <DropdownMenuLabel className="font-bold">
+                My Account
+              </DropdownMenuLabel>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setIsPasswordOpen(true)}>
                 <KeyRound className="mr-2 h-4 w-4" />
                 Edit API Password
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleLogout} className="text-red-500 focus:text-red-400">
+              <DropdownMenuItem
+                onClick={handleLogout}
+                className="text-red-500 focus:text-red-400"
+              >
                 <LogOut className="mr-2 h-4 w-4" />
                 Log out
               </DropdownMenuItem>
