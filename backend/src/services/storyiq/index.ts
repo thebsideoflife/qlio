@@ -3,28 +3,25 @@
  *
  * Main orchestration module for the StoryIQ agent.
  *
- * Simplified Pipeline:
+ * Tool-Based Pipeline:
  * 1. Read transcript (from S3 cache)
  * 2. Get scene breaks (optional, from cache)
- * 3. Planning - Generate segment proposals with full transcript context
- * 4. Verification - Self-review and revise with transcript context
+ * 3. Tool conversation - Claude creates segments via add/remove/update/finish tools
+ *    with inline validation and actual transcript content returned per segment
+ * 4. Quality review - separate reviewer checks titles vs content
+ * 5. Deterministic fallback - enforcer guarantees hard constraints
  *
  * Design Principles:
- * - Give Claude the actual content (transcript + scenes)
- * - No synthesis step - direct data flow
+ * - Give Claude actual content via tool results (not just prompts)
+ * - Inline constraint validation (tools reject bad segments immediately)
+ * - Budget tracking per tool call (Claude always knows remaining time)
  * - Scenes are optional, transcript is required
  */
 
 import { TwelveLabsWrapper, type SceneBreak } from "../twelvelabs";
 import { createStoryIQTools } from "./tools";
-import { getPlanningPrompt } from "./prompts";
+import { generateSegmentsWithTools } from "./tool-generation";
 import {
-  verifyAndRevise,
-  validateSegmentStructure,
-  resolveOverlaps,
-} from "./verify";
-import {
-  parseJSONFromLLM,
   Purpose,
   type StoryIQInput,
   type StoryIQOutput,
@@ -33,7 +30,6 @@ import {
   type VideoMetadata,
   type TranscriptSegment,
 } from "./types";
-import { callClaude } from "./claude-client";
 
 // ============================================================================
 // Main Entry Point
@@ -44,7 +40,7 @@ import { callClaude } from "./claude-client";
  * Allows the caller to update DynamoDB job status.
  */
 export type GenerationStatusCallback = (
-  status: "detecting_scenes" | "generating"
+  status: "detecting_scenes" | "generating",
 ) => Promise<void>;
 
 /**
@@ -62,7 +58,7 @@ export type GenerationStatusCallback = (
 export async function generateWithStoryIQ(
   twelvelabs: TwelveLabsWrapper,
   input: StoryIQInput,
-  onStatusChange?: GenerationStatusCallback
+  onStatusChange?: GenerationStatusCallback,
 ): Promise<StoryIQOutput> {
   const startTime = Date.now();
   const { assetId, goals } = input;
@@ -71,14 +67,14 @@ export async function generateWithStoryIQ(
   console.log(
     `[StoryIQ] Purpose: ${goals.purpose}, Target: ${
       goals.targetDuration || "auto"
-    }s`
+    }s`,
   );
   if (goals.userInstructions) {
     console.log(
       `[StoryIQ] User instructions: "${goals.userInstructions.substring(
         0,
-        100
-      )}..."`
+        100,
+      )}..."`,
     );
   }
 
@@ -104,11 +100,30 @@ export async function generateWithStoryIQ(
   if (videoDuration <= 0) {
     throw new Error(
       `Cannot generate segments: Video duration is ${videoDuration}s. ` +
-        `Asset may not have been properly indexed. Please re-upload or manually set the duration.`
+        `Asset may not have been properly indexed. Please re-upload or manually set the duration.`,
     );
   }
 
   console.log(`[StoryIQ] Video duration: ${videoDuration}s`);
+
+  // Recalculate targetDuration now that videoDuration is known.
+  // mapMetadataToGoals runs before videoDuration is resolved (frontend sends null),
+  // so goals.targetDuration may be undefined even when targetPercent is set.
+  if (
+    (goals.purpose === Purpose.COMPACT_VIDEO ||
+      goals.purpose === Purpose.HIGHLIGHTS) &&
+    goals.targetPercent &&
+    !goals.targetDuration &&
+    videoDuration > 0
+  ) {
+    goals.targetDuration = Math.round(
+      (videoDuration * goals.targetPercent) / 100,
+    );
+    console.log(
+      `[StoryIQ] Calculated targetDuration: ${goals.targetDuration}s ` +
+        `(${goals.targetPercent}% of ${videoDuration}s)`,
+    );
+  }
 
   // Create tools for transcript access
   const tools = createStoryIQTools(twelvelabs, assetId, {
@@ -130,7 +145,7 @@ export async function generateWithStoryIQ(
   if (transcript.length === 0) {
     throw new Error(
       `Cannot generate segments: No transcript found for asset ${assetId}. ` +
-        `The video may not have been indexed properly, or it may have no audible speech.`
+        `The video may not have been indexed properly, or it may have no audible speech.`,
     );
   }
 
@@ -156,11 +171,11 @@ export async function generateWithStoryIQ(
       const meta = cacheCheck.result.meta;
       if (meta) {
         console.log(
-          `[StoryIQ] Scene cache meta: ${meta.windowsSucceeded}/${meta.windowsTotal} windows, complete=${meta.isComplete}, rateLimit=${meta.hitRateLimit}`
+          `[StoryIQ] Scene cache meta: ${meta.windowsSucceeded}/${meta.windowsTotal} windows, complete=${meta.isComplete}, rateLimit=${meta.hitRateLimit}`,
         );
       }
       console.log(
-        `[StoryIQ] Scene cache detectedAt: ${cacheCheck.result.detectedAt}`
+        `[StoryIQ] Scene cache detectedAt: ${cacheCheck.result.detectedAt}`,
       );
     } else {
       // No cache available - proceed without scenes
@@ -168,42 +183,32 @@ export async function generateWithStoryIQ(
       if (cacheCheck.failed) {
         console.warn(
           `[StoryIQ] Scene detection previously failed: ${cacheCheck.failedReason}. ` +
-            `Proceeding without scene data.`
+            `Proceeding without scene data.`,
         );
       } else if (cacheCheck.inProgress) {
         console.log(
-          "[StoryIQ] Scene detection in progress but not waiting. Proceeding without scenes."
+          "[StoryIQ] Scene detection in progress but not waiting. Proceeding without scenes.",
         );
       } else {
         console.log(
-          "[StoryIQ] No scene cache found. Run detect-scenes Lambda manually to populate. Proceeding without scenes."
+          "[StoryIQ] No scene cache found. Run detect-scenes Lambda manually to populate. Proceeding without scenes.",
         );
       }
       sceneBreaks = [];
     }
   }
 
-  // Phase 3: Generate initial segment proposals
-  console.log("[StoryIQ] Phase 3: Generating segment proposals...");
-
   // Log input data stats
   console.log(
-    `[StoryIQ] Input: ${sceneBreaks.length} scenes, ${transcript.length} transcript segments`
+    `[StoryIQ] Input: ${sceneBreaks.length} scenes, ${transcript.length} transcript segments`,
   );
-  if (sceneBreaks.length > 0 && transcript.length > 0) {
-    console.log(
-      "[StoryIQ] Scenes will be grouped with dialogue for planning prompt"
-    );
-  }
-
-  // Log sample of input data for debugging
   if (sceneBreaks.length > 0) {
     console.log(`[StoryIQ] Sample scene breaks (first 3):`);
     sceneBreaks.slice(0, 3).forEach((s, i) => {
       console.log(
         `  ${i + 1}. ${Math.floor(s.time / 60)}:${String(
-          Math.floor(s.time % 60)
-        ).padStart(2, "0")} | ${s.who} | ${s.action} | ${s.mood}`
+          Math.floor(s.time % 60),
+        ).padStart(2, "0")} | ${s.who} | ${s.action} | ${s.mood}`,
       );
     });
   }
@@ -212,71 +217,38 @@ export async function generateWithStoryIQ(
     transcript.slice(0, 3).forEach((t, i) => {
       console.log(
         `  ${i + 1}. ${Math.floor(t.startTime / 60)}:${String(
-          Math.floor(t.startTime % 60)
-        ).padStart(2, "0")} "${t.text.substring(0, 80)}..."`
+          Math.floor(t.startTime % 60),
+        ).padStart(2, "0")} "${t.text.substring(0, 80)}..."`,
       );
     });
   }
 
-  const proposedSegments = await generateSegmentProposals(
-    metadata,
-    transcript,
-    sceneBreaks,
-    goals
-  );
+  // Phase 3+4: Tool-based segment generation
+  // Replaces the old generate-then-verify pipeline with Anthropic tool-use.
+  // Claude calls add_segment/remove_segment/update_segment/finish_segments
+  // with inline validation, then a quality reviewer checks, then the enforcer
+  // guarantees hard constraints.
+  console.log("[StoryIQ] Phase 3: Tool-based segment generation...");
 
-  // Validate structure
-  const { valid: validatedSegments, errors } = validateSegmentStructure(
-    proposedSegments,
-    metadata.duration
-  );
-
-  if (errors.length > 0) {
-    console.warn("[StoryIQ] Validation errors:", errors);
-  }
-
-  // Resolve overlaps
-  const resolvedSegments = resolveOverlaps(validatedSegments);
-
-  // Log if overlaps were resolved
-  if (resolvedSegments.length !== validatedSegments.length) {
-    console.log(
-      `[StoryIQ] Removed ${
-        validatedSegments.length - resolvedSegments.length
-      } segment(s) due to overlap`
-    );
-  }
-
-  // Log resolved duration
-  const resolvedDuration = resolvedSegments.reduce(
-    (sum, s) => sum + (s.endTime - s.startTime),
-    0
-  );
-  console.log(
-    `[StoryIQ] After overlap resolution: ${resolvedSegments.length} segments, ${resolvedDuration}s total`
-  );
-
-  // Phase 4: Verify and revise
-  console.log("[StoryIQ] Phase 4: Verification loop...");
-  const finalResult = await verifyAndRevise({
-    segments: resolvedSegments,
+  const finalResult = await generateSegmentsWithTools({
     metadata,
     transcript,
     sceneBreaks,
     purpose: goals.purpose,
     targetDuration: goals.targetDuration,
-    tools,
+    targetPercent: goals.targetPercent,
+    userInstructions: goals.userInstructions,
   });
 
   const processingTime = Date.now() - startTime;
   console.log(
-    `[StoryIQ] Complete in ${processingTime}ms, ${finalResult.attempts} attempt(s)`
+    `[StoryIQ] Complete in ${processingTime}ms, ${finalResult.segments.length} segments`,
   );
 
   // Calculate actual duration
   const actualDuration = finalResult.segments.reduce(
     (sum, s) => sum + (s.endTime - s.startTime),
-    0
+    0,
   );
 
   return {
@@ -292,79 +264,6 @@ export async function generateWithStoryIQ(
 }
 
 // ============================================================================
-// Segment Proposal Generation
-// ============================================================================
-
-async function generateSegmentProposals(
-  metadata: VideoMetadata,
-  transcript: TranscriptSegment[],
-  sceneBreaks: SceneBreak[] | null,
-  goals: StoryIQGoals
-): Promise<ProposedSegment[]> {
-  // Get the appropriate prompt for this purpose
-  const prompt = getPlanningPrompt(
-    goals.purpose,
-    metadata,
-    transcript,
-    sceneBreaks,
-    goals.targetDuration,
-    goals.userInstructions,
-    goals.targetPercent
-  );
-
-  // Log prompt size for debugging
-  const promptChars = prompt.length;
-  const estimatedTokens = Math.round(promptChars / 4); // rough estimate
-  console.log(
-    `[StoryIQ] Planning prompt: ${promptChars} chars (~${estimatedTokens} tokens)`
-  );
-
-  // Use generous max tokens - don't risk truncation
-  const maxTokens = 8000;
-
-  try {
-    const content = await callClaude({
-      model: "sonnet",
-      maxTokens,
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    // Parse JSON response
-    const parsed = parseJSONFromLLM<{ plan?: ProposedSegment[] }>(content);
-
-    if (parsed.plan && Array.isArray(parsed.plan)) {
-      console.log(
-        `[StoryIQ] Generated ${parsed.plan.length} segment proposals`
-      );
-
-      // Log each proposed segment for debugging
-      const totalDuration = parsed.plan.reduce(
-        (sum, s) => sum + (s.endTime - s.startTime),
-        0
-      );
-      console.log(
-        `[StoryIQ] Proposed segments (total ${Math.round(totalDuration)}s):`
-      );
-      parsed.plan.forEach((seg, i) => {
-        const duration = Math.round(seg.endTime - seg.startTime);
-        console.log(
-          `  ${i + 1}. [${Math.round(seg.startTime)}s-${Math.round(
-            seg.endTime
-          )}s] (${duration}s) "${seg.title}"`
-        );
-      });
-
-      return parsed.plan;
-    }
-
-    return [];
-  } catch (error) {
-    console.error("[StoryIQ] Segment generation failed:", error);
-    throw error;
-  }
-}
-
-// ============================================================================
 // Utility: Parse Duration String
 // ============================================================================
 
@@ -377,7 +276,7 @@ async function generateSegmentProposals(
  * Returns duration in seconds, or undefined for "Auto" or invalid input
  */
 export function parseDurationString(
-  duration: string | number | undefined | null
+  duration: string | number | undefined | null,
 ): number | undefined {
   // Handle null/undefined
   if (duration === null || duration === undefined) {
