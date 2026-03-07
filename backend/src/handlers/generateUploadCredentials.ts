@@ -3,7 +3,7 @@ import { STSClient, AssumeRoleCommand } from "@aws-sdk/client-sts";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "crypto";
-import { checkAuth } from "../utils/auth";
+import { checkAuth, getAuthenticatedUserId } from "../utils/auth";
 
 const stsClient = new STSClient({});
 const dynamoClient = new DynamoDBClient({});
@@ -17,6 +17,8 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   // 1. Auth Check
   const authResult = await checkAuth(event);
   if (authResult) return authResult;
+
+  const userId = await getAuthenticatedUserId(event);
 
   try {
     // 2. Parse Body
@@ -65,6 +67,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       originalName: filename || "Untitled",
       createdAt: new Date().toISOString(),
       segmentCount: 0,
+      ...(userId && { userId }),
     };
 
     if (typeof duration === "number") {

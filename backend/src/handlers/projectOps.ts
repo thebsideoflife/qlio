@@ -45,7 +45,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       };
     }
 
-    const method = event.httpMethod;
+    const method = (event as any).requestContext?.http?.method || event.httpMethod;
 
     if (method === "DELETE") {
       await docClient.send(

@@ -80,6 +80,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         TableName: PROJECTS_TABLE,
         Key: { projectId },
         UpdateExpression: `SET ${updateParts.join(", ")}`,
+        ConditionExpression: "attribute_exists(projectId)",
         ExpressionAttributeNames: exprNames,
         ExpressionAttributeValues: exprValues,
         ReturnValues: "ALL_NEW",
@@ -100,7 +101,17 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         globalFraming,
       }),
     };
-  } catch (error) {
+  } catch (error: any) {
+    if (error.name === "ConditionalCheckFailedException") {
+      return {
+        statusCode: 404,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+        body: JSON.stringify({ error: "Project not found" }),
+      };
+    }
     console.error("Error updating project:", error);
     return {
       statusCode: 500,
