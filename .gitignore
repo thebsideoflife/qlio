@@ -156,3 +156,6 @@ backend/render-package/
 .cursor/
 
 scripts/
+
+CLAUDE.md
+backfill-user-ids.sh

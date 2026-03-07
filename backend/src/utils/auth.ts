@@ -2,10 +2,10 @@ import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
 const secretsClient = new SecretsManagerClient({});
-let cachedPassword: string | null = null;
+let cachedUsers: Record<string, string> | null = null;
 
-const getApiPassword = async (): Promise<string | null> => {
-  if (cachedPassword) return cachedPassword;
+const getUserMap = async (): Promise<Record<string, string> | null> => {
+  if (cachedUsers) return cachedUsers;
 
   const secretArn = process.env.API_PASSWORD_SECRET_ARN;
   if (!secretArn) {
@@ -16,8 +16,8 @@ const getApiPassword = async (): Promise<string | null> => {
   try {
     const data = await secretsClient.send(new GetSecretValueCommand({ SecretId: secretArn }));
     if (data.SecretString) {
-      cachedPassword = data.SecretString;
-      return cachedPassword;
+      cachedUsers = JSON.parse(data.SecretString);
+      return cachedUsers;
     }
   } catch (err) {
     console.error('Failed to retrieve API Password from Secrets Manager', err);
@@ -27,16 +27,16 @@ const getApiPassword = async (): Promise<string | null> => {
 
 export const checkAuth = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult | null> => {
   // 1. Allow internal or service-to-service calls based on source (Optional/Advanced)
-  // For AWS services (like S3 notifications or internal calls), they often invoke via Lambda ARN, 
+  // For AWS services (like S3 notifications or internal calls), they often invoke via Lambda ARN,
   // not API Gateway, so this checkAuth might not even run if the handler doesn't call it.
   // BUT, if 12 Labs calls our webhook, it IS via API Gateway.
-  
+
   // Webhook Bypass: Check if it's the webhook path
   // NOTE: This assumes the Lambda is triggered via API Gateway with this specific resource path.
   // Ideally, use API Gateway resource policies or a separate authorizer for webhooks.
   // API Gateway V2 (HTTP API) uses rawPath or routeKey, V1 (REST API) uses resource.
   if (event.resource === '/webhook' || (event as any).rawPath === '/webhook' || (event as any).routeKey === 'POST /webhook') {
-      return null; 
+      return null;
   }
 
   // S3 Notification Bypass: S3 invokes Lambda directly, not via API Gateway with 'headers'.
@@ -49,9 +49,9 @@ export const checkAuth = async (event: APIGatewayProxyEvent): Promise<APIGateway
       return null;
   }
 
-  const apiPassword = await getApiPassword();
-  
-  if (!apiPassword) {
+  const userMap = await getUserMap();
+
+  if (!userMap) {
     console.error('API Password could not be retrieved');
     return {
       statusCode: 500,
@@ -62,7 +62,7 @@ export const checkAuth = async (event: APIGatewayProxyEvent): Promise<APIGateway
 
   const providedPassword = event.headers['x-api-password'] || event.headers['X-Api-Password'];
 
-  if (providedPassword !== apiPassword) {
+  if (!providedPassword || !(providedPassword in userMap)) {
     return {
       statusCode: 401,
       headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
@@ -71,4 +71,14 @@ export const checkAuth = async (event: APIGatewayProxyEvent): Promise<APIGateway
   }
 
   return null; // Auth successful
+};
+
+export const getAuthenticatedUserId = async (event: APIGatewayProxyEvent): Promise<string | null> => {
+  const userMap = await getUserMap();
+  if (!userMap) return null;
+
+  const providedPassword = event.headers['x-api-password'] || event.headers['X-Api-Password'];
+  if (!providedPassword) return null;
+
+  return userMap[providedPassword] ?? null;
 };

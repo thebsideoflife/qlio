@@ -1,7 +1,7 @@
 import { APIGatewayProxyHandler } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, ScanCommand } from "@aws-sdk/lib-dynamodb";
-import { checkAuth } from "../utils/auth";
+import { checkAuth, getAuthenticatedUserId } from "../utils/auth";
 import { presignS3Uri } from "../utils/s3";
 
 const client = new DynamoDBClient({});
@@ -14,10 +14,14 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   const authResult = await checkAuth(event);
   if (authResult) return authResult;
 
+  const userId = await getAuthenticatedUserId(event);
+
   try {
     const result = await docClient.send(
       new ScanCommand({
         TableName: TABLE_NAME,
+        FilterExpression: 'userId = :uid',
+        ExpressionAttributeValues: { ':uid': userId },
       })
     );
 

@@ -60,7 +60,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
     // Fetch signing secret
     const secretVal = await secretsClient.send(
-      new GetSecretValueCommand({ SecretId: SIGNING_SECRET_ARN })
+      new GetSecretValueCommand({ SecretId: SIGNING_SECRET_ARN }),
     );
     const signingSecret = secretVal.SecretString;
 
@@ -102,16 +102,20 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     } else if (signingSecret) {
       console.error(
         "Missing webhook signature header. Received headers:",
-        event.headers
+        event.headers,
       );
       return {
         statusCode: 401,
         body: JSON.stringify({ error: "Missing signature" }),
       };
     } else {
-      console.warn(
-        "Skipping signature verification: No signing secret configured."
-      );
+      console.error("Webhook rejected: SIGNING_SECRET_ARN is not configured.");
+      return {
+        statusCode: 500,
+        body: JSON.stringify({
+          error: "Webhook signing secret not configured",
+        }),
+      };
     }
 
     const body = JSON.parse(webhookBody);
@@ -152,7 +156,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         new GetCommand({
           TableName: CHUNK_TASKS_TABLE,
           Key: { taskId },
-        })
+        }),
       );
 
       if (chunkTaskResult.Item) {
@@ -160,7 +164,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         return await handleChunkCompletion(
           chunkTaskResult.Item,
           videoId,
-          taskId
+          taskId,
         );
       }
     }
@@ -174,7 +178,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         ExpressionAttributeValues: {
           ":tid": taskId,
         },
-      })
+      }),
     );
 
     if (!queryRes.Items || queryRes.Items.length === 0) {
@@ -191,7 +195,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     // Handle non-chunked video completion
     return await handleSingleVideoCompletion(
       assetId,
-      videoId || asset.twelveLabsVideoId
+      videoId || asset.twelveLabsVideoId,
     );
   } catch (error) {
     console.error("Error processing webhook:", error);
@@ -208,11 +212,11 @@ export const handler: APIGatewayProxyHandler = async (event) => {
  */
 async function handleSingleVideoCompletion(
   assetId: string,
-  videoId: string
+  videoId: string,
 ): Promise<{ statusCode: number; headers?: any; body: string }> {
   // Fetch 12 Labs API Key to get transcription
   const secretVal12Labs = await secretsClient.send(
-    new GetSecretValueCommand({ SecretId: SECRET_ARN })
+    new GetSecretValueCommand({ SecretId: SECRET_ARN }),
   );
   const apiKey = secretVal12Labs.SecretString;
   let transcriptionUrl = null;
@@ -225,7 +229,7 @@ async function handleSingleVideoCompletion(
     try {
       const video = await client.indexes.videos.retrieve(
         TWELVE_LABS_INDEX_ID,
-        videoId
+        videoId,
       );
 
       // 12Labs stores duration in various places depending on API version
@@ -241,7 +245,7 @@ async function handleSingleVideoCompletion(
         "12Labs video duration:",
         videoDuration,
         "from response:",
-        JSON.stringify(video, null, 2).slice(0, 500)
+        JSON.stringify(video, null, 2).slice(0, 500),
       );
     } catch (err) {
       console.error("Failed to fetch video metadata from 12 Labs", err);
@@ -272,7 +276,7 @@ async function handleSingleVideoCompletion(
             Key: key,
             Body: JSON.stringify(transcriptionData),
             ContentType: "application/json",
-          })
+          }),
         );
 
         transcriptionUrl = `s3://${BUCKET_NAME}/${key}`;
@@ -285,7 +289,7 @@ async function handleSingleVideoCompletion(
           if (estimatedDuration > 0) {
             videoDuration = estimatedDuration;
             console.log(
-              `Duration estimated from transcript: ${videoDuration}s`
+              `Duration estimated from transcript: ${videoDuration}s`,
             );
           }
         }
@@ -315,7 +319,7 @@ async function handleSingleVideoCompletion(
         ":dur": videoDuration,
         ":ua": new Date().toISOString(),
       },
-    })
+    }),
   );
 
   return {
@@ -334,12 +338,12 @@ async function handleSingleVideoCompletion(
 async function handleChunkCompletion(
   chunkTask: any,
   videoId: string,
-  taskId: string
+  taskId: string,
 ): Promise<{ statusCode: number; headers?: any; body: string }> {
   const { assetId, chunkIndex } = chunkTask;
 
   console.log(
-    `Chunk ${chunkIndex} completed for asset ${assetId}, videoId: ${videoId}`
+    `Chunk ${chunkIndex} completed for asset ${assetId}, videoId: ${videoId}`,
   );
 
   // Get current asset
@@ -347,7 +351,7 @@ async function handleChunkCompletion(
     new GetCommand({
       TableName: TABLE_NAME,
       Key: { assetId },
-    })
+    }),
   );
 
   if (!assetRes.Item) {
@@ -374,7 +378,7 @@ async function handleChunkCompletion(
   const allChunksComplete = pendingChunks === 0;
 
   console.log(
-    `Chunk status: ${chunks.length - pendingChunks}/${chunks.length} complete`
+    `Chunk status: ${chunks.length - pendingChunks}/${chunks.length} complete`,
   );
 
   if (allChunksComplete) {
@@ -384,7 +388,7 @@ async function handleChunkCompletion(
     let totalDuration = 0;
 
     const secretVal12Labs = await secretsClient.send(
-      new GetSecretValueCommand({ SecretId: SECRET_ARN })
+      new GetSecretValueCommand({ SecretId: SECRET_ARN }),
     );
     const apiKey = secretVal12Labs.SecretString;
 
@@ -399,7 +403,7 @@ async function handleChunkCompletion(
         const allTranscriptions: any[] = [];
 
         for (const chunk of chunks.sort(
-          (a, b) => a.chunkIndex - b.chunkIndex
+          (a, b) => a.chunkIndex - b.chunkIndex,
         )) {
           if (!chunk.videoId) continue;
 
@@ -428,7 +432,7 @@ async function handleChunkCompletion(
           } catch (err) {
             console.error(
               `Failed to fetch transcription for chunk ${chunk.chunkIndex}:`,
-              err
+              err,
             );
           }
         }
@@ -456,11 +460,11 @@ async function handleChunkCompletion(
               Key: key,
               Body: JSON.stringify(dedupedTranscriptions),
               ContentType: "application/json",
-            })
+            }),
           );
           transcriptionUrl = `s3://${BUCKET_NAME}/${key}`;
           console.log(
-            `Aggregated transcription stored at ${transcriptionUrl} (${dedupedTranscriptions.length} segments from ${allTranscriptions.length} raw)`
+            `Aggregated transcription stored at ${transcriptionUrl} (${dedupedTranscriptions.length} segments from ${allTranscriptions.length} raw)`,
           );
         }
       } catch (err) {
@@ -487,7 +491,7 @@ async function handleChunkCompletion(
           ":trans": transcriptionUrl,
           ":ua": new Date().toISOString(),
         },
-      })
+      }),
     );
 
     console.log(`Asset ${assetId} is now READY`);
@@ -504,7 +508,7 @@ async function handleChunkCompletion(
           ":pending": pendingChunks,
           ":ua": new Date().toISOString(),
         },
-      })
+      }),
     );
 
     console.log(`Asset ${assetId} waiting for ${pendingChunks} more chunk(s)`);
@@ -517,7 +521,7 @@ async function handleChunkCompletion(
         new DeleteCommand({
           TableName: CHUNK_TASKS_TABLE,
           Key: { taskId },
-        })
+        }),
       );
     } catch (err) {
       console.warn("Failed to delete chunk task entry:", err);
