@@ -5,6 +5,7 @@ import type {
   CaptionStyle,
   CaptionLine,
   SegmentFraming,
+  FramingKeyframe,
   AspectRatio,
   GlobalFramingSettings,
 } from "@/remotion/types";
@@ -12,6 +13,7 @@ import {
   DEFAULT_CAPTION_SETTINGS,
   DEFAULT_SEGMENT_FRAMING,
   DEFAULT_GLOBAL_FRAMING,
+  getEffectiveKeyframes,
 } from "@/remotion/types";
 import { groupWordsIntoCaptions } from "@/remotion/utils";
 
@@ -31,6 +33,7 @@ export interface Segment {
 interface EditorState {
   segments: Segment[];
   selectedSegmentId: string | null;
+  selectedKeyframeId: string | null;
   currentTime: number;
   duration: number;
   projectTitle: string;
@@ -47,12 +50,15 @@ interface EditorState {
   // Framing state
   globalFraming: GlobalFramingSettings;
   // Last rendered segments - cached to avoid re-renders
-  lastSegmentRenders: { segmentId: string; title: string; url: string }[] | null;
+  lastSegmentRenders:
+    | { segmentId: string; title: string; url: string }[]
+    | null;
 }
 
 const initialState: EditorState = {
   segments: [],
   selectedSegmentId: null,
+  selectedKeyframeId: null,
   currentTime: 0,
   duration: 0,
   projectTitle: "",
@@ -81,6 +87,141 @@ const markEdited = (state: EditorState) => {
 // Minimum segment duration (100ms)
 const MIN_SEGMENT_DURATION = 0.1;
 
+// Short segment threshold — segments under 5s only get 1 keyframe
+const SHORT_SEGMENT_THRESHOLD = 5;
+
+// Deterministic ID counter for reducers (no Math.random in reducers)
+let reducerIdCounter = 0;
+function nextId(prefix: string) {
+  return `${prefix}-${++reducerIdCounter}`;
+}
+
+/**
+ * Build a valid framing object for a sub-range of a segment.
+ * Keyframes are filtered to the range [0, newDuration], times are offset,
+ * and a keyframe at time=0 is guaranteed. Returns undefined if source has no framing.
+ */
+function sliceFraming(
+  source: SegmentFraming | undefined,
+  rangeStartInSegment: number,
+  newDuration: number,
+): SegmentFraming | undefined {
+  if (!source) return undefined;
+  const kfs = getEffectiveKeyframes(source);
+  const rangeEnd = rangeStartInSegment + newDuration;
+
+  // Filter keyframes that fall within the new range, adjust times
+  const sliced: FramingKeyframe[] = kfs
+    .filter((kf) => kf.time >= rangeStartInSegment && kf.time < rangeEnd)
+    .map((kf) => ({
+      ...kf,
+      id: nextId("kf-sl"),
+      time: Math.round((kf.time - rangeStartInSegment) * 10) / 10,
+    }));
+
+  // Sort after offset adjustment
+  sliced.sort((a, b) => a.time - b.time);
+
+  // Ensure there's always a keyframe at time 0
+  if (sliced.length === 0 || sliced[0].time > 0) {
+    const before = [...kfs]
+      .filter((kf) => kf.time <= rangeStartInSegment)
+      .sort((a, b) => b.time - a.time)[0];
+    const base = before || kfs[0];
+    sliced.unshift({
+      ...base,
+      id: nextId("kf-sl"),
+      time: 0,
+    });
+  }
+
+  // Clamp any keyframe that ended up past the new duration
+  const clamped = sliced.filter((kf) => kf.time >= 0 && kf.time < newDuration);
+  if (clamped.length === 0) {
+    const fallback = sliced[0] || kfs[0];
+    clamped.push({ ...fallback, time: 0, id: nextId("kf-fb") });
+  }
+
+  const result: SegmentFraming = {
+    ...source,
+    keyframes: clamped.sort((a, b) => a.time - b.time),
+  };
+  syncLegacyFromKeyframes(result);
+  return result;
+}
+
+/**
+ * After a segment resize is finalized, clean up its keyframes:
+ * filter negatives/past-duration, ensure one at time=0, clear stale selection.
+ */
+function clampKeyframesToDuration(state: EditorState, segment: Segment) {
+  if (!segment.framing?.keyframes?.length) return;
+  const dur = segment.endTime - segment.startTime;
+  const before = segment.framing.keyframes.length;
+  segment.framing.keyframes = segment.framing.keyframes.filter(
+    (kf) => kf.time >= 0 && kf.time < dur,
+  );
+  if (segment.framing.keyframes.length === 0) {
+    segment.framing.keyframes = [
+      {
+        id: nextId("kf-fb"),
+        time: 0,
+        focusX: segment.framing.focusX,
+        focusY: segment.framing.focusY,
+        zoom: segment.framing.mode === "crop" ? 1.0 : 0.0,
+        isAiGenerated: false,
+      },
+    ];
+  }
+  // Ensure first keyframe starts at 0
+  segment.framing.keyframes.sort((a, b) => a.time - b.time);
+  if (segment.framing.keyframes[0].time > 0) {
+    segment.framing.keyframes[0] = { ...segment.framing.keyframes[0], time: 0 };
+  }
+  syncLegacyFromKeyframes(segment.framing);
+  // Clear stale keyframe selection if it was removed
+  if (
+    before !== segment.framing.keyframes.length &&
+    state.selectedKeyframeId &&
+    !segment.framing.keyframes.some((kf) => kf.id === state.selectedKeyframeId)
+  ) {
+    state.selectedKeyframeId = segment.framing.keyframes[0]?.id ?? null;
+  }
+}
+
+/** Sync legacy SegmentFraming fields from the first keyframe */
+function syncLegacyFromKeyframes(framing: SegmentFraming) {
+  const kfs = framing.keyframes;
+  if (!kfs || kfs.length === 0) return;
+  const sorted = [...kfs].sort((a, b) => a.time - b.time);
+  const first = sorted[0];
+  framing.focusX = first.focusX;
+  framing.focusY = first.focusY;
+  framing.mode = first.zoom >= 0.5 ? "crop" : "fit";
+  framing.isAiGenerated = first.isAiGenerated;
+  framing.aiReasoning = first.aiReasoning;
+}
+
+/**
+ * Ensure framing.keyframes is a real array (not undefined/empty).
+ * For legacy segments that only have top-level focusX/mode etc.,
+ * this materializes a concrete keyframe from those fields.
+ * Returns the materialized keyframes array (same reference as framing.keyframes).
+ */
+let materializeCounter = 0;
+function ensureMaterializedKeyframes(
+  framing: SegmentFraming,
+): FramingKeyframe[] {
+  if (framing.keyframes && framing.keyframes.length > 0) {
+    return framing.keyframes;
+  }
+  framing.keyframes = getEffectiveKeyframes(framing).map((kf) => ({
+    ...kf,
+    id: `kf-mat-${++materializeCounter}`,
+  }));
+  return framing.keyframes;
+}
+
 export const editorSlice = createSlice({
   name: "editor",
   initialState,
@@ -99,7 +240,7 @@ export const editorSlice = createSlice({
     },
     setProjectMetadata: (
       state,
-      action: PayloadAction<{ title: string; assetName: string }>
+      action: PayloadAction<{ title: string; assetName: string }>,
     ) => {
       state.projectTitle = action.payload.title;
       state.assetName = action.payload.assetName;
@@ -110,12 +251,13 @@ export const editorSlice = createSlice({
     },
     selectSegment: (state, action: PayloadAction<string | null>) => {
       state.selectedSegmentId = action.payload;
+      state.selectedKeyframeId = null; // Reset keyframe selection when changing segments
     },
 
     // Segment editing with push behavior - adjacent segments contract when one expands
     updateSegmentTime: (
       state,
-      action: PayloadAction<{ id: string; start: number; end: number }>
+      action: PayloadAction<{ id: string; start: number; end: number }>,
     ) => {
       const { id, start, end } = action.payload;
       const segmentIndex = state.segments.findIndex((s) => s.id === id);
@@ -127,7 +269,7 @@ export const editorSlice = createSlice({
 
       // Sort segments by start time to find neighbors
       const sorted = [...state.segments].sort(
-        (a, b) => a.startTime - b.startTime
+        (a, b) => a.startTime - b.startTime,
       );
       const sortedIndex = sorted.findIndex((s) => s.id === id);
 
@@ -195,16 +337,20 @@ export const editorSlice = createSlice({
       markEdited(state);
     },
 
-    // Called on mouse release - no merging needed with push behavior
+    // Called on mouse release — clean up keyframes after resize
     finalizeSegmentEdit: (state) => {
-      // Just ensure segments are valid (no-op now, but kept for API compatibility)
       state.segments = state.segments.filter(
-        (s) => s.endTime - s.startTime >= MIN_SEGMENT_DURATION
+        (s) => s.endTime - s.startTime >= MIN_SEGMENT_DURATION,
       );
+      // Clamp keyframes for all segments (only the edited one will have issues,
+      // but it's cheap and safe to check all)
+      for (const seg of state.segments) {
+        clampKeyframesToDuration(state, seg);
+      }
     },
     splitSegment: (
       state,
-      action: PayloadAction<{ id: string; atTime?: number }>
+      action: PayloadAction<{ id: string; atTime?: number }>,
     ) => {
       const { id, atTime } = action.payload;
       const index = state.segments.findIndex((s) => s.id === id);
@@ -221,20 +367,30 @@ export const editorSlice = createSlice({
           return;
         }
 
+        // Split time relative to segment start (for keyframe slicing)
+        const splitRel = splitPoint - segment.startTime;
+        const dur1 = splitRel;
+        const dur2 = segment.endTime - splitPoint;
+
         const newSegment1: Segment = {
           ...segment,
           endTime: splitPoint,
           id: `${segment.id}-a`,
           title: `${segment.title} (Part 1)`,
+          framing: sliceFraming(segment.framing, 0, dur1),
         };
         const newSegment2: Segment = {
           ...segment,
           startTime: splitPoint,
           id: `${segment.id}-b`,
           title: `${segment.title} (Part 2)`,
+          framing: sliceFraming(segment.framing, splitRel, dur2),
         };
 
         state.segments.splice(index, 1, newSegment1, newSegment2);
+        // Select the first half so the user stays oriented
+        state.selectedSegmentId = newSegment1.id;
+        state.selectedKeyframeId = null;
         markEdited(state);
       }
     },
@@ -249,7 +405,7 @@ export const editorSlice = createSlice({
 
       // Push existing segments out of the way
       const sorted = [...state.segments].sort(
-        (a, b) => a.startTime - b.startTime
+        (a, b) => a.startTime - b.startTime,
       );
 
       for (const seg of sorted) {
@@ -331,7 +487,7 @@ export const editorSlice = createSlice({
     },
     updateCaptionStyle: (
       state,
-      action: PayloadAction<Partial<CaptionStyle>>
+      action: PayloadAction<Partial<CaptionStyle>>,
     ) => {
       state.captionSettings.style = {
         ...state.captionSettings.style,
@@ -345,7 +501,7 @@ export const editorSlice = createSlice({
     },
     updateCaptionPosition: (
       state,
-      action: PayloadAction<{ x: number; y: number }>
+      action: PayloadAction<{ x: number; y: number }>,
     ) => {
       state.captionSettings.style.position = action.payload;
       markEdited(state);
@@ -384,10 +540,10 @@ export const editorSlice = createSlice({
     },
     setSegmentFraming: (
       state,
-      action: PayloadAction<{ segmentId: string; framing: SegmentFraming }>
+      action: PayloadAction<{ segmentId: string; framing: SegmentFraming }>,
     ) => {
       const segment = state.segments.find(
-        (s) => s.id === action.payload.segmentId
+        (s) => s.id === action.payload.segmentId,
       );
       if (segment) {
         segment.framing = action.payload.framing;
@@ -399,10 +555,10 @@ export const editorSlice = createSlice({
       action: PayloadAction<{
         segmentId: string;
         framing: Partial<SegmentFraming>;
-      }>
+      }>,
     ) => {
       const segment = state.segments.find(
-        (s) => s.id === action.payload.segmentId
+        (s) => s.id === action.payload.segmentId,
       );
       if (segment) {
         segment.framing = {
@@ -415,10 +571,10 @@ export const editorSlice = createSlice({
     },
     updateSegmentFocusX: (
       state,
-      action: PayloadAction<{ segmentId: string; focusX: number }>
+      action: PayloadAction<{ segmentId: string; focusX: number }>,
     ) => {
       const segment = state.segments.find(
-        (s) => s.id === action.payload.segmentId
+        (s) => s.id === action.payload.segmentId,
       );
       if (segment) {
         segment.framing = {
@@ -431,7 +587,7 @@ export const editorSlice = createSlice({
     },
     applyFramingToAllSegments: (
       state,
-      action: PayloadAction<Partial<SegmentFraming>>
+      action: PayloadAction<Partial<SegmentFraming>>,
     ) => {
       state.segments.forEach((segment) => {
         segment.framing = {
@@ -443,13 +599,115 @@ export const editorSlice = createSlice({
       markEdited(state);
     },
 
+    // Keyframe CRUD actions
+    selectKeyframe: (state, action: PayloadAction<string | null>) => {
+      state.selectedKeyframeId = action.payload;
+    },
+    setSegmentKeyframes: (
+      state,
+      action: PayloadAction<{
+        segmentId: string;
+        keyframes: FramingKeyframe[];
+      }>,
+    ) => {
+      const segment = state.segments.find(
+        (s) => s.id === action.payload.segmentId,
+      );
+      if (!segment) return;
+      if (!segment.framing) {
+        segment.framing = { ...DEFAULT_SEGMENT_FRAMING };
+      }
+      segment.framing.keyframes = action.payload.keyframes.sort(
+        (a, b) => a.time - b.time,
+      );
+      syncLegacyFromKeyframes(segment.framing);
+      // Select first keyframe
+      if (segment.framing.keyframes.length > 0) {
+        state.selectedKeyframeId = segment.framing.keyframes[0].id;
+      }
+      markEdited(state);
+    },
+    addFramingKeyframe: (
+      state,
+      action: PayloadAction<{ segmentId: string; keyframe: FramingKeyframe }>,
+    ) => {
+      const segment = state.segments.find(
+        (s) => s.id === action.payload.segmentId,
+      );
+      if (!segment || !segment.framing) return;
+      // Enforce single keyframe for short segments
+      const segDuration = segment.endTime - segment.startTime;
+      if (segDuration < SHORT_SEGMENT_THRESHOLD) return;
+      const kfs = ensureMaterializedKeyframes(segment.framing);
+      kfs.push(action.payload.keyframe);
+      kfs.sort((a, b) => a.time - b.time);
+      syncLegacyFromKeyframes(segment.framing);
+      state.selectedKeyframeId = action.payload.keyframe.id;
+      markEdited(state);
+    },
+    updateFramingKeyframe: (
+      state,
+      action: PayloadAction<{
+        segmentId: string;
+        keyframeId: string;
+        changes: Partial<FramingKeyframe>;
+      }>,
+    ) => {
+      const segment = state.segments.find(
+        (s) => s.id === action.payload.segmentId,
+      );
+      if (!segment?.framing) return;
+      const materialized = ensureMaterializedKeyframes(segment.framing);
+      // Resolve the target keyframe — if caller used "legacy-0", find the first materialized one
+      let targetId = action.payload.keyframeId;
+      if (targetId === "legacy-0" && materialized.length > 0) {
+        targetId = materialized[0].id;
+        state.selectedKeyframeId = targetId;
+      }
+      const kf = materialized.find((k) => k.id === targetId);
+      if (!kf) return;
+      Object.assign(kf, action.payload.changes);
+      kf.isAiGenerated = false; // User is overriding
+      materialized.sort((a, b) => a.time - b.time);
+      syncLegacyFromKeyframes(segment.framing);
+      markEdited(state);
+    },
+    removeFramingKeyframe: (
+      state,
+      action: PayloadAction<{ segmentId: string; keyframeId: string }>,
+    ) => {
+      const segment = state.segments.find(
+        (s) => s.id === action.payload.segmentId,
+      );
+      if (!segment?.framing) return;
+      const kfs = ensureMaterializedKeyframes(segment.framing);
+      // Enforce min 1 keyframe
+      if (kfs.length <= 1) return;
+      // Don't allow removing the first keyframe (time=0)
+      const kf = kfs.find((k) => k.id === action.payload.keyframeId);
+      if (!kf) return;
+      const sorted = [...kfs].sort((a, b) => a.time - b.time);
+      if (sorted[0].id === kf.id) return; // Can't delete first
+      segment.framing.keyframes = kfs.filter(
+        (k) => k.id !== action.payload.keyframeId,
+      );
+      syncLegacyFromKeyframes(segment.framing);
+      // If we deleted the selected keyframe, select the first one
+      if (state.selectedKeyframeId === action.payload.keyframeId) {
+        state.selectedKeyframeId = segment.framing.keyframes[0]?.id ?? null;
+      }
+      markEdited(state);
+    },
+
     // Reset state when leaving editor
     resetEditor: () => initialState,
 
     // Render tracking - per-segment renders
     setLastSegmentRenders: (
       state,
-      action: PayloadAction<{ segmentId: string; title: string; url: string }[]>
+      action: PayloadAction<
+        { segmentId: string; title: string; url: string }[]
+      >,
     ) => {
       state.lastSegmentRenders = action.payload;
     },
@@ -489,6 +747,12 @@ export const {
   updateSegmentFraming,
   updateSegmentFocusX,
   applyFramingToAllSegments,
+  // Keyframe actions
+  selectKeyframe,
+  setSegmentKeyframes,
+  addFramingKeyframe,
+  updateFramingKeyframe,
+  removeFramingKeyframe,
   resetEditor,
   // Render tracking
   setLastSegmentRenders,

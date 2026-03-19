@@ -71,6 +71,24 @@ const stageLabels: Record<string, string> = {
   delivery: "Delivery",
 };
 
+// Recent assets localStorage helpers
+const RECENT_ASSETS_KEY = "qlio-recent-assets";
+
+export function getRecentAssets(): Record<string, number> {
+  try {
+    const stored = localStorage.getItem(RECENT_ASSETS_KEY);
+    return stored ? JSON.parse(stored) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function touchRecentAsset(assetId: string) {
+  const recent = getRecentAssets();
+  recent[assetId] = Date.now();
+  localStorage.setItem(RECENT_ASSETS_KEY, JSON.stringify(recent));
+}
+
 // Favorites localStorage helpers
 const FAVORITES_KEY = "qlio-favorites";
 const FAVORITES_KEY_LEGACY = "zeevee-favorites";
@@ -240,6 +258,7 @@ export function AssetCard({
   const [loadingProjects, setLoadingProjects] = useState(false);
   const [favorites, setFavorites] =
     useState<Record<string, boolean>>(getFavorites);
+  const [showAllProjects, setShowAllProjects] = useState(false);
 
   // Get display title - use originalName as fallback if title is empty/untitled
   const getDisplayTitle = (title: string) => {
@@ -337,6 +356,7 @@ export function AssetCard({
 
   const handleCreateProject = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    touchRecentAsset(asset.id);
     try {
       const defaultSelections = {
         type: "tv",
@@ -601,100 +621,126 @@ export function AssetCard({
             </div>
           ) : (
             <div className="space-y-2">
-              {projects.map((project, index) => (
-                <div
-                  key={project.projectId}
-                  className="flex items-center gap-3 p-2.5 -mx-2 rounded-lg hover:bg-muted cursor-pointer transition-all group/item"
-                  onClick={() => navigate(`/editor/${project.projectId}`)}
-                >
-                  {/* Thumbnail */}
-                  <div className="w-20 h-12 bg-muted rounded-lg overflow-hidden shrink-0 relative">
-                    {asset.videoUrl && getFirstSegmentTime(project) !== null ? (
-                      <VideoThumbnail
-                        videoUrl={asset.videoUrl}
-                        time={getFirstSegmentTime(project)!}
-                        className="w-full h-full"
-                        fallbackUrl={FALLBACK_THUMBNAIL}
-                      />
-                    ) : (
-                      <img
-                        src={FALLBACK_THUMBNAIL}
-                        alt={project.title}
-                        className="w-full h-full object-cover"
-                      />
+              {(() => {
+                const sorted = [...projects].sort(
+                  (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+                );
+                const visible = showAllProjects ? sorted : sorted.slice(0, 3);
+                const hiddenCount = sorted.length - 3;
+
+                return (
+                  <>
+                    {visible.map((project, index) => (
+                      <div
+                        key={project.projectId}
+                        className="flex items-center gap-3 p-2.5 -mx-2 rounded-lg hover:bg-muted cursor-pointer transition-all group/item"
+                        onClick={() => {
+                          touchRecentAsset(asset.id);
+                          navigate(`/editor/${project.projectId}`);
+                        }}
+                      >
+                        {/* Thumbnail */}
+                        <div className="w-20 h-12 bg-muted rounded-lg overflow-hidden shrink-0 relative">
+                          {asset.videoUrl && getFirstSegmentTime(project) !== null ? (
+                            <VideoThumbnail
+                              videoUrl={asset.videoUrl}
+                              time={getFirstSegmentTime(project)!}
+                              className="w-full h-full"
+                              fallbackUrl={FALLBACK_THUMBNAIL}
+                            />
+                          ) : (
+                            <img
+                              src={FALLBACK_THUMBNAIL}
+                              alt={project.title}
+                              className="w-full h-full object-cover"
+                            />
+                          )}
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 group-hover/item:opacity-100 transition-opacity">
+                            <Play className="h-4 w-4 text-white fill-white" />
+                          </div>
+                        </div>
+
+                        {/* Content */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-muted-foreground text-sm font-medium">
+                              {index + 1}.
+                            </span>
+                            <EditableTitle
+                              title={project.title || "Untitled"}
+                              onSave={(newTitle) =>
+                                handleUpdateProjectTitle(project.projectId, newTitle)
+                              }
+                              className="text-sm font-semibold text-foreground hover:text-blue-400"
+                              inputClassName="bg-muted border-border text-foreground h-7 text-sm"
+                              showEditIcon
+                            />
+                            {favorites[project.projectId] && (
+                              <Heart className="h-3 w-3 fill-pink-500 text-pink-500 shrink-0" />
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground font-medium">
+                            {project.segments && project.segments.length > 0
+                              ? `${project.segments.length} segment${
+                                  project.segments.length !== 1 ? "s" : ""
+                                }`
+                              : new Date(project.createdAt).toLocaleDateString()}
+                          </p>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex items-center shrink-0 opacity-0 group-hover/item:opacity-100 transition-opacity">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 hover:bg-accent"
+                            onClick={(e) => toggleFavorite(project.projectId, e)}
+                          >
+                            <Heart
+                              className={cn(
+                                "h-4 w-4",
+                                favorites[project.projectId]
+                                  ? "fill-pink-500 text-pink-500"
+                                  : "text-muted-foreground",
+                              )}
+                            />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 hover:bg-accent"
+                            onClick={(e) => handleShare(project.projectId, e)}
+                          >
+                            <Share2 className="h-4 w-4 text-muted-foreground" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 hover:bg-red-500/10 hover:text-red-500"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setProjectToDelete(project);
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                    {hiddenCount > 0 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowAllProjects(!showAllProjects);
+                        }}
+                        className="w-full text-center py-2 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        {showAllProjects ? "Show less" : `Show ${hiddenCount} more`}
+                      </button>
                     )}
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 group-hover/item:opacity-100 transition-opacity">
-                      <Play className="h-4 w-4 text-white fill-white" />
-                    </div>
-                  </div>
-
-                  {/* Content */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-muted-foreground text-sm font-medium">
-                        {index + 1}.
-                      </span>
-                      <EditableTitle
-                        title={project.title || "Untitled"}
-                        onSave={(newTitle) =>
-                          handleUpdateProjectTitle(project.projectId, newTitle)
-                        }
-                        className="text-sm font-semibold text-foreground hover:text-blue-400"
-                        inputClassName="bg-muted border-border text-foreground h-7 text-sm"
-                        showEditIcon
-                      />
-                      {favorites[project.projectId] && (
-                        <Heart className="h-3 w-3 fill-pink-500 text-pink-500 shrink-0" />
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground font-medium">
-                      {project.segments && project.segments.length > 0
-                        ? `${project.segments.length} segment${
-                            project.segments.length !== 1 ? "s" : ""
-                          }`
-                        : new Date(project.createdAt).toLocaleDateString()}
-                    </p>
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex items-center shrink-0 opacity-0 group-hover/item:opacity-100 transition-opacity">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 hover:bg-accent"
-                      onClick={(e) => toggleFavorite(project.projectId, e)}
-                    >
-                      <Heart
-                        className={cn(
-                          "h-4 w-4",
-                          favorites[project.projectId]
-                            ? "fill-pink-500 text-pink-500"
-                            : "text-muted-foreground",
-                        )}
-                      />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 hover:bg-accent"
-                      onClick={(e) => handleShare(project.projectId, e)}
-                    >
-                      <Share2 className="h-4 w-4 text-muted-foreground" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 hover:bg-red-500/10 hover:text-red-500"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setProjectToDelete(project);
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
+                  </>
+                );
+              })()}
             </div>
           )}
         </div>

@@ -23,7 +23,7 @@ axios.interceptors.response.use(
       window.location.href = "/signin";
     }
     return Promise.reject(error);
-  }
+  },
 );
 
 export interface UploadCredentialsResponse {
@@ -41,7 +41,7 @@ export interface UploadCredentialsResponse {
 
 export const getUploadCredentials = async (
   fileType: string,
-  metadata: Record<string, unknown>
+  metadata: Record<string, unknown>,
 ): Promise<UploadCredentialsResponse> => {
   let extension = fileType.split("/")[1] || "mp4";
   if (extension === "quicktime") extension = "mov";
@@ -55,7 +55,7 @@ export const getUploadCredentials = async (
     },
     {
       headers: getAuthHeaders(),
-    }
+    },
   );
   return response.data;
 };
@@ -69,7 +69,7 @@ export interface UploadProgress {
 export const uploadToS3 = async (
   uploadInfo: UploadCredentialsResponse,
   file: File,
-  onProgress?: (progress: UploadProgress) => void
+  onProgress?: (progress: UploadProgress) => void,
 ): Promise<void> => {
   const { bucket, key, region, credentials } = uploadInfo;
 
@@ -130,7 +130,7 @@ export const getAsset = async (assetId: string) => {
 
 export const updateAsset = async (
   assetId: string,
-  metadata: Record<string, unknown>
+  metadata: Record<string, unknown>,
 ) => {
   const response = await axios.patch(`${API_URL}/assets/${assetId}`, metadata, {
     headers: getAuthHeaders(),
@@ -140,7 +140,7 @@ export const updateAsset = async (
 
 export const createProject = async (
   assetId: string,
-  metadata: Record<string, unknown>
+  metadata: Record<string, unknown>,
 ) => {
   const response = await axios.post(
     `${API_URL}/projects`,
@@ -150,7 +150,7 @@ export const createProject = async (
     },
     {
       headers: getAuthHeaders(),
-    }
+    },
   );
   return response.data;
 };
@@ -194,7 +194,7 @@ export const updateProject = async (
     segments?: Segment[];
     captionSettings?: CaptionSettings;
     globalFraming?: GlobalFramingSettings;
-  }
+  },
 ) => {
   const response = await axios.patch(`${API_URL}/projects/${projectId}`, data, {
     headers: getAuthHeaders(),
@@ -241,14 +241,14 @@ export interface GenerateSegmentsResponse {
 
 export const generateSegments = async (
   projectId: string,
-  metadata: Record<string, unknown>
+  metadata: Record<string, unknown>,
 ): Promise<GenerateSegmentsResponse> => {
   const response = await axios.post(
     `${API_URL}/projects/${projectId}/generate`,
     { metadata },
     {
       headers: getAuthHeaders(),
-    }
+    },
   );
   return response.data;
 };
@@ -269,7 +269,7 @@ export const pollGenerationStatus = async (
     initialDelayMs?: number;
     pollIntervalMs?: number;
     maxWaitMs?: number;
-  } = {}
+  } = {},
 ): Promise<{ segments: Segment[]; job: GenerationJob }> => {
   const {
     onProgress,
@@ -369,20 +369,20 @@ export interface RenderJobResponse {
 
 export const startRender = async (
   projectId: string,
-  request: RenderRequest
+  request: RenderRequest,
 ): Promise<{ jobId: string; status: string; message?: string }> => {
   const response = await axios.post(
     `${API_URL}/projects/${projectId}/render`,
     request,
     {
       headers: getAuthHeaders(),
-    }
+    },
   );
   return response.data;
 };
 
 export const getRenderStatus = async (
-  jobId: string
+  jobId: string,
 ): Promise<RenderJobResponse> => {
   const response = await axios.get(`${API_URL}/renders/${jobId}`, {
     headers: getAuthHeaders(),
@@ -400,11 +400,22 @@ export interface FramingAnalysisResult {
   isAiGenerated: boolean;
 }
 
+export interface AnalyzeFramingKeyframe {
+  id: string;
+  time: number;
+  focusX: number;
+  focusY: number;
+  zoom: number;
+  aiReasoning?: string;
+  isAiGenerated: boolean;
+}
+
 export interface AnalyzeFramingResponse {
   segmentId: string | null;
   startTime: number;
   endTime: number;
   framing: FramingAnalysisResult;
+  keyframes?: AnalyzeFramingKeyframe[];
 }
 
 /**
@@ -422,7 +433,7 @@ export const analyzeSegmentFraming = async (
   segmentId: string | null,
   startTime: number,
   endTime: number,
-  targetAspectRatio: "16:9" | "1:1" | "9:16" = "9:16"
+  targetAspectRatio: "16:9" | "1:1" | "9:16" = "9:16",
 ): Promise<AnalyzeFramingResponse> => {
   const url = segmentId
     ? `${API_URL}/projects/${projectId}/segments/${segmentId}/analyze-framing`
@@ -433,7 +444,46 @@ export const analyzeSegmentFraming = async (
     { startTime, endTime, targetAspectRatio },
     {
       headers: getAuthHeaders(),
-    }
+    },
+  );
+  return response.data;
+};
+
+/**
+ * Start batch framing analysis for all segments (async — returns immediately).
+ * Poll getProject() for framingJob status; results written to segments in DB.
+ */
+export interface BatchFramingSegment {
+  id: string;
+  startTime: number;
+  endTime: number;
+}
+
+export interface StartBatchFramingResponse {
+  message: string;
+  jobId: string;
+  status: "pending";
+}
+
+export interface FramingJob {
+  status: "pending" | "analyzing" | "completed" | "failed";
+  jobId: string;
+  startedAt: string;
+  completedAt?: string;
+  segmentCount?: number;
+  completedCount?: number;
+  error?: string;
+}
+
+export const startBatchFraming = async (
+  projectId: string,
+  segments: BatchFramingSegment[],
+  targetAspectRatio: "16:9" | "1:1" | "9:16" = "9:16",
+): Promise<StartBatchFramingResponse> => {
+  const response = await axios.post(
+    `${API_URL}/projects/${projectId}/analyze-framing`,
+    { segments, targetAspectRatio },
+    { headers: getAuthHeaders() },
   );
   return response.data;
 };

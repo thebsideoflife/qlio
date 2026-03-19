@@ -17,9 +17,10 @@ import {
   setSegments,
   setProjectId,
   resetEditor,
-  updateSegmentFraming,
   setSegmentFraming,
   setGlobalAspectRatio,
+  selectKeyframe,
+  updateFramingKeyframe,
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
 import { useRef, useEffect, useState } from "react";
@@ -30,7 +31,10 @@ import {
   generateSegments,
   pollGenerationStatus,
   analyzeSegmentFraming,
+  startBatchFraming,
+  getProject,
   type GenerationJob,
+  type FramingJob,
 } from "@/services/api";
 import {
   FileText,
@@ -45,7 +49,7 @@ import {
   Square,
   Monitor,
 } from "lucide-react";
-import { DEFAULT_SEGMENT_FRAMING } from "@/remotion/types";
+import { getEffectiveKeyframes } from "@/remotion/types";
 import type { SegmentFraming, AspectRatio } from "@/remotion/types";
 
 export default function Editor() {
@@ -65,6 +69,10 @@ export default function Editor() {
     (state: RootState) => state.editor.globalFraming
   );
 
+  const selectedKeyframeId = useSelector(
+    (state: RootState) => state.editor.selectedKeyframeId
+  );
+
   // Local State
   const videoRef = useRef<HTMLVideoElement>(null);
   const [activeTab, setActiveTab] = useState<"transcript" | "ai" | "captions">(
@@ -73,6 +81,8 @@ export default function Editor() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
   const [isAnalyzingFraming, setIsAnalyzingFraming] = useState(false);
+  const [isBatchAnalyzing, setIsBatchAnalyzing] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<string | null>(null);
   const [framingTooltip, setFramingTooltip] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
@@ -98,33 +108,52 @@ export default function Editor() {
     () => segments.find((s) => s.id === selectedSegmentId),
     [segments, selectedSegmentId]
   );
-  const currentFraming: SegmentFraming = React.useMemo(
-    () =>
-      selectedSegment?.framing || {
-        ...DEFAULT_SEGMENT_FRAMING,
-        aspectRatio: globalFraming.aspectRatio,
-      },
-    [selectedSegment?.framing, globalFraming.aspectRatio]
-  );
-
   // Framing preview state
   // When no segment selected, use local preview state that doesn't persist
-  const [previewFramingMode, setPreviewFramingMode] = useState<"crop" | "fit">(
-    "crop"
-  );
+  const [previewZoom, setPreviewZoom] = useState(1.0);
   const [previewFocus, setPreviewFocus] = useState({ x: 0.5, y: 0.5 });
 
-  const isCropMode = selectedSegment
-    ? currentFraming.mode === "crop"
-    : previewFramingMode === "crop";
+  // Get the currently selected keyframe's values
+  const selectedKeyframe = React.useMemo(() => {
+    if (!selectedSegment?.framing) return null;
+    const kfs = getEffectiveKeyframes(selectedSegment.framing);
+    if (selectedKeyframeId) {
+      return kfs.find((kf) => kf.id === selectedKeyframeId) || kfs[0];
+    }
+    return kfs[0];
+  }, [selectedSegment?.framing, selectedKeyframeId]);
 
-  // Use segment framing when selected, otherwise use preview values
-  const displayFocusX = selectedSegment
-    ? currentFraming.focusX
+  // Derive display values from selected keyframe or preview state
+  const displayZoom = selectedKeyframe ? selectedKeyframe.zoom : previewZoom;
+  const displayFocusX = selectedKeyframe
+    ? selectedKeyframe.focusX
     : previewFocus.x;
-  const displayFocusY = selectedSegment
-    ? currentFraming.focusY
+  const displayFocusY = selectedKeyframe
+    ? selectedKeyframe.focusY
     : previewFocus.y;
+
+  // Unified helper: update keyframe if segment selected, otherwise update local preview
+  const updateFramingValue = (changes: Partial<{ focusX: number; focusY: number; zoom: number }>) => {
+    if (selectedSegmentId && selectedKeyframe) {
+      dispatch(
+        updateFramingKeyframe({
+          segmentId: selectedSegmentId,
+          keyframeId: selectedKeyframe.id,
+          changes,
+        })
+      );
+    } else {
+      if (changes.focusX !== undefined || changes.focusY !== undefined) {
+        setPreviewFocus((prev) => ({
+          x: changes.focusX ?? prev.x,
+          y: changes.focusY ?? prev.y,
+        }));
+      }
+      if (changes.zoom !== undefined) {
+        setPreviewZoom(changes.zoom);
+      }
+    }
+  };
 
   const framingContainerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -141,7 +170,7 @@ export default function Editor() {
   // Handle drag to reposition video within frame
   // Uses window-level listeners to capture mouse events even when cursor leaves the container
   const handleFramingMouseDown = (e: React.MouseEvent) => {
-    if (!isCropMode) return;
+    if (displayZoom <= 0) return;
     e.preventDefault();
     setIsDragging(true);
     hasDraggedRef.current = false;
@@ -179,16 +208,7 @@ export default function Editor() {
         Math.min(1, dragStartRef.current.focusY - deltaY)
       );
 
-      if (selectedSegmentId) {
-        dispatch(
-          updateSegmentFraming({
-            segmentId: selectedSegmentId,
-            framing: { focusX: newFocusX, focusY: newFocusY },
-          })
-        );
-      } else {
-        setPreviewFocus({ x: newFocusX, y: newFocusY });
-      }
+      updateFramingValue({ focusX: newFocusX, focusY: newFocusY });
     };
 
     const handleMouseUp = () => {
@@ -203,7 +223,7 @@ export default function Editor() {
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [isDragging, selectedSegmentId, dispatch]);
+  }, [isDragging, selectedSegmentId, selectedKeyframe, dispatch]);
 
   // Handle click on video container (play/pause) - only if we didn't drag
   const handleFramingClick = (e: React.MouseEvent) => {
@@ -211,22 +231,6 @@ export default function Editor() {
       handleVideoClick(e);
     }
     hasDraggedRef.current = false;
-  };
-
-  // Toggle crop/fit mode for current segment (or preview mode if no segment)
-  const toggleFramingMode = () => {
-    const newMode = isCropMode ? "fit" : "crop";
-    if (selectedSegmentId) {
-      dispatch(
-        updateSegmentFraming({
-          segmentId: selectedSegmentId,
-          framing: { mode: newMode },
-        })
-      );
-    } else {
-      // Just toggle preview mode (doesn't persist)
-      setPreviewFramingMode(newMode);
-    }
   };
 
   // Generate a clean tooltip message from framing result
@@ -241,36 +245,46 @@ export default function Editor() {
     return "Crop far right";
   };
 
-  // AI analyze framing for current segment
-  const handleAnalyzeFraming = async () => {
-    if (!projectId || !selectedSegment) return;
+  // AI analyze framing for a single segment (used by per-segment and batch)
+  const analyzeSegmentFramingAndApply = async (
+    seg: { id: string; startTime: number; endTime: number; framing?: SegmentFraming },
+    startingProjectId: string
+  ) => {
+    const result = await analyzeSegmentFraming(
+      startingProjectId,
+      seg.id,
+      seg.startTime,
+      seg.endTime,
+      globalFraming.aspectRatio
+    );
 
-    // Capture context at start to check against later
-    const startingProjectId = projectId;
-    const segmentId = selectedSegment.id;
+    if (projectIdRef.current !== startingProjectId) return;
 
-    setIsAnalyzingFraming(true);
-    setFramingTooltip(null);
-    try {
-      const result = await analyzeSegmentFraming(
-        projectId,
-        selectedSegment.id,
-        selectedSegment.startTime,
-        selectedSegment.endTime,
-        globalFraming.aspectRatio // Pass the target aspect ratio to the AI
-      );
-
-      // Guard: only dispatch if still on same project
-      if (projectIdRef.current !== startingProjectId) {
-        console.log(
-          `[Editor] Ignoring stale framing result for project ${startingProjectId}`
-        );
-        return;
-      }
-
+    if (result.keyframes && result.keyframes.length > 0) {
+      // Set full framing with keyframes in one dispatch
       dispatch(
         setSegmentFraming({
-          segmentId,
+          segmentId: seg.id,
+          framing: {
+            aspectRatio: globalFraming.aspectRatio,
+            mode: result.framing.mode,
+            focusX: result.framing.focusX,
+            focusY: result.framing.focusY,
+            aiReasoning: result.framing.aiReasoning,
+            isAiGenerated: result.framing.isAiGenerated,
+            keyframes: result.keyframes,
+          },
+        })
+      );
+      // Select the first keyframe
+      if (result.keyframes.length > 0) {
+        dispatch(selectKeyframe(result.keyframes[0].id));
+      }
+    } else {
+      // Legacy single-keyframe response
+      dispatch(
+        setSegmentFraming({
+          segmentId: seg.id,
           framing: {
             aspectRatio: globalFraming.aspectRatio,
             mode: result.framing.mode,
@@ -281,27 +295,146 @@ export default function Editor() {
           },
         })
       );
+    }
 
-      // Show tooltip with the AI's decision
-      const message = getFramingTooltipMessage(
-        result.framing.mode,
-        result.framing.focusX
+    return result;
+  };
+
+  // AI analyze framing for current segment
+  const handleAnalyzeFraming = async () => {
+    if (!projectId || !selectedSegment) return;
+
+    // Confirm if user has manual edits (but not for fresh/default framing)
+    if (selectedSegment.framing?.keyframes?.length) {
+      const hasManualEdits = selectedSegment.framing.keyframes.some(
+        (kf) => !kf.isAiGenerated
       );
-      setFramingTooltip(message);
+      if (hasManualEdits) {
+        if (!confirm("This will replace your manual keyframe edits. Continue?")) {
+          return;
+        }
+      }
+    }
 
-      // Auto-hide after 3 seconds
+    const startingProjectId = projectId;
+    setIsAnalyzingFraming(true);
+    setFramingTooltip(null);
+    try {
+      const result = await analyzeSegmentFramingAndApply(
+        selectedSegment,
+        startingProjectId
+      );
+
+      if (projectIdRef.current !== startingProjectId || !result) return;
+
+      const kfCount = result.keyframes?.length || 1;
+      const message =
+        kfCount > 1
+          ? `${kfCount} keyframes detected`
+          : getFramingTooltipMessage(result.framing.mode, result.framing.focusX);
+      setFramingTooltip(message);
       setTimeout(() => setFramingTooltip(null), 5000);
     } catch (error) {
-      // Only show error if still on same project
       if (projectIdRef.current === startingProjectId) {
         console.error("Failed to analyze framing:", error);
         setFramingTooltip("Analysis failed");
         setTimeout(() => setFramingTooltip(null), 2000);
       }
     } finally {
-      // Only reset state if still on same project
       if (projectIdRef.current === startingProjectId) {
         setIsAnalyzingFraming(false);
+      }
+    }
+  };
+
+  // Batch auto-frame all segments (async — start job, poll for completion)
+  const batchCancelRef = useRef(false);
+  const handleBatchAnalyzeFraming = async () => {
+    if (!projectId || segments.length === 0) return;
+
+    // Confirm if any segment has manual keyframe edits
+    const hasManualEdits = segments.some((seg) => {
+      if (!seg.framing?.keyframes?.length) return false;
+      return seg.framing.keyframes.some((kf) => !kf.isAiGenerated);
+    });
+    if (hasManualEdits) {
+      if (
+        !confirm(
+          "Some segments have manual keyframe edits. Auto-framing will replace them. Continue?"
+        )
+      ) {
+        return;
+      }
+    }
+
+    const startingProjectId = projectId;
+    batchCancelRef.current = false;
+    setIsBatchAnalyzing(true);
+    setBatchProgress("Starting...");
+
+    try {
+      // Start async job
+      const batchSegments = segments.map((seg) => ({
+        id: seg.id,
+        startTime: seg.startTime,
+        endTime: seg.endTime,
+      }));
+
+      await startBatchFraming(
+        startingProjectId,
+        batchSegments,
+        globalFraming.aspectRatio
+      );
+
+      // Poll for completion
+      const POLL_INTERVAL = 3000;
+      const MAX_WAIT = 300000; // 5 min
+      const startTime = Date.now();
+
+      while (Date.now() - startTime < MAX_WAIT) {
+        if (batchCancelRef.current || projectIdRef.current !== startingProjectId) break;
+
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+
+        if (batchCancelRef.current || projectIdRef.current !== startingProjectId) break;
+
+        const project = await getProject(startingProjectId);
+        const job: FramingJob | undefined = project.framingJob;
+
+        if (!job) break;
+
+        if (job.status === "analyzing") {
+          const done = job.completedCount || 0;
+          const total = job.segmentCount || segments.length;
+          setBatchProgress(`Analyzing ${done}/${total}...`);
+        }
+
+        if (job.status === "completed") {
+          // Framing results are written to segments in DB — reload them
+          if (project.segments?.length) {
+            dispatch(setSegments(project.segments));
+          }
+          setBatchProgress(null);
+          break;
+        }
+
+        if (job.status === "failed") {
+          console.error("Batch framing failed:", job.error);
+          setFramingTooltip("Auto-framing failed");
+          setTimeout(() => setFramingTooltip(null), 3000);
+          break;
+        }
+      }
+    } catch (error) {
+      if (projectIdRef.current === startingProjectId) {
+        console.error("Batch framing failed:", error);
+        setFramingTooltip("Auto-framing failed");
+        setTimeout(() => setFramingTooltip(null), 3000);
+      }
+    } finally {
+      if (projectIdRef.current === startingProjectId) {
+        setIsBatchAnalyzing(false);
+        setBatchProgress(null);
       }
     }
   };
@@ -331,6 +464,8 @@ export default function Editor() {
     setIsGenerating(false);
     setGenerationStatus(null);
     setIsAnalyzingFraming(false);
+    setIsBatchAnalyzing(false);
+    setBatchProgress(null);
     setFramingTooltip(null);
     // Reset preview mode since segments are different per project
     setPreviewMode(false);
@@ -582,27 +717,12 @@ export default function Editor() {
           className="flex-1 bg-zinc-950 relative flex items-center justify-center min-h-0 p-4 gap-4"
           onClick={handleBackgroundClick}
         >
-          {/* Aspect Ratio Selector - Outside video on left */}
+          {/* Aspect Ratio + Framing Controls */}
           <div className="flex flex-col gap-2 shrink-0">
             {[
-              {
-                value: "9:16" as AspectRatio,
-                icon: Smartphone,
-                label: "Portrait",
-                sublabel: "TikTok, Reels, Shorts",
-              },
-              {
-                value: "1:1" as AspectRatio,
-                icon: Square,
-                label: "Square",
-                sublabel: "Instagram Feed",
-              },
-              {
-                value: "16:9" as AspectRatio,
-                icon: Monitor,
-                label: "Landscape",
-                sublabel: "YouTube, TV",
-              },
+              { value: "9:16" as AspectRatio, icon: Smartphone, label: "Reels" },
+              { value: "1:1" as AspectRatio, icon: Square, label: "Post" },
+              { value: "16:9" as AspectRatio, icon: Monitor, label: "Video" },
             ].map((ratio) => (
               <button
                 key={ratio.value}
@@ -611,19 +731,47 @@ export default function Editor() {
                   dispatch(setGlobalAspectRatio(ratio.value));
                 }}
                 className={cn(
-                  "w-12 h-12 rounded-xl flex items-center justify-center transition-all border-2",
+                  "w-14 py-2 rounded-xl flex flex-col items-center gap-1 transition-all border-2",
                   globalFraming.aspectRatio === ratio.value
                     ? "bg-blue-600 text-white border-blue-500 ring-2 ring-blue-400 ring-offset-2 ring-offset-zinc-950 shadow-lg shadow-blue-500/30"
                     : "bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white border-zinc-700 hover:border-zinc-600"
                 )}
-                title={`${ratio.label} (${ratio.value})\n${ratio.sublabel}`}
+                title={`${ratio.label} (${ratio.value})`}
               >
-                <ratio.icon className="h-6 w-6" />
+                <ratio.icon className="h-5 w-5" />
+                <span className="text-[10px] font-bold leading-none">{ratio.label}</span>
               </button>
             ))}
-            <div className="text-xs text-zinc-500 text-center mt-1 font-bold">
-              {globalFraming.aspectRatio}
-            </div>
+
+            {/* Batch auto-frame */}
+            {segments.length > 0 && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (isBatchAnalyzing) {
+                    batchCancelRef.current = true;
+                  } else {
+                    handleBatchAnalyzeFraming();
+                  }
+                }}
+                className={cn(
+                  "w-14 py-2 mt-1 rounded-xl flex flex-col items-center gap-1 transition-all border-2",
+                  isBatchAnalyzing
+                    ? "bg-amber-600 text-white border-amber-500"
+                    : "bg-zinc-800 hover:bg-purple-700 text-zinc-400 hover:text-white border-zinc-700 hover:border-purple-600"
+                )}
+                title={isBatchAnalyzing ? `${batchProgress} — click to cancel` : "Auto-frame all segments with AI"}
+              >
+                {isBatchAnalyzing ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-5 w-5" />
+                )}
+                <span className="text-[10px] font-bold leading-none">
+                  {isBatchAnalyzing ? "Stop" : "Frame"}
+                </span>
+              </button>
+            )}
           </div>
 
           {videoUrl ? (
@@ -634,7 +782,7 @@ export default function Editor() {
                 "relative overflow-hidden bg-black rounded-2xl select-none shadow-2xl shadow-black/50",
                 isDragging
                   ? "cursor-grabbing ring-4 ring-blue-500 ring-offset-4 ring-offset-zinc-950"
-                  : isCropMode
+                  : displayZoom > 0
                   ? "cursor-grab ring-2 ring-zinc-600 hover:ring-zinc-500"
                   : "cursor-pointer ring-2 ring-zinc-700"
               )}
@@ -643,19 +791,42 @@ export default function Editor() {
                 maxHeight: aspectRatioValue < 1 ? "100%" : "90%",
                 maxWidth: aspectRatioValue >= 1 ? "100%" : "90%",
               }}
-              onMouseDown={isCropMode ? handleFramingMouseDown : undefined}
-              onClick={isCropMode ? handleFramingClick : handleVideoClick}
+              onMouseDown={displayZoom > 0 ? handleFramingMouseDown : undefined}
+              onClick={displayZoom > 0 ? handleFramingClick : handleVideoClick}
             >
               <video
                 ref={videoRef}
                 src={videoUrl}
-                className="w-full h-full pointer-events-none"
-                style={{
-                  objectFit: isCropMode ? "cover" : "contain",
-                  objectPosition: isCropMode
-                    ? `${displayFocusX * 100}% ${displayFocusY * 100}%`
-                    : "center center",
-                }}
+                className="pointer-events-none"
+                style={(() => {
+                  if (displayZoom <= 0) {
+                    return {
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "contain" as const,
+                      objectPosition: "center center",
+                    };
+                  }
+                  // Continuous zoom: scale a contained video toward (and beyond) cover size
+                  const sourceAspect = 16 / 9;
+                  const scaleCover = Math.max(aspectRatioValue / sourceAspect, sourceAspect / aspectRatioValue);
+                  const scale = 1 + displayZoom * (scaleCover - 1);
+                  const videoAspectInContainer = sourceAspect / aspectRatioValue;
+                  const offsetX = videoAspectInContainer > 1
+                    ? -(displayFocusX - 0.5) * (scale - 1) / scale * 100
+                    : 0;
+                  const offsetY = videoAspectInContainer <= 1
+                    ? -(displayFocusY - 0.5) * (scale - 1) / scale * 100
+                    : 0;
+                  return {
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "contain" as const,
+                    transformOrigin: "center center",
+                    transform: `translate(${offsetX}%, ${offsetY}%) scale(${scale})`,
+                    transition: "transform 0.15s ease-out",
+                  };
+                })()}
                 onLoadedMetadata={(e) =>
                   dispatch(setDuration(e.currentTarget.duration))
                 }
@@ -663,35 +834,27 @@ export default function Editor() {
 
               {/* Overlay Controls - Top Right */}
               <div className="absolute top-3 right-3 flex items-center gap-2">
-                {/* Crop/Fit Toggle - always visible */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleFramingMode();
-                  }}
+                {/* Zoom slider */}
+                <div
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900/80 backdrop-blur-sm border border-zinc-700"
                   onMouseDown={(e) => e.stopPropagation()}
-                  className={cn(
-                    "flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold transition-all",
-                    "bg-zinc-900/80 hover:bg-zinc-800 text-white backdrop-blur-sm border border-zinc-700 hover:border-zinc-600"
-                  )}
-                  title={
-                    isCropMode
-                      ? "Switch to Fit mode\nShows full video with letterboxing"
-                      : "Switch to Crop mode\nFills frame, drag video to reposition"
-                  }
+                  onClick={(e) => e.stopPropagation()}
                 >
-                  {isCropMode ? (
-                    <>
-                      <Maximize2 className="h-4 w-4" />
-                      <span>Fit</span>
-                    </>
-                  ) : (
-                    <>
-                      <Crop className="h-4 w-4" />
-                      <span>Crop</span>
-                    </>
-                  )}
-                </button>
+                  <Maximize2 className="h-3.5 w-3.5 text-zinc-400" />
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={displayZoom}
+                    onChange={(e) => {
+                      updateFramingValue({ zoom: parseFloat(e.target.value) });
+                    }}
+                    className="w-20 h-1 accent-blue-500 cursor-pointer"
+                    title={`Zoom: ${Math.round(displayZoom * 100)}%`}
+                  />
+                  <Crop className="h-3.5 w-3.5 text-zinc-400" />
+                </div>
 
                 {/* AI Auto-frame Button - only for segments */}
                 {selectedSegment && (
@@ -717,11 +880,10 @@ export default function Editor() {
                       )}
                     </button>
 
-                    {/* AI Response Tooltip - positioned to the left to avoid overflow clipping */}
+                    {/* AI Response Tooltip */}
                     {framingTooltip && (
                       <div className="absolute top-1/2 right-full -translate-y-1/2 mr-2 z-50 animate-in fade-in slide-in-from-right-1 duration-200">
                         <div className="relative bg-zinc-900 text-white text-sm font-semibold px-3 py-2 rounded-lg whitespace-nowrap backdrop-blur-sm shadow-xl border border-zinc-700">
-                          {/* Arrow pointing right */}
                           <div className="absolute top-1/2 -right-1.5 -translate-y-1/2 w-3 h-3 bg-zinc-900 border-r border-b border-zinc-700 rotate-[-45deg]" />
                           <span className="relative">{framingTooltip}</span>
                         </div>
@@ -732,7 +894,7 @@ export default function Editor() {
               </div>
 
               {/* Drag hint overlay */}
-              {isCropMode && !isDragging && (
+              {displayZoom > 0 && !isDragging && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
                   <span className="text-white text-sm font-medium px-3 py-1.5 bg-black/70 rounded-full backdrop-blur-sm">
                     Drag to reposition • Double-click sliders to center
@@ -740,8 +902,8 @@ export default function Editor() {
                 </div>
               )}
 
-              {/* Position sliders - visible in crop mode */}
-              {isCropMode && (
+              {/* Position sliders - visible when zoom > 0 */}
+              {displayZoom > 0 && (
                 <>
                   {/* Vertical slider for landscape */}
                   {globalFraming.aspectRatio === "16:9" && (
@@ -749,18 +911,7 @@ export default function Editor() {
                       orientation="vertical"
                       value={displayFocusY}
                       aspectRatio={1 / aspectRatioValue}
-                      onChange={(y) => {
-                        if (selectedSegmentId) {
-                          dispatch(
-                            updateSegmentFraming({
-                              segmentId: selectedSegmentId,
-                              framing: { focusY: y },
-                            })
-                          );
-                        } else {
-                          setPreviewFocus((prev) => ({ ...prev, y }));
-                        }
-                      }}
+                      onChange={(y) => updateFramingValue({ focusY: y })}
                     />
                   )}
 
@@ -772,21 +923,10 @@ export default function Editor() {
                       value={displayFocusX}
                       aspectRatio={
                         globalFraming.aspectRatio === "1:1"
-                          ? 1.0 / (16 / 9) // Square frame / landscape video = 9/16
-                          : aspectRatioValue // Portrait: 9/16
+                          ? 1.0 / (16 / 9)
+                          : aspectRatioValue
                       }
-                      onChange={(x) => {
-                        if (selectedSegmentId) {
-                          dispatch(
-                            updateSegmentFraming({
-                              segmentId: selectedSegmentId,
-                              framing: { focusX: x },
-                            })
-                          );
-                        } else {
-                          setPreviewFocus((prev) => ({ ...prev, x }));
-                        }
-                      }}
+                      onChange={(x) => updateFramingValue({ focusX: x })}
                     />
                   )}
                 </>
@@ -801,7 +941,7 @@ export default function Editor() {
 
         {/* Timeline */}
         <div className="border-t border-border bg-card">
-          <div className="h-32">
+          <div className="h-40">
             <Timeline
               videoRef={videoRef}
               previewMode={previewMode}

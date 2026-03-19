@@ -10,7 +10,12 @@ import {
   addSegment,
   deleteSegment,
   setCurrentTime,
+  selectKeyframe,
+  updateFramingKeyframe,
+  addFramingKeyframe,
 } from "@/store/editorSlice";
+import type { FramingKeyframe } from "@/remotion/types";
+import { getEffectiveKeyframes } from "@/remotion/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,7 +36,7 @@ interface TimelineProps {
   onPreviewModeChange: (preview: boolean) => void;
 }
 
-type DragMode = "playhead" | "left" | "right" | null;
+type DragMode = "playhead" | "left" | "right" | "keyframe" | null;
 
 // Zoom: 1 = fit to container, higher = zoomed in
 const MIN_ZOOM = 1;
@@ -45,6 +50,11 @@ interface DragInfo {
   startX: number;
   initialStart: number;
   initialEnd: number;
+  // Keyframe drag
+  keyframeId?: string;
+  keyframeInitialTime?: number;
+  segmentStartTime?: number;
+  segmentEndTime?: number;
 }
 
 export function Timeline({
@@ -61,6 +71,9 @@ export function Timeline({
     (state: RootState) => state.editor.currentTime
   );
   const duration = useSelector((state: RootState) => state.editor.duration);
+  const selectedKeyframeId = useSelector(
+    (state: RootState) => state.editor.selectedKeyframeId
+  );
 
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -355,15 +368,15 @@ export function Timeline({
     }
   }, [effectiveCurrentTime, isPlaying, timeToPx]);
 
-  // Auto-select the segment containing the playhead
+  // Auto-select the segment containing the playhead (only when entering a segment,
+  // never deselects — so manual selection persists when playhead is elsewhere)
   useEffect(() => {
     const containingSegment = segments.find(
       (s) => currentTime >= s.startTime && currentTime < s.endTime
     );
 
-    const newSelectedId = containingSegment?.id || null;
-    if (newSelectedId !== selectedId) {
-      dispatch(selectSegment(newSelectedId));
+    if (containingSegment && containingSegment.id !== selectedId) {
+      dispatch(selectSegment(containingSegment.id));
     }
   }, [currentTime, segments, selectedId, dispatch]);
 
@@ -474,7 +487,26 @@ export function Timeline({
       const deltaX = e.clientX - drag.startX;
       const deltaTime = pxToTime(deltaX);
 
-      if (drag.mode === "playhead") {
+      if (drag.mode === "keyframe" && drag.segmentId && drag.keyframeId) {
+        const segDuration = drag.segmentEndTime! - drag.segmentStartTime!;
+        // Find adjacent keyframe boundaries to prevent crossing
+        const seg = segments.find((s) => s.id === drag.segmentId);
+        const kfs = seg?.framing ? getEffectiveKeyframes(seg.framing) : [];
+        const sorted = [...kfs].sort((a, b) => a.time - b.time);
+        const idx = sorted.findIndex((k) => k.id === drag.keyframeId);
+        const minTime = idx > 0 ? sorted[idx - 1].time + 0.1 : 0.1;
+        const maxTime = idx < sorted.length - 1 ? sorted[idx + 1].time - 0.1 : segDuration - 0.1;
+        const newTime = Math.max(minTime, Math.min(maxTime, drag.keyframeInitialTime! + deltaTime));
+        flushSync(() => {
+          dispatch(
+            updateFramingKeyframe({
+              segmentId: drag.segmentId!,
+              keyframeId: drag.keyframeId!,
+              changes: { time: Math.round(newTime * 10) / 10 },
+            })
+          );
+        });
+      } else if (drag.mode === "playhead") {
         const rawTime = clampTime(drag.initialStart + deltaTime);
         const newTime = snapToSegmentEdge(rawTime);
         if (videoRef.current) {
@@ -520,6 +552,7 @@ export function Timeline({
       if (drag && (drag.mode === "left" || drag.mode === "right")) {
         dispatch(finalizeSegmentEdit());
       }
+      // Keyframe drag just ends - changes were applied live via updateFramingKeyframe
       dragRef.current = null;
       setIsDragging(false);
     };
@@ -953,6 +986,156 @@ export function Timeline({
             ))}
           </div>
 
+          {/* Keyframe lane — blocks showing each keyframe's active range */}
+          {(() => {
+            if (previewMode) return null;
+            const seg = segments.find((s) => s.id === selectedId);
+            if (!seg?.framing) return null;
+            const kfs = getEffectiveKeyframes(seg.framing);
+            const segDuration = seg.endTime - seg.startTime;
+            const isShort = segDuration < 5;
+            const laneLeft = timeToPx(seg.startTime);
+            const laneWidth = Math.max(timeToPx(segDuration), 20);
+            const sortedKfs = [...kfs].sort((a, b) => a.time - b.time);
+            const GAP = 2; // px between blocks
+
+            return (
+              <div className="h-5 shrink-0 relative mb-0.5">
+                <div
+                  className="absolute top-0 bottom-0"
+                  style={{ left: `${laneLeft}px`, width: `${laneWidth}px` }}
+                >
+                  {sortedKfs.map((kf, idx) => {
+                    const nextTime = idx < sortedKfs.length - 1 ? sortedKfs[idx + 1].time : segDuration;
+                    const blockLeft = (kf.time / segDuration) * laneWidth + (idx > 0 ? GAP / 2 : 0);
+                    const blockRight = (nextTime / segDuration) * laneWidth - (idx < sortedKfs.length - 1 ? GAP / 2 : 0);
+                    const blockWidth = Math.max(blockRight - blockLeft, 4);
+                    const isKfSelected = selectedKeyframeId === kf.id;
+                    const isFirst = idx === 0;
+
+                    return (
+                      <div
+                        key={kf.id}
+                        className={cn(
+                          "absolute top-0 bottom-0 rounded cursor-pointer transition-colors",
+                          isKfSelected
+                            ? "bg-amber-500/90 ring-1 ring-amber-400/60"
+                            : "bg-amber-600/40 hover:bg-amber-500/55",
+                        )}
+                        style={{ left: `${blockLeft}px`, width: `${blockWidth}px` }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          dispatch(selectKeyframe(kf.id));
+                          // Always seek to click position so preview matches the selected keyframe
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const pct = (e.clientX - rect.left) / rect.width;
+                          const blockDuration = nextTime - kf.time;
+                          const timeInSeg = kf.time + pct * blockDuration;
+                          const seekTo = seg.startTime + timeInSeg;
+                          if (videoRef.current) {
+                            videoRef.current.currentTime = seekTo;
+                          }
+                          dispatch(setCurrentTime(seekTo));
+                        }}
+                        onDoubleClick={(e) => {
+                          // Split: add a new keyframe at click position
+                          if (isShort || sortedKfs.length >= 4) return;
+                          e.stopPropagation();
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const clickX = e.clientX - rect.left;
+                          const pct = clickX / rect.width;
+                          const blockDuration = nextTime - kf.time;
+                          const timeInSeg = kf.time + pct * blockDuration;
+                          const rounded = Math.round(Math.max(0.1, Math.min(segDuration - 0.1, timeInSeg)) * 10) / 10;
+                          if (sortedKfs.some((k) => Math.abs(k.time - rounded) < 0.5)) return;
+                          const newKf: FramingKeyframe = {
+                            id: crypto.randomUUID(),
+                            time: rounded,
+                            focusX: kf.focusX,
+                            focusY: kf.focusY,
+                            zoom: kf.zoom,
+                            isAiGenerated: false,
+                          };
+                          dispatch(addFramingKeyframe({ segmentId: seg.id, keyframe: newKf }));
+                        }}
+                      >
+                        {/* Drag handle on the left edge (not for first keyframe) */}
+                        {!isFirst && (
+                          <div
+                            className="absolute -left-[3px] top-0 bottom-0 w-[6px] cursor-ew-resize z-10 group flex items-center justify-center"
+                            onMouseDown={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              dispatch(selectKeyframe(kf.id));
+                              dragRef.current = {
+                                mode: "keyframe",
+                                segmentId: seg.id,
+                                startX: e.clientX,
+                                initialStart: 0,
+                                initialEnd: 0,
+                                keyframeId: kf.id,
+                                keyframeInitialTime: kf.time,
+                                segmentStartTime: seg.startTime,
+                                segmentEndTime: seg.endTime,
+                              };
+                              setIsDragging(true);
+                            }}
+                          >
+                            <div className="w-px h-2/3 bg-white/30 group-hover:bg-white/70 transition-colors" />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* Split-framing indicator at playhead position */}
+                  {(() => {
+                    const timeInSeg = currentTime - seg.startTime;
+                    const rounded = Math.round(timeInSeg * 10) / 10;
+                    // Only two reasons to hide: can't add more, or playhead is outside/on a boundary
+                    if (sortedKfs.length >= 4 || isShort) return null;
+                    if (rounded <= 0 || rounded >= segDuration) return null;
+                    // Use pixel distance — hide only if within 6px of an existing keyframe edge
+                    const pxPos = (timeInSeg / segDuration) * laneWidth + 1;
+                    const tooClose = sortedKfs.some((k) => {
+                      const kPx = (k.time / segDuration) * laneWidth;
+                      return Math.abs(kPx - pxPos) < 6;
+                    });
+                    if (tooClose) return null;
+
+                    return (
+                      <div
+                        className="absolute top-0 bottom-0 z-20 group cursor-pointer"
+                        style={{ left: `${pxPos}px`, transform: "translateX(-50%)", width: "14px" }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const sourceKf = [...sortedKfs].reverse().find((k) => k.time <= timeInSeg) || sortedKfs[0];
+                          dispatch(addFramingKeyframe({
+                            segmentId: seg.id,
+                            keyframe: {
+                              id: crypto.randomUUID(),
+                              time: rounded,
+                              focusX: sourceKf.focusX,
+                              focusY: sourceKf.focusY,
+                              zoom: sourceKf.zoom,
+                              isAiGenerated: false,
+                            },
+                          }));
+                        }}
+                        title="Split framing here"
+                      >
+                        <div className="absolute left-1/2 top-0 bottom-0 w-px -translate-x-1/2 bg-red-500/50 group-hover:bg-red-500" />
+                        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-zinc-800 border border-red-500/60 group-hover:border-red-400 flex items-center justify-center transition-colors">
+                          <span className="text-[9px] font-bold text-red-400 group-hover:text-red-300 leading-none">+</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Track */}
           <div
             className="relative flex-1 rounded cursor-pointer min-h-0 bg-zinc-800/50"
@@ -1012,6 +1195,17 @@ export function Timeline({
                       {segment.title}
                     </div>
                   )}
+
+                  {/* Keyframe count indicator */}
+                  {segment.framing && (() => {
+                    const kfs = getEffectiveKeyframes(segment.framing);
+                    if (kfs.length <= 1) return null;
+                    return (
+                      <div className="absolute bottom-0.5 right-1 text-[9px] text-white/50 font-mono pointer-events-none">
+                        {kfs.length}kf
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })}
@@ -1028,6 +1222,7 @@ export function Timeline({
               <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[4px] border-r-[4px] border-t-[6px] border-l-transparent border-r-transparent border-t-red-500" />
             </div>
           </div>
+
         </div>
       </div>
     </div>

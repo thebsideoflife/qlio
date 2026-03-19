@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { AssetCard } from "@/components/dashboard/AssetCard";
+import { useEffect, useState, useMemo } from "react";
+import { AssetCard, getRecentAssets, touchRecentAsset } from "@/components/dashboard/AssetCard";
 import { AssetCardSkeleton } from "@/components/dashboard/AssetCardSkeleton";
 import { CreateProjectModal } from "@/components/dashboard/CreateProjectModal";
 import { useDispatch, useSelector } from "react-redux";
@@ -13,7 +13,8 @@ import { Plus } from "lucide-react";
 export default function Dashboard() {
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
-  const [spotlightIndex, setSpotlightIndex] = useState(0);
+  const [spotlightAssetId, setSpotlightAssetId] = useState<string | null>(null);
+  const [recencyVersion, setRecencyVersion] = useState(0);
 
   const dispatch = useDispatch<AppDispatch>();
   const {
@@ -26,12 +27,27 @@ export default function Dashboard() {
     dispatch(fetchAssets());
   }, [dispatch]);
 
-  // Set initial spotlight to first asset
-  useEffect(() => {
-    if (assets.length > 0 && spotlightIndex >= assets.length) {
-      setSpotlightIndex(0);
-    }
-  }, [assets.length, spotlightIndex]);
+  // Helper: touch recency + trigger re-sort
+  const touchAndReorder = (assetId: string) => {
+    touchRecentAsset(assetId);
+    setRecencyVersion((v) => v + 1);
+  };
+
+  // Sort assets by recency (most recently accessed first, then by createdAt)
+  const sortedAssets = useMemo(() => {
+    const recent = getRecentAssets();
+    return [...assets].sort((a, b) => {
+      const aTime = recent[a.id] || 0;
+      const bTime = recent[b.id] || 0;
+      if (aTime !== bTime) return bTime - aTime;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assets, recencyVersion]);
+
+  // Default spotlight to first sorted asset
+  const spotlightAsset = sortedAssets.find((a) => a.id === spotlightAssetId) || sortedAssets[0] || null;
+  const otherAssets = sortedAssets.filter((a) => a.id !== spotlightAsset?.id);
 
   const handleCreateProject = (assetId: string) => {
     setSelectedAssetId(assetId);
@@ -42,9 +58,8 @@ export default function Dashboard() {
     try {
       await deleteAsset(assetId);
       dispatch(removeAsset(assetId));
-      // Adjust spotlight index if needed
-      if (spotlightIndex >= assets.length - 1 && spotlightIndex > 0) {
-        setSpotlightIndex(spotlightIndex - 1);
+      if (spotlightAssetId === assetId) {
+        setSpotlightAssetId(null);
       }
     } catch (error) {
       console.error("Failed to delete asset:", error);
@@ -54,9 +69,6 @@ export default function Dashboard() {
   const handleUpdateAsset = (assetId: string, updates: Partial<Asset>) => {
     dispatch(updateAsset({ id: assetId, updates }));
   };
-
-  const spotlightAsset = assets[spotlightIndex];
-  const otherAssets = assets.filter((_, i) => i !== spotlightIndex);
 
   return (
     <div className="h-full p-8 overflow-y-auto">
@@ -102,29 +114,23 @@ export default function Dashboard() {
                 Other Assets
               </h3>
               <div className="grid grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
-                {otherAssets.map((asset) => {
-                  const originalIndex = assets.findIndex(
-                    (a) => a.id === asset.id
-                  );
-                  return (
-                    <div
-                      key={asset.id}
-                      className={cn(
-                        "transition-all rounded-xl",
-                        originalIndex === spotlightIndex &&
-                          "ring-2 ring-blue-500"
-                      )}
-                    >
-                      <AssetCard
-                        asset={asset}
-                        onCreateProject={handleCreateProject}
-                        onDelete={handleDeleteAsset}
-                        variant="collapsed"
-                        onSelect={() => setSpotlightIndex(originalIndex)}
-                      />
-                    </div>
-                  );
-                })}
+                {otherAssets.map((asset) => (
+                  <div
+                    key={asset.id}
+                    className="transition-all rounded-xl"
+                  >
+                    <AssetCard
+                      asset={asset}
+                      onCreateProject={handleCreateProject}
+                      onDelete={handleDeleteAsset}
+                      variant="collapsed"
+                      onSelect={() => {
+                        touchAndReorder(asset.id);
+                        setSpotlightAssetId(asset.id);
+                      }}
+                    />
+                  </div>
+                ))}
                 {/* Add Asset Button */}
                 <button
                   onClick={() => {
