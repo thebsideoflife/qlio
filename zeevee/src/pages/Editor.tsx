@@ -58,25 +58,25 @@ export default function Editor() {
 
   // Redux State
   const selectedSegmentId = useSelector(
-    (state: RootState) => state.editor.selectedSegmentId
+    (state: RootState) => state.editor.selectedSegmentId,
   );
   const segments = useSelector((state: RootState) => state.editor.segments);
   const currentTime = useSelector(
-    (state: RootState) => state.editor.currentTime
+    (state: RootState) => state.editor.currentTime,
   );
   const duration = useSelector((state: RootState) => state.editor.duration);
   const globalFraming = useSelector(
-    (state: RootState) => state.editor.globalFraming
+    (state: RootState) => state.editor.globalFraming,
   );
 
   const selectedKeyframeId = useSelector(
-    (state: RootState) => state.editor.selectedKeyframeId
+    (state: RootState) => state.editor.selectedKeyframeId,
   );
 
   // Local State
   const videoRef = useRef<HTMLVideoElement>(null);
   const [activeTab, setActiveTab] = useState<"transcript" | "ai" | "captions">(
-    "ai"
+    "ai",
   );
   const [isGenerating, setIsGenerating] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
@@ -106,7 +106,7 @@ export default function Editor() {
   // Get current segment's framing for preview - memoized to avoid find() on every render
   const selectedSegment = React.useMemo(
     () => segments.find((s) => s.id === selectedSegmentId),
-    [segments, selectedSegmentId]
+    [segments, selectedSegmentId],
   );
   // Framing preview state
   // When no segment selected, use local preview state that doesn't persist
@@ -133,14 +133,16 @@ export default function Editor() {
     : previewFocus.y;
 
   // Unified helper: update keyframe if segment selected, otherwise update local preview
-  const updateFramingValue = (changes: Partial<{ focusX: number; focusY: number; zoom: number }>) => {
+  const updateFramingValue = (
+    changes: Partial<{ focusX: number; focusY: number; zoom: number }>,
+  ) => {
     if (selectedSegmentId && selectedKeyframe) {
       dispatch(
         updateFramingKeyframe({
           segmentId: selectedSegmentId,
           keyframeId: selectedKeyframe.id,
           changes,
-        })
+        }),
       );
     } else {
       if (changes.focusX !== undefined || changes.focusY !== undefined) {
@@ -201,11 +203,11 @@ export default function Editor() {
 
       const newFocusX = Math.max(
         0,
-        Math.min(1, dragStartRef.current.focusX - deltaX)
+        Math.min(1, dragStartRef.current.focusX - deltaX),
       );
       const newFocusY = Math.max(
         0,
-        Math.min(1, dragStartRef.current.focusY - deltaY)
+        Math.min(1, dragStartRef.current.focusY - deltaY),
       );
 
       updateFramingValue({ focusX: newFocusX, focusY: newFocusY });
@@ -247,15 +249,20 @@ export default function Editor() {
 
   // AI analyze framing for a single segment (used by per-segment and batch)
   const analyzeSegmentFramingAndApply = async (
-    seg: { id: string; startTime: number; endTime: number; framing?: SegmentFraming },
-    startingProjectId: string
+    seg: {
+      id: string;
+      startTime: number;
+      endTime: number;
+      framing?: SegmentFraming;
+    },
+    startingProjectId: string,
   ) => {
     const result = await analyzeSegmentFraming(
       startingProjectId,
       seg.id,
       seg.startTime,
       seg.endTime,
-      globalFraming.aspectRatio
+      globalFraming.aspectRatio,
     );
 
     if (projectIdRef.current !== startingProjectId) return;
@@ -274,7 +281,7 @@ export default function Editor() {
             isAiGenerated: result.framing.isAiGenerated,
             keyframes: result.keyframes,
           },
-        })
+        }),
       );
       // Select the first keyframe
       if (result.keyframes.length > 0) {
@@ -293,7 +300,7 @@ export default function Editor() {
             aiReasoning: result.framing.aiReasoning,
             isAiGenerated: result.framing.isAiGenerated,
           },
-        })
+        }),
       );
     }
 
@@ -307,10 +314,12 @@ export default function Editor() {
     // Confirm if user has manual edits (but not for fresh/default framing)
     if (selectedSegment.framing?.keyframes?.length) {
       const hasManualEdits = selectedSegment.framing.keyframes.some(
-        (kf) => !kf.isAiGenerated
+        (kf) => !kf.isAiGenerated,
       );
       if (hasManualEdits) {
-        if (!confirm("This will replace your manual keyframe edits. Continue?")) {
+        if (
+          !confirm("This will replace your manual keyframe edits. Continue?")
+        ) {
           return;
         }
       }
@@ -322,7 +331,7 @@ export default function Editor() {
     try {
       const result = await analyzeSegmentFramingAndApply(
         selectedSegment,
-        startingProjectId
+        startingProjectId,
       );
 
       if (projectIdRef.current !== startingProjectId || !result) return;
@@ -331,7 +340,10 @@ export default function Editor() {
       const message =
         kfCount > 1
           ? `${kfCount} keyframes detected`
-          : getFramingTooltipMessage(result.framing.mode, result.framing.focusX);
+          : getFramingTooltipMessage(
+              result.framing.mode,
+              result.framing.focusX,
+            );
       setFramingTooltip(message);
       setTimeout(() => setFramingTooltip(null), 5000);
     } catch (error) {
@@ -360,7 +372,7 @@ export default function Editor() {
     if (hasManualEdits) {
       if (
         !confirm(
-          "Some segments have manual keyframe edits. Auto-framing will replace them. Continue?"
+          "Some segments have manual keyframe edits. Auto-framing will replace them. Continue?",
         )
       ) {
         return;
@@ -383,7 +395,7 @@ export default function Editor() {
       await startBatchFraming(
         startingProjectId,
         batchSegments,
-        globalFraming.aspectRatio
+        globalFraming.aspectRatio,
       );
 
       // Poll for completion
@@ -392,11 +404,19 @@ export default function Editor() {
       const startTime = Date.now();
 
       while (Date.now() - startTime < MAX_WAIT) {
-        if (batchCancelRef.current || projectIdRef.current !== startingProjectId) break;
+        if (
+          batchCancelRef.current ||
+          projectIdRef.current !== startingProjectId
+        )
+          break;
 
         await new Promise((r) => setTimeout(r, POLL_INTERVAL));
 
-        if (batchCancelRef.current || projectIdRef.current !== startingProjectId) break;
+        if (
+          batchCancelRef.current ||
+          projectIdRef.current !== startingProjectId
+        )
+          break;
 
         const project = await getProject(startingProjectId);
         const job: FramingJob | undefined = project.framingJob;
@@ -425,10 +445,15 @@ export default function Editor() {
           break;
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       if (projectIdRef.current === startingProjectId) {
+        const axiosErr = error as { response?: { status?: number } };
+        const is409 = axiosErr?.response?.status === 409;
+        const msg = is409
+          ? "Framing job already running"
+          : "Auto-framing failed";
         console.error("Batch framing failed:", error);
-        setFramingTooltip("Auto-framing failed");
+        setFramingTooltip(msg);
         setTimeout(() => setFramingTooltip(null), 3000);
       }
     } finally {
@@ -486,7 +511,7 @@ export default function Editor() {
     if (isGenerating) return;
 
     console.log(
-      `[Editor] Resuming polling for in-progress job: ${generationJob.jobId} (${generationJob.status})`
+      `[Editor] Resuming polling for in-progress job: ${generationJob.jobId} (${generationJob.status})`,
     );
 
     setIsGenerating(true);
@@ -510,14 +535,14 @@ export default function Editor() {
         // Guard: only dispatch if still on the same project
         if (projectIdRef.current !== startingProjectId) {
           console.log(
-            `[Editor] Ignoring stale generation result for project ${startingProjectId}`
+            `[Editor] Ignoring stale generation result for project ${startingProjectId}`,
           );
           return;
         }
         if (result.segments.length > 0) {
           dispatch(setSegments(result.segments));
           console.log(
-            `[Editor] Generation complete (resumed): ${result.segments.length} segments`
+            `[Editor] Generation complete (resumed): ${result.segments.length} segments`,
           );
         }
       })
@@ -631,7 +656,7 @@ export default function Editor() {
       // Guard: check if still on same project
       if (projectIdRef.current !== startingProjectId) {
         console.log(
-          `[Editor] Project changed, abandoning generation tracking for ${startingProjectId}`
+          `[Editor] Project changed, abandoning generation tracking for ${startingProjectId}`,
         );
         return;
       }
@@ -655,7 +680,7 @@ export default function Editor() {
       // Guard: only dispatch if still on the same project
       if (projectIdRef.current !== startingProjectId) {
         console.log(
-          `[Editor] Ignoring stale generation result for project ${startingProjectId}`
+          `[Editor] Ignoring stale generation result for project ${startingProjectId}`,
         );
         return;
       }
@@ -663,7 +688,7 @@ export default function Editor() {
       if (result.segments.length > 0) {
         dispatch(setSegments(result.segments));
         console.log(
-          `[Editor] Generation complete: ${result.segments.length} segments`
+          `[Editor] Generation complete: ${result.segments.length} segments`,
         );
       }
 
@@ -720,7 +745,11 @@ export default function Editor() {
           {/* Aspect Ratio + Framing Controls */}
           <div className="flex flex-col gap-2 shrink-0">
             {[
-              { value: "9:16" as AspectRatio, icon: Smartphone, label: "Reels" },
+              {
+                value: "9:16" as AspectRatio,
+                icon: Smartphone,
+                label: "Reels",
+              },
               { value: "1:1" as AspectRatio, icon: Square, label: "Post" },
               { value: "16:9" as AspectRatio, icon: Monitor, label: "Video" },
             ].map((ratio) => (
@@ -734,12 +763,14 @@ export default function Editor() {
                   "w-14 py-2 rounded-xl flex flex-col items-center gap-1 transition-all border-2",
                   globalFraming.aspectRatio === ratio.value
                     ? "bg-blue-600 text-white border-blue-500 ring-2 ring-blue-400 ring-offset-2 ring-offset-zinc-950 shadow-lg shadow-blue-500/30"
-                    : "bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white border-zinc-700 hover:border-zinc-600"
+                    : "bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white border-zinc-700 hover:border-zinc-600",
                 )}
                 title={`${ratio.label} (${ratio.value})`}
               >
                 <ratio.icon className="h-5 w-5" />
-                <span className="text-[10px] font-bold leading-none">{ratio.label}</span>
+                <span className="text-[10px] font-bold leading-none">
+                  {ratio.label}
+                </span>
               </button>
             ))}
 
@@ -758,9 +789,13 @@ export default function Editor() {
                   "w-14 py-2 mt-1 rounded-xl flex flex-col items-center gap-1 transition-all border-2",
                   isBatchAnalyzing
                     ? "bg-amber-600 text-white border-amber-500"
-                    : "bg-zinc-800 hover:bg-purple-700 text-zinc-400 hover:text-white border-zinc-700 hover:border-purple-600"
+                    : "bg-zinc-800 hover:bg-purple-700 text-zinc-400 hover:text-white border-zinc-700 hover:border-purple-600",
                 )}
-                title={isBatchAnalyzing ? `${batchProgress} — click to cancel` : "Auto-frame all segments with AI"}
+                title={
+                  isBatchAnalyzing
+                    ? `${batchProgress} — click to cancel`
+                    : "Auto-frame all segments with AI"
+                }
               >
                 {isBatchAnalyzing ? (
                   <Loader2 className="h-5 w-5 animate-spin" />
@@ -783,8 +818,8 @@ export default function Editor() {
                 isDragging
                   ? "cursor-grabbing ring-4 ring-blue-500 ring-offset-4 ring-offset-zinc-950"
                   : displayZoom > 0
-                  ? "cursor-grab ring-2 ring-zinc-600 hover:ring-zinc-500"
-                  : "cursor-pointer ring-2 ring-zinc-700"
+                    ? "cursor-grab ring-2 ring-zinc-600 hover:ring-zinc-500"
+                    : "cursor-pointer ring-2 ring-zinc-700",
               )}
               style={{
                 aspectRatio: aspectRatioValue,
@@ -809,15 +844,21 @@ export default function Editor() {
                   }
                   // Continuous zoom: scale a contained video toward (and beyond) cover size
                   const sourceAspect = 16 / 9;
-                  const scaleCover = Math.max(aspectRatioValue / sourceAspect, sourceAspect / aspectRatioValue);
+                  const scaleCover = Math.max(
+                    aspectRatioValue / sourceAspect,
+                    sourceAspect / aspectRatioValue,
+                  );
                   const scale = 1 + displayZoom * (scaleCover - 1);
-                  const videoAspectInContainer = sourceAspect / aspectRatioValue;
-                  const offsetX = videoAspectInContainer > 1
-                    ? -(displayFocusX - 0.5) * (scale - 1) / scale * 100
-                    : 0;
-                  const offsetY = videoAspectInContainer <= 1
-                    ? -(displayFocusY - 0.5) * (scale - 1) / scale * 100
-                    : 0;
+                  const videoAspectInContainer =
+                    sourceAspect / aspectRatioValue;
+                  const offsetX =
+                    videoAspectInContainer > 1
+                      ? ((-(displayFocusX - 0.5) * (scale - 1)) / scale) * 100
+                      : 0;
+                  const offsetY =
+                    videoAspectInContainer <= 1
+                      ? ((-(displayFocusY - 0.5) * (scale - 1)) / scale) * 100
+                      : 0;
                   return {
                     width: "100%",
                     height: "100%",
@@ -869,7 +910,7 @@ export default function Editor() {
                       className={cn(
                         "flex items-center justify-center w-10 h-10 rounded-lg transition-all",
                         "bg-zinc-900/80 hover:bg-zinc-800 text-white backdrop-blur-sm border border-zinc-700 hover:border-zinc-600",
-                        isAnalyzingFraming && "opacity-70"
+                        isAnalyzingFraming && "opacity-70",
                       )}
                       title="Auto-frame with AI"
                     >
@@ -962,14 +1003,14 @@ export default function Editor() {
             "bg-card border-2 border-border rounded-full shadow-lg",
             "opacity-0 hover:opacity-100 transition-opacity hover:border-blue-500",
             "group-hover:opacity-60",
-            !sidebarOpen && "opacity-100"
+            !sidebarOpen && "opacity-100",
           )}
           title={sidebarOpen ? "Collapse panel" : "Expand panel"}
         >
           <div
             className={cn(
               "w-1.5 h-7 rounded-full bg-muted-foreground/50 transition-transform",
-              !sidebarOpen && "rotate-180"
+              !sidebarOpen && "rotate-180",
             )}
           />
         </button>
@@ -977,7 +1018,7 @@ export default function Editor() {
         <div
           className={cn(
             "flex flex-col bg-card border-l-2 border-border overflow-hidden transition-all duration-200",
-            sidebarOpen ? "w-[420px]" : "w-0"
+            sidebarOpen ? "w-[420px]" : "w-0",
           )}
         >
           {sidebarOpen && (
@@ -1010,7 +1051,7 @@ export default function Editor() {
                       "flex-1 py-3 text-xs font-bold flex flex-col items-center gap-1 transition-all border-b-2",
                       activeTab === tab.id
                         ? "border-blue-500 text-blue-500 bg-blue-500/10"
-                        : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                        : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50",
                     )}
                     onClick={() => setActiveTab(tab.id)}
                     title={tab.tooltip}
@@ -1064,7 +1105,7 @@ function formatTime(seconds: number): string {
 // Group words into chunks of ~10 seconds each
 function groupWordsIntoChunks(
   words: Array<{ start: number; end: number; value: string }>,
-  chunkDuration = 10
+  chunkDuration = 10,
 ): Array<{
   startTime: number;
   endTime: number;
@@ -1136,15 +1177,15 @@ function TranscriptPanel({
     if (!previewMode) return transcription;
     return transcription.filter((word) =>
       segments.some(
-        (seg) => word.start >= seg.startTime && word.end <= seg.endTime
-      )
+        (seg) => word.start >= seg.startTime && word.end <= seg.endTime,
+      ),
     );
   }, [transcription, segments, previewMode]);
 
   // Memoize chunks - expensive operation that shouldn't run on every frame
   const chunks = React.useMemo(
     () => groupWordsIntoChunks(filteredTranscription),
-    [filteredTranscription]
+    [filteredTranscription],
   );
 
   // Memoize total duration calculation
@@ -1153,7 +1194,7 @@ function TranscriptPanel({
       previewMode
         ? segments.reduce((sum, seg) => sum + (seg.endTime - seg.startTime), 0)
         : duration,
-    [previewMode, segments, duration]
+    [previewMode, segments, duration],
   );
 
   return (
@@ -1188,7 +1229,7 @@ function TranscriptPanel({
                   "rounded-xl p-4 transition-all",
                   isChunkActive
                     ? "bg-blue-500/10 border-2 border-blue-500/30"
-                    : "bg-muted/40 border-2 border-transparent hover:border-border"
+                    : "bg-muted/40 border-2 border-transparent hover:border-border",
                 )}
               >
                 {/* Timestamp badge */}
@@ -1198,7 +1239,7 @@ function TranscriptPanel({
                       "text-[11px] font-mono font-bold px-2 py-1 rounded-md",
                       isChunkActive
                         ? "bg-blue-500/20 text-blue-400"
-                        : "bg-muted text-muted-foreground"
+                        : "bg-muted text-muted-foreground",
                     )}
                   >
                     {formatTime(chunk.startTime)}
@@ -1209,7 +1250,7 @@ function TranscriptPanel({
                       "text-[11px] font-mono font-bold px-2 py-1 rounded-md",
                       isChunkActive
                         ? "bg-blue-500/20 text-blue-400"
-                        : "bg-muted text-muted-foreground"
+                        : "bg-muted text-muted-foreground",
                     )}
                   >
                     {formatTime(chunk.endTime)}
@@ -1227,7 +1268,7 @@ function TranscriptPanel({
                         onClick={() => onWordClick(word.start)}
                         className={cn(
                           "cursor-pointer hover:bg-blue-500/20 rounded px-0.5 transition-all",
-                          isActive && "bg-blue-600 text-white"
+                          isActive && "bg-blue-600 text-white",
                         )}
                       >
                         {word.value}{" "}

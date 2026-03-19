@@ -515,6 +515,15 @@ async function handleStartBatch(
     ? (targetAspectRatio as TargetAspectRatio)
     : "9:16";
 
+  // Reject if a job is already running
+  const projectCheck = await docClient.send(
+    new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
+  );
+  const existingJob = projectCheck.Item?.framingJob;
+  if (existingJob && (existingJob.status === "pending" || existingJob.status === "analyzing")) {
+    return errorResponse(409, "A framing job is already running for this project");
+  }
+
   const jobId = randomUUID();
 
   // Write pending framingJob to project
@@ -572,13 +581,22 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
   console.log(`[Framing] Executing job ${jobId}: ${segments.length} segments (target: ${targetAspectRatio})`);
 
   try {
+    // Verify this job is still the active one (a newer job may have replaced us)
+    const check = await docClient.send(
+      new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
+    );
+    if (check.Item?.framingJob?.jobId !== jobId) {
+      console.log(`[Framing] Job ${jobId} superseded, aborting`);
+      return;
+    }
+
     await updateFramingJob(projectId, { status: "analyzing" });
 
     // For 16:9, no AI needed — just write defaults
     if (targetAspectRatio === "16:9") {
       await writeFramingResults(projectId, segments, new Map(
         segments.map((_, i) => [i, [{ id: "ai-kf-0", time: 0, focusX: 0.5, focusY: 0.5, zoom: 0.0, aiReasoning: "Fit for landscape", isAiGenerated: true }]])
-      ), targetAspectRatio);
+      ), targetAspectRatio, jobId);
       await updateFramingJob(projectId, { status: "completed", completedAt: new Date().toISOString(), completedCount: segments.length });
       return;
     }
@@ -624,7 +642,7 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
     }
 
     // Write all framing results to the project's segments in DynamoDB
-    await writeFramingResults(projectId, segments, allKeyframes, targetAspectRatio);
+    await writeFramingResults(projectId, segments, allKeyframes, targetAspectRatio, jobId);
     await updateFramingJob(projectId, { status: "completed", completedAt: new Date().toISOString(), completedCount: segments.length });
 
     console.log(`[Framing] Job ${jobId} completed: ${segments.length} segments`);
@@ -647,12 +665,19 @@ async function writeFramingResults(
   requestedSegments: SegmentDescriptor[],
   keyframesMap: Map<number, FramingKeyframe[]>,
   targetAspectRatio: TargetAspectRatio,
+  jobId?: string,
 ): Promise<void> {
   // Read current project to get segments
   const projectRes = await docClient.send(
     new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
   );
   if (!projectRes.Item) throw new Error("Project not found during result write");
+
+  // Abort if a newer job has taken over
+  if (jobId && projectRes.Item.framingJob?.jobId !== jobId) {
+    console.log(`[Framing] Job ${jobId} superseded before write, aborting`);
+    return;
+  }
 
   const currentSegments = projectRes.Item.segments || [];
 
