@@ -33,14 +33,44 @@ export type AspectRatio = "9:16" | "1:1" | "16:9";
 // Framing mode: crop focuses on a subject, fit shows the full scene
 export type FramingMode = "crop" | "fit";
 
+// A single framing keyframe within a segment
+export interface FramingKeyframe {
+  id: string;              // unique ID for UI operations
+  time: number;            // seconds relative to segment START (0 = segment start)
+  focusX: number;          // 0.0-1.0
+  focusY: number;          // 0.0-1.0
+  zoom: number;            // 0.0=fit (full frame visible), 1.0=max crop (tightest)
+  aiReasoning?: string;
+  isAiGenerated: boolean;
+}
+
 // Framing settings for a segment
 export interface SegmentFraming {
   aspectRatio: AspectRatio;
-  mode: FramingMode;
-  focusX: number; // 0.0-1.0, horizontal focus point (0=left, 0.5=center, 1=right)
-  focusY: number; // 0.0-1.0, vertical focus point (0=top, 0.5=center, 1=bottom)
-  aiReasoning?: string; // AI explanation: "Multi-speaker detected", "Single speaker on right"
-  isAiGenerated: boolean; // true if AI-generated, false if user overrode
+  mode: FramingMode;           // legacy compat — derived from first keyframe zoom
+  focusX: number;              // legacy compat — first keyframe value
+  focusY: number;              // legacy compat
+  aiReasoning?: string;
+  isAiGenerated: boolean;
+  keyframes?: FramingKeyframe[];  // if empty/undefined, legacy fields = single keyframe
+}
+
+/**
+ * Convert a SegmentFraming to an array of keyframes.
+ * If the framing already has keyframes, returns them.
+ * Otherwise, synthesizes a single keyframe from the legacy fields.
+ */
+export function getEffectiveKeyframes(framing: SegmentFraming): FramingKeyframe[] {
+  if (framing.keyframes?.length) return framing.keyframes;
+  return [{
+    id: 'legacy-0',
+    time: 0,
+    focusX: framing.focusX,
+    focusY: framing.focusY,
+    zoom: framing.mode === 'crop' ? 1.0 : 0.0,
+    isAiGenerated: framing.isAiGenerated,
+    aiReasoning: framing.aiReasoning,
+  }];
 }
 
 // Default framing settings

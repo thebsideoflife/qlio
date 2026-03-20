@@ -29,7 +29,7 @@ function CaptionDisplay({
   if (!settings.enabled) return null;
 
   const activeCaption = captions.find(
-    (c) => currentTime >= c.startTime && currentTime < c.endTime
+    (c) => currentTime >= c.startTime && currentTime < c.endTime,
   );
 
   if (!activeCaption) return null;
@@ -80,6 +80,8 @@ function SegmentClip({
 
   // Current time within the original video
   const currentTime = startTime + frame / fps;
+  // Time relative to segment start (for keyframe resolution)
+  const timeInSegment = frame / fps;
 
   // Validate videoUrl
   if (!videoUrl || videoUrl.trim() === "") {
@@ -111,6 +113,7 @@ function SegmentClip({
         framing={framing}
         startFrom={Math.round(startTime * fps)}
         endAt={Math.round(endTime * fps)}
+        timeInSegment={timeInSegment}
       >
         <CaptionDisplay
           captions={captions}

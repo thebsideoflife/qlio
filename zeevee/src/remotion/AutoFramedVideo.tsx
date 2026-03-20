@@ -1,7 +1,8 @@
 import React from "react";
-import { AbsoluteFill, OffthreadVideo } from "remotion";
+import { AbsoluteFill, OffthreadVideo, useVideoConfig } from "remotion";
 import type { SegmentFraming, AspectRatio } from "./types";
-import { DEFAULT_SEGMENT_FRAMING } from "./types";
+import { DEFAULT_SEGMENT_FRAMING, getEffectiveKeyframes } from "./types";
+import { resolveFramingAtTime } from "./framingInterpolation";
 
 interface AutoFramedVideoProps {
   src: string;
@@ -9,6 +10,8 @@ interface AutoFramedVideoProps {
   startFrom?: number;
   endAt?: number;
   children?: React.ReactNode;
+  /** Time in seconds relative to segment start, for keyframe resolution */
+  timeInSegment?: number;
 }
 
 /**
@@ -28,19 +31,15 @@ function getAspectRatioValue(aspectRatio: AspectRatio): number {
 }
 
 /**
- * AutoFramedVideo component that applies CSS-based framing to video content.
+ * AutoFramedVideo component that applies zoom-based framing to video content.
  *
- * This component uses CSS object-fit and object-position to simulate cropping
- * without actually modifying the video. This approach is:
- * - Lightweight: No video processing required
- * - Real-time: Instant preview updates
- * - Render-compatible: Works with Remotion Lambda rendering
+ * Zoom model:
+ * - zoom=0.0: object-fit: contain (full frame, letterboxed) — same as "fit"
+ * - zoom=1.0: object-fit: cover + object-position — same as "crop"
+ * - 0 < zoom < 1: intermediate size between contain and cover, positioned by focusX/focusY
  *
- * Framing modes:
- * - "crop": Uses object-fit: cover to fill the frame, cropping edges.
- *           The focusX/focusY values control which part of the video is visible.
- * - "fit": Uses object-fit: contain to show the entire video with letterboxing.
- *           Always centered - no positioning options.
+ * Supports multiple keyframes per segment — resolves the active keyframe
+ * based on timeInSegment using hard-cut logic.
  */
 export const AutoFramedVideo: React.FC<AutoFramedVideoProps> = ({
   src,
@@ -48,39 +47,106 @@ export const AutoFramedVideo: React.FC<AutoFramedVideoProps> = ({
   startFrom,
   endAt,
   children,
+  timeInSegment = 0,
 }) => {
-  const { mode, focusX, focusY } = framing;
+  const { width: containerW, height: containerH } = useVideoConfig();
 
-  // Determine the object-fit strategy
-  const isCrop = mode === "crop";
+  // Resolve active keyframe
+  const keyframes = getEffectiveKeyframes(framing);
+  const { focusX, focusY, zoom } = resolveFramingAtTime(
+    keyframes,
+    timeInSegment,
+  );
 
-  // For crop mode: position the video based on focus point
-  // focusX: 0 = left edge visible, 0.5 = center, 1 = right edge visible
-  // focusY: 0 = top edge visible, 0.5 = center, 1 = bottom edge visible
-  // For fit mode: always centered (letterboxing is symmetric)
-  const objectPosition = isCrop
-    ? `${focusX * 100}% ${focusY * 100}%`
-    : "center center";
+  // Source video is assumed 16:9. We compute contain/cover sizes directly.
+  const sourceAspect = 16 / 9;
 
-  // Video styles for framing
+  // containSize: video scaled to fit entirely within container (letterboxed)
+  // coverSize: video scaled to fill container completely (cropped)
+  const containScale =
+    Math.min(containerW, containerH * sourceAspect) / sourceAspect;
+  const coverScale =
+    Math.max(containerW, containerH * sourceAspect) / sourceAspect;
+  // containW/H and coverW/H are the video pixel dimensions at each scale
+  const containW = containScale * sourceAspect;
+  const containH = containScale;
+  const coverW = coverScale * sourceAspect;
+  const coverH = coverScale;
+
+  if (zoom === 0) {
+    // Pure fit mode — use simple CSS contain for best quality
+    const videoStyle: React.CSSProperties = {
+      width: "100%",
+      height: "100%",
+      objectFit: "contain",
+      objectPosition: "center center",
+    };
+
+    return (
+      <AbsoluteFill style={{ backgroundColor: "black" }}>
+        <OffthreadVideo
+          src={src}
+          startFrom={startFrom}
+          endAt={endAt}
+          style={videoStyle}
+        />
+        {children}
+      </AbsoluteFill>
+    );
+  }
+
+  if (zoom >= 1) {
+    // Pure crop mode — use simple CSS cover for best quality
+    const videoStyle: React.CSSProperties = {
+      width: "100%",
+      height: "100%",
+      objectFit: "cover",
+      objectPosition: `${focusX * 100}% ${focusY * 100}%`,
+    };
+
+    return (
+      <AbsoluteFill style={{ backgroundColor: "black" }}>
+        <OffthreadVideo
+          src={src}
+          startFrom={startFrom}
+          endAt={endAt}
+          style={videoStyle}
+        />
+        {children}
+      </AbsoluteFill>
+    );
+  }
+
+  // Intermediate zoom: lerp between contain and cover sizes
+  const videoW = containW + zoom * (coverW - containW);
+  const videoH = containH + zoom * (coverH - containH);
+
+  // Position: focusX/focusY controls which part of the video is centered
+  const overflowX = videoW - containerW;
+  const overflowY = videoH - containerH;
+
+  // When video is larger than container, shift based on focus point
+  const left = overflowX > 0 ? -(focusX - 0.5) * overflowX : 0;
+  const top = overflowY > 0 ? -(focusY - 0.5) * overflowY : 0;
+
   const videoStyle: React.CSSProperties = {
-    width: "100%",
-    height: "100%",
-    objectFit: isCrop ? "cover" : "contain",
-    objectPosition,
-    // Smooth transition for live adjustments in the editor
-    transition: "object-position 0.3s ease-out",
+    width: videoW,
+    height: videoH,
+    position: "absolute",
+    left: "50%",
+    top: "50%",
+    transform: `translate(calc(-50% + ${left}px), calc(-50% + ${top}px))`,
+    objectFit: "cover", // The video itself fills its own dimensions
   };
 
   return (
-    <AbsoluteFill style={{ backgroundColor: "black" }}>
+    <AbsoluteFill style={{ backgroundColor: "black", overflow: "hidden" }}>
       <OffthreadVideo
         src={src}
         startFrom={startFrom}
         endAt={endAt}
         style={videoStyle}
       />
-      {/* Render children (like captions) on top of the video */}
       {children}
     </AbsoluteFill>
   );
@@ -129,4 +195,3 @@ export const AspectRatioContainer: React.FC<AspectRatioContainerProps> = ({
 };
 
 export default AutoFramedVideo;
-

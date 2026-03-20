@@ -522,7 +522,7 @@ resource "aws_lambda_function" "analyze_framing" {
   handler          = "analyzeFraming.handler"
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.analyze_framing_zip.output_base64sha256
-  timeout          = 120  # Increased for chunked video analysis
+  timeout          = 900  # 15 minutes — batch framing can be slow
 
   environment {
     variables = {

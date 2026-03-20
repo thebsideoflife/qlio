@@ -45,19 +45,19 @@ export function ExportModal({
   const dispatch = useDispatch();
   const segments = useSelector((state: RootState) => state.editor.segments);
   const lastSegmentRenders = useSelector(
-    (state: RootState) => state.editor.lastSegmentRenders
+    (state: RootState) => state.editor.lastSegmentRenders,
   );
 
   const [status, setStatus] = useState<RenderStatus>("idle");
   const [progress, setProgress] = useState(0);
   const [jobId, setJobId] = useState<string | null>(null);
   const [segmentDownloads, setSegmentDownloads] = useState<SegmentDownload[]>(
-    []
+    [],
   );
   const [completedCount, setCompletedCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [selectedSegmentIds, setSelectedSegmentIds] = useState<Set<string>>(
-    new Set()
+    new Set(),
   );
 
   // Build a map of segment ID -> cached render URL
@@ -107,7 +107,7 @@ export function ExportModal({
               }));
 
             const mergedMap = new Map(
-              (lastSegmentRenders || []).map((r) => [r.segmentId, r])
+              (lastSegmentRenders || []).map((r) => [r.segmentId, r]),
             );
             for (const render of newRenders) {
               mergedMap.set(render.segmentId, render);
@@ -141,7 +141,7 @@ export function ExportModal({
 
   const handleStartRender = useCallback(async () => {
     const rendersToKeep = (lastSegmentRenders || []).filter(
-      (r) => !selectedSegmentIds.has(r.segmentId)
+      (r) => !selectedSegmentIds.has(r.segmentId),
     );
     if (rendersToKeep.length > 0) {
       dispatch(setLastSegmentRenders(rendersToKeep));
@@ -179,16 +179,15 @@ export function ExportModal({
   }, []);
 
   const handleClose = useCallback(() => {
-    if (status !== "rendering" && status !== "starting") {
-      setStatus("idle");
-      setProgress(0);
-      setJobId(null);
-      setSegmentDownloads([]);
-      setCompletedCount(0);
-      setError(null);
-      onOpenChange(false);
-    }
-  }, [status, onOpenChange]);
+    // Always allow closing — renders continue server-side regardless
+    setStatus("idle");
+    setProgress(0);
+    setJobId(null);
+    setSegmentDownloads([]);
+    setCompletedCount(0);
+    setError(null);
+    onOpenChange(false);
+  }, [onOpenChange]);
 
   const toggleSegment = useCallback((segmentId: string) => {
     setSelectedSegmentIds((prev) => {
@@ -222,7 +221,7 @@ export function ExportModal({
   const allRendered = segments.every((s) => cachedRenderMap.has(s.id));
   const someRendered = segments.some((s) => cachedRenderMap.has(s.id));
   const unrenderedCount = segments.filter(
-    (s) => !cachedRenderMap.has(s.id)
+    (s) => !cachedRenderMap.has(s.id),
   ).length;
 
   // Build segment list
@@ -391,7 +390,7 @@ export function ExportModal({
                     canSelect && "cursor-pointer hover:border-zinc-600",
                     canSelect &&
                       item.isSelected &&
-                      "border-blue-600 bg-blue-950/30"
+                      "border-blue-600 bg-blue-950/30",
                   )}
                   onClick={
                     canSelect ? () => toggleSegment(item.segmentId) : undefined
@@ -419,7 +418,7 @@ export function ExportModal({
                   <span
                     className={cn(
                       "flex-1 truncate",
-                      isCompleted ? "text-zinc-200" : "text-zinc-300"
+                      isCompleted ? "text-zinc-200" : "text-zinc-300",
                     )}
                   >
                     {item.title}
@@ -455,8 +454,8 @@ export function ExportModal({
             {isProcessing
               ? "Rendering..."
               : hasAnySelection
-              ? `${selectedSegmentIds.size} selected`
-              : "Select segments to render"}
+                ? `${selectedSegmentIds.size} selected`
+                : "Select segments to render"}
           </span>
           <div className="flex gap-2">
             <Button
