@@ -93,7 +93,21 @@ const HORIZONTAL_POSITION_MAP: Record<HorizontalPosition, number> = {
   FAR_RIGHT: 1.0,
 };
 
-const VALID_POSITIONS = new Set<string>(Object.keys(HORIZONTAL_POSITION_MAP));
+// Extended map handles both the single-segment tokens (FAR_LEFT/SLIGHT_LEFT/etc)
+// and batch prompt tokens (LEFT/CENTER_LEFT/CENTER_RIGHT/RIGHT)
+const POSITION_LOOKUP: Record<string, number> = {
+  FAR_LEFT: 0.0,
+  LEFT: 0.15,
+  SLIGHT_LEFT: 0.25,
+  CENTER_LEFT: 0.35,
+  CENTER: 0.5,
+  CENTER_RIGHT: 0.65,
+  SLIGHT_RIGHT: 0.75,
+  RIGHT: 0.85,
+  FAR_RIGHT: 1.0,
+};
+
+const VALID_POSITIONS = new Set<string>(Object.keys(POSITION_LOOKUP));
 
 const ZOOM_LEVEL_MAP: Record<ZoomLevel, number> = {
   TIGHT: 1.0, // ~30% of frame visible
@@ -148,13 +162,11 @@ function parseMultiKeyframeResponse(
 
     const time = Math.min(timestamp, segmentDuration);
     const positionToken = parts[1].replace(/\s+/g, "_");
-    const focusX =
-      HORIZONTAL_POSITION_MAP[positionToken as HorizontalPosition] ?? 0.5;
+    const focusX = POSITION_LOOKUP[positionToken] ?? 0.5;
     const zoomToken = parts[2];
     const zoom = ZOOM_LEVEL_MAP[zoomToken as ZoomLevel] ?? 0.5;
 
-    const posLabel =
-      POSITION_LABELS[positionToken as HorizontalPosition] || "center";
+    const posLabel = positionToken.toLowerCase().replace(/_/g, " ");
     const zoomLabel = zoomToken.toLowerCase();
 
     keyframes.push({
@@ -386,43 +398,34 @@ function buildBatchFramingPrompt(
     })
     .join("\n");
 
-  return `You are reframing a 16:9 landscape video to ${ratioLabel}. The ${ratioLabel} crop only shows a NARROW VERTICAL SLICE of the original wide frame. Your job is to decide WHERE in the wide frame to place that crop window for each segment.
-
-WATCH each segment carefully. Look at WHERE people and action are positioned in the frame.
+  return `Crop each segment of this 16:9 video to ${ratioLabel}. Output framing keyframes.
 
 Segments:
 ${segmentLines}
 
-For each segment output 1-3 keyframes. Format: N|TIME|POSITION|ZOOM
+Format: N|TIME|POSITION|ZOOM
 
-POSITION — where to place the crop window horizontally:
-- FAR_LEFT: Subject is in the left 20% of the wide frame
-- SLIGHT_LEFT: Subject is in the left 20-40%
-- CENTER: Subject is centered in the frame
-- SLIGHT_RIGHT: Subject is in the right 60-80%
-- FAR_RIGHT: Subject is in the right 80-100%
+ZOOM — pick based on what you see:
+- TIGHT: one person close-up, face or upper body fills the frame
+- MEDIUM: one person with space around them, or two people close together
+- WIDE: two people who need room between them, or someone moving across the frame
+- FULL: wide establishing shot, large group, or whole-room view
 
-ZOOM — how tightly to crop:
-- TIGHT: One person's face/upper body fills the portrait frame. Use for close-ups, single speaker talking directly.
-- MEDIUM: One person with some environment context. Use for single speaker with gestures, or two people close together.
-- WIDE: Two or more people visible in the crop. Use when multiple speakers are on screen and you need both visible.
-- FULL: Show the entire 16:9 frame letterboxed (no crop). Use ONLY for very wide establishing shots or large groups.
+POSITION — where the subject actually is in the 16:9 frame:
+LEFT / CENTER_LEFT / CENTER / CENTER_RIGHT / RIGHT
 
-TIME = seconds from segment start (first keyframe must be 0.0).
-Add a new keyframe ONLY when the subject position or shot composition changes within a segment.
+Rules:
+- First keyframe per segment must be at 0.0
+- Only add a new keyframe when the shot composition changes
+- Look at where subjects actually are — do not default to CENTER every time
+- For two people talking, zoom WIDE and position the crop between them
 
-IMPORTANT:
-- Do NOT default to CENTER for everything. Actually look at where subjects are.
-- Do NOT use the same framing for every segment. Different scenes have different compositions.
-- If a segment has a two-shot (two people talking), use WIDE or MEDIUM and position between them.
-- If one person is talking in a close-up, use TIGHT and their actual screen position.
-
-Example output for 3 segments:
-1|0.0|SLIGHT_RIGHT|TIGHT
-1|12.0|CENTER|MEDIUM
-2|0.0|SLIGHT_LEFT|TIGHT
-3|0.0|CENTER|WIDE
-3|8.0|FAR_RIGHT|TIGHT
+Example (varied — yours should reflect what you actually see):
+1|0.0|CENTER_RIGHT|TIGHT
+1|18.0|CENTER|WIDE
+2|0.0|LEFT|TIGHT
+3|0.0|CENTER|FULL
+4|0.0|CENTER_LEFT|MEDIUM
 
 ONLY output lines. No explanations.`;
 }
@@ -783,8 +786,21 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
     const prompt = buildBatchFramingPrompt(segments, targetAspectRatio);
 
     try {
-      const response = await twelvelabs.analyze(assetId, { prompt });
-      const responseText = stripChunkPrefixes(response.data);
+      // Use streaming to avoid 12Labs' 60s hard timeout on non-streaming analyze
+      const videoIds = await twelvelabs.getVideoIds(assetId);
+      if (videoIds.length === 0) throw new Error("No videoId found for asset");
+      const stream = await twelvelabs.getClient().analyzeStream(
+        { videoId: videoIds[0], prompt, temperature: 0.5, maxTokens: 4096 },
+        { timeoutInSeconds: 600 },
+      );
+
+      let responseText = "";
+      for await (const event of stream) {
+        if (event.eventType === "text_generation") {
+          responseText += event.text ?? "";
+        }
+      }
+      responseText = stripChunkPrefixes(responseText);
       console.log(
         `[Framing] Response (${responseText.length} chars):`,
         responseText,
