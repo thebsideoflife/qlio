@@ -36,7 +36,7 @@ const docClient = DynamoDBDocumentClient.from(dynamoClient);
 // Timeout & Retry Configuration
 // ============================================================================
 
-const TWELVE_LABS_TIMEOUT_MS = 60_000; // 60 seconds per API call
+const TWELVE_LABS_TIMEOUT_MS = 600_000; // 10 minutes — let 12Labs take as long as it needs
 const MAX_RETRIES = 0; // No retries - if it times out once, it will timeout again
 const RETRY_DELAY_MS = 1000;
 

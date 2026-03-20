@@ -37,7 +37,7 @@ type HorizontalPosition =
   | "SLIGHT_RIGHT"
   | "FAR_RIGHT";
 
-type ZoomLevel = "TIGHT" | "MEDIUM" | "WIDE" | "FULL";
+type ZoomLevel = "TIGHT" | "CLOSE" | "MEDIUM" | "WIDE" | "LOOSE" | "FULL";
 
 interface FramingKeyframe {
   id: string;
@@ -96,10 +96,12 @@ const HORIZONTAL_POSITION_MAP: Record<HorizontalPosition, number> = {
 const VALID_POSITIONS = new Set<string>(Object.keys(HORIZONTAL_POSITION_MAP));
 
 const ZOOM_LEVEL_MAP: Record<ZoomLevel, number> = {
-  TIGHT: 1.0,
-  MEDIUM: 0.75,
-  WIDE: 0.5,
-  FULL: 0.0,
+  TIGHT: 1.0, // ~30% of frame visible
+  CLOSE: 0.7, // ~40% of frame visible
+  MEDIUM: 0.5, // ~50% of frame visible
+  WIDE: 0.25, // ~65% of frame visible
+  LOOSE: 0.1, // ~80% of frame visible
+  FULL: 0.0, // 100% of frame visible
 };
 
 const VALID_ZOOM_LEVELS = new Set<string>(Object.keys(ZOOM_LEVEL_MAP));
@@ -149,7 +151,7 @@ function parseMultiKeyframeResponse(
     const focusX =
       HORIZONTAL_POSITION_MAP[positionToken as HorizontalPosition] ?? 0.5;
     const zoomToken = parts[2];
-    const zoom = ZOOM_LEVEL_MAP[zoomToken as ZoomLevel] ?? 0.75;
+    const zoom = ZOOM_LEVEL_MAP[zoomToken as ZoomLevel] ?? 0.5;
 
     const posLabel =
       POSITION_LABELS[positionToken as HorizontalPosition] || "center";
@@ -175,7 +177,27 @@ function parseMultiKeyframeResponse(
     keyframes[0].time = 0;
   }
 
-  return keyframes.slice(0, 4);
+  // Deduplicate consecutive keyframes with identical framing (focusX + zoom)
+  const deduped: FramingKeyframe[] = [keyframes[0]];
+  for (let i = 1; i < keyframes.length; i++) {
+    const prev = deduped[deduped.length - 1];
+    const curr = keyframes[i];
+    if (
+      curr.focusX === prev.focusX &&
+      curr.focusY === prev.focusY &&
+      curr.zoom === prev.zoom
+    ) {
+      continue; // Skip — same framing as previous
+    }
+    deduped.push(curr);
+  }
+
+  // Re-assign IDs after dedup
+  deduped.forEach((kf, i) => {
+    kf.id = `ai-kf-${i}`;
+  });
+
+  return deduped;
 }
 
 function makeFallbackKeyframe(): FramingKeyframe {
@@ -201,7 +223,7 @@ function keyframesToLegacyResult(keyframes: FramingKeyframe[]): FramingResult {
   };
 }
 
-/** Parse flat-format batch: N|TIME|POSITION|ZOOM */
+/** Parse batch response: N|TIME|POSITION|ZOOM → framing keyframes */
 function parseBatchFlatResponse(
   response: string,
   segments: SegmentDescriptor[],
@@ -222,6 +244,7 @@ function parseBatchFlatResponse(
     const segNum = parseInt(parts[0]);
     if (isNaN(segNum) || segNum < 1 || segNum > segments.length) continue;
 
+    // Strip segment number; rest is TIME|POSITION|ZOOM
     const keyframeLine = parts.slice(1).join("|");
     const existing = linesBySegment.get(segNum) || [];
     existing.push(keyframeLine);
@@ -230,8 +253,12 @@ function parseBatchFlatResponse(
 
   for (const [segNum, kfLines] of linesBySegment) {
     const segIndex = segNum - 1;
-    const segDuration = segments[segIndex].endTime - segments[segIndex].startTime;
-    const keyframes = parseMultiKeyframeResponse(kfLines.join("\n"), segDuration);
+    const segDuration =
+      segments[segIndex].endTime - segments[segIndex].startTime;
+    const keyframes = parseMultiKeyframeResponse(
+      kfLines.join("\n"),
+      segDuration,
+    );
     keyframes.forEach((kf, i) => {
       kf.id = `ai-kf-${segIndex}-${i}`;
     });
@@ -240,7 +267,9 @@ function parseBatchFlatResponse(
 
   for (let i = 0; i < segments.length; i++) {
     if (!result.has(i)) {
-      console.warn(`[Framing] No response for segment ${i + 1}/${segments.length}`);
+      console.warn(
+        `[Framing] No response for segment ${i + 1}/${segments.length}`,
+      );
       result.set(i, [makeFallbackKeyframe()]);
     }
   }
@@ -269,16 +298,36 @@ function validateAndConvert(
   const { strategy, position } = parsed;
 
   if (strategy === "FIT") {
-    return { mode: "fit", focusX: 0.5, focusY: 0.5, aiReasoning: "Showing full frame with letterboxing", isAiGenerated: true };
+    return {
+      mode: "fit",
+      focusX: 0.5,
+      focusY: 0.5,
+      aiReasoning: "Showing full frame with letterboxing",
+      isAiGenerated: true,
+    };
   }
 
   if (strategy === "CROP") {
     if (targetAspectRatio === "16:9") {
-      return { mode: "fit", focusX: 0.5, focusY: 0.5, aiReasoning: "Using fit for landscape output", isAiGenerated: true };
+      return {
+        mode: "fit",
+        focusX: 0.5,
+        focusY: 0.5,
+        aiReasoning: "Using fit for landscape output",
+        isAiGenerated: true,
+      };
     }
-    const focusX = HORIZONTAL_POSITION_MAP[position as HorizontalPosition] ?? 0.5;
-    const positionLabel = POSITION_LABELS[position as HorizontalPosition] || "center";
-    return { mode: "crop", focusX, focusY: 0.5, aiReasoning: `Cropping to focus on ${positionLabel}`, isAiGenerated: true };
+    const focusX =
+      HORIZONTAL_POSITION_MAP[position as HorizontalPosition] ?? 0.5;
+    const positionLabel =
+      POSITION_LABELS[position as HorizontalPosition] || "center";
+    return {
+      mode: "crop",
+      focusX,
+      focusY: 0.5,
+      aiReasoning: `Cropping to focus on ${positionLabel}`,
+      isAiGenerated: true,
+    };
   }
 
   return null;
@@ -299,65 +348,83 @@ function buildFramingPrompt(
     return `Look at the video segment from ${startTime.toFixed(1)}s to ${endTime.toFixed(1)}s. The original video is 16:9 landscape and the target is also 16:9.\n\nSince the aspect ratios match, just respond: 0.0|CENTER|FULL`;
   }
 
-  const ratioLabel = targetAspectRatio === "9:16" ? "9:16 portrait (vertical)" : "1:1 square";
+  const ratioLabel =
+    targetAspectRatio === "9:16" ? "9:16 portrait (vertical)" : "1:1 square";
 
   return `Look at the video from ${startTime.toFixed(1)}s to ${endTime.toFixed(1)}s.
 Target: ${ratioLabel} from 16:9 source.
 
-Identify 1-4 FRAMING SECTIONS where the camera framing should differ.
+Identify 1-4 FRAMING SECTIONS where the camera framing should change.
 A new section is needed when:
 - A different speaker starts talking
-- Subjects move to significantly different positions
-- The number of important on-screen subjects changes
+- Subjects move to different positions
+- The number of on-screen subjects changes
 
-For each section:
-TIMESTAMP | POSITION | ZOOM
+For each section respond: TIME|POSITION|ZOOM
 
-TIMESTAMP: seconds relative to segment start (0.0 = segment start, max ${segDuration.toFixed(1)})
+TIME: seconds from segment start (0.0 = start, max ${segDuration.toFixed(1)})
 POSITION: FAR_LEFT / SLIGHT_LEFT / CENTER / SLIGHT_RIGHT / FAR_RIGHT
-ZOOM: TIGHT (single subject fills frame) / MEDIUM (subject + context) / WIDE (multiple subjects visible) / FULL (show everything)
+ZOOM: TIGHT / CLOSE / MEDIUM / WIDE / LOOSE / FULL
+  — 1 speaker: TIGHT or CLOSE. 2 people: MEDIUM or WIDE. Group/wide shot: WIDE or LOOSE.
 
-Rules:
-- First line MUST start at 0.0 (relative to segment start)
-- 1-4 lines max. If framing doesn't change, just one line.
-- ALWAYS prefer TIGHT/MEDIUM over FULL for speakers
+First line MUST start at 0.0. If framing doesn't change, just one line.
 
-Example for a 20s segment:
-0.0|CENTER|TIGHT
-8.5|SLIGHT_LEFT|MEDIUM
-15.0|CENTER|WIDE
-
-Respond with ONLY the lines. Nothing else.`;
+Respond with ONLY the lines.`;
 }
-
-/** Max segments per 12Labs call — keeps output short for reliability */
-const MAX_SEGMENTS_PER_CALL = 20;
 
 function buildBatchFramingPrompt(
   segments: SegmentDescriptor[],
   targetAspectRatio: TargetAspectRatio,
 ): string {
-  const ratioLabel = targetAspectRatio === "9:16" ? "9:16 portrait" : "1:1 square";
+  const ratioLabel =
+    targetAspectRatio === "9:16" ? "9:16 portrait" : "1:1 square";
 
   const segmentLines = segments
-    .map((s, i) => `${i + 1}: ${s.startTime.toFixed(1)}s-${s.endTime.toFixed(1)}s`)
+    .map((s, i) => {
+      const dur = (s.endTime - s.startTime).toFixed(0);
+      return `${i + 1}: ${s.startTime.toFixed(1)}s-${s.endTime.toFixed(1)}s (${dur}s)`;
+    })
     .join("\n");
 
-  return `Reframe 16:9 video to ${ratioLabel}. Analyze these ${segments.length} segments:
+  return `You are reframing a 16:9 landscape video to ${ratioLabel}. The ${ratioLabel} crop only shows a NARROW VERTICAL SLICE of the original wide frame. Your job is to decide WHERE in the wide frame to place that crop window for each segment.
+
+WATCH each segment carefully. Look at WHERE people and action are positioned in the frame.
+
+Segments:
 ${segmentLines}
 
-For each segment, respond with 1-3 keyframes. Format: N|TIME|POSITION|ZOOM
-N=segment number, TIME=seconds from segment start (first must be 0.0)
-POSITION: FAR_LEFT/SLIGHT_LEFT/CENTER/SLIGHT_RIGHT/FAR_RIGHT
-ZOOM: TIGHT/MEDIUM/WIDE/FULL
-Prefer TIGHT/MEDIUM for speakers.
+For each segment output 1-3 keyframes. Format: N|TIME|POSITION|ZOOM
 
-Example:
-1|0.0|CENTER|TIGHT
-1|8.5|SLIGHT_LEFT|MEDIUM
-2|0.0|CENTER|WIDE
+POSITION — where to place the crop window horizontally:
+- FAR_LEFT: Subject is in the left 20% of the wide frame
+- SLIGHT_LEFT: Subject is in the left 20-40%
+- CENTER: Subject is centered in the frame
+- SLIGHT_RIGHT: Subject is in the right 60-80%
+- FAR_RIGHT: Subject is in the right 80-100%
 
-ONLY output lines.`;
+ZOOM — how tightly to crop:
+- TIGHT: One person's face/upper body fills the portrait frame. Use for close-ups, single speaker talking directly.
+- MEDIUM: One person with some environment context. Use for single speaker with gestures, or two people close together.
+- WIDE: Two or more people visible in the crop. Use when multiple speakers are on screen and you need both visible.
+- FULL: Show the entire 16:9 frame letterboxed (no crop). Use ONLY for very wide establishing shots or large groups.
+
+TIME = seconds from segment start (first keyframe must be 0.0).
+Add a new keyframe ONLY when the subject position or shot composition changes within a segment.
+
+IMPORTANT:
+- Do NOT default to CENTER for everything. Actually look at where subjects are.
+- Do NOT use the same framing for every segment. Different scenes have different compositions.
+- If a segment has a two-shot (two people talking), use WIDE or MEDIUM and position between them.
+- If one person is talking in a close-up, use TIGHT and their actual screen position.
+
+Example output for 3 segments:
+1|0.0|SLIGHT_RIGHT|TIGHT
+1|12.0|CENTER|MEDIUM
+2|0.0|SLIGHT_LEFT|TIGHT
+3|0.0|CENTER|WIDE
+3|8.0|FAR_RIGHT|TIGHT
+
+ONLY output lines. No explanations.`;
 }
 
 // ============================================================================
@@ -390,8 +457,14 @@ async function getAssetAndWrapper(projectId: string) {
   if (!assetRes.Item) throw { statusCode: 404, message: "Asset not found" };
 
   const asset = assetRes.Item;
-  if (!asset.isChunked && (!asset.twelveLabsVideoId || asset.twelveLabsVideoId === "unknown")) {
-    throw { statusCode: 400, message: "Asset has not been indexed by 12 Labs yet" };
+  if (
+    !asset.isChunked &&
+    (!asset.twelveLabsVideoId || asset.twelveLabsVideoId === "unknown")
+  ) {
+    throw {
+      statusCode: 400,
+      message: "Asset has not been indexed by 12 Labs yet",
+    };
   }
   if (asset.isChunked && (asset.chunks || []).some((c: any) => !c.videoId)) {
     throw { statusCode: 400, message: "Asset chunks are still being indexed" };
@@ -402,14 +475,21 @@ async function getAssetAndWrapper(projectId: string) {
   );
   if (!secretVal.SecretString) throw new Error("12Labs API Key not found");
 
-  return { assetId, project: projectRes.Item, twelvelabs: createTwelveLabsWrapper(secretVal.SecretString, ASSETS_TABLE) };
+  return {
+    assetId,
+    project: projectRes.Item,
+    twelvelabs: createTwelveLabsWrapper(secretVal.SecretString, ASSETS_TABLE),
+  };
 }
 
 function stripChunkPrefixes(raw: string): string {
   return raw.replace(/\[Chunk \d+ \([^\)]*\)\]:\s*/gi, "").trim();
 }
 
-async function updateFramingJob(projectId: string, updates: Partial<FramingJob>): Promise<void> {
+async function updateFramingJob(
+  projectId: string,
+  updates: Partial<FramingJob>,
+): Promise<void> {
   const expressions: string[] = ["updatedAt = :u"];
   const names: Record<string, string> = {};
   const values: Record<string, any> = { ":u": new Date().toISOString() };
@@ -427,7 +507,8 @@ async function updateFramingJob(projectId: string, updates: Partial<FramingJob>)
       TableName: PROJECTS_TABLE,
       Key: { projectId },
       UpdateExpression: `set ${expressions.join(", ")}`,
-      ExpressionAttributeNames: Object.keys(names).length > 0 ? names : undefined,
+      ExpressionAttributeNames:
+        Object.keys(names).length > 0 ? names : undefined,
       ExpressionAttributeValues: values,
     }),
   );
@@ -453,7 +534,9 @@ async function handleSingleSegment(
   }
 
   const validAspectRatios: TargetAspectRatio[] = ["16:9", "1:1", "9:16"];
-  const aspectRatio: TargetAspectRatio = validAspectRatios.includes(body.targetAspectRatio as TargetAspectRatio)
+  const aspectRatio: TargetAspectRatio = validAspectRatios.includes(
+    body.targetAspectRatio as TargetAspectRatio,
+  )
     ? (body.targetAspectRatio as TargetAspectRatio)
     : "9:16";
 
@@ -465,7 +548,11 @@ async function handleSingleSegment(
   let legacyFraming: FramingResult;
 
   try {
-    const response = await twelvelabs.analyze(assetId, { prompt, startTime, endTime });
+    const response = await twelvelabs.analyze(assetId, {
+      prompt,
+      startTime,
+      endTime,
+    });
     const responseText = stripChunkPrefixes(response.data);
     console.log("[Framing] AI response:", responseText);
 
@@ -475,16 +562,44 @@ async function handleSingleSegment(
     } else {
       const parsed = extractFromResponse(responseText);
       const result = validateAndConvert(parsed, aspectRatio);
-      legacyFraming = result || { mode: "fit", focusX: 0.5, focusY: 0.5, aiReasoning: "Could not parse response", isAiGenerated: true };
-      keyframes = [{ id: "ai-kf-0", time: 0, focusX: legacyFraming.focusX, focusY: legacyFraming.focusY, zoom: legacyFraming.mode === "crop" ? 1.0 : 0.0, aiReasoning: legacyFraming.aiReasoning, isAiGenerated: true }];
+      legacyFraming = result || {
+        mode: "fit",
+        focusX: 0.5,
+        focusY: 0.5,
+        aiReasoning: "Could not parse response",
+        isAiGenerated: true,
+      };
+      keyframes = [
+        {
+          id: "ai-kf-0",
+          time: 0,
+          focusX: legacyFraming.focusX,
+          focusY: legacyFraming.focusY,
+          zoom: legacyFraming.mode === "crop" ? 1.0 : 0.0,
+          aiReasoning: legacyFraming.aiReasoning,
+          isAiGenerated: true,
+        },
+      ];
     }
   } catch (err) {
     console.error("[Framing] AI analysis failed:", err);
     keyframes = [makeFallbackKeyframe()];
-    legacyFraming = { mode: "fit", focusX: 0.5, focusY: 0.5, aiReasoning: "AI analysis unavailable", isAiGenerated: false };
+    legacyFraming = {
+      mode: "fit",
+      focusX: 0.5,
+      focusY: 0.5,
+      aiReasoning: "AI analysis unavailable",
+      isAiGenerated: false,
+    };
   }
 
-  return successResponse({ segmentId: segmentId || null, startTime, endTime, keyframes, framing: legacyFraming });
+  return successResponse({
+    segmentId: segmentId || null,
+    startTime,
+    endTime,
+    keyframes,
+    framing: legacyFraming,
+  });
 }
 
 // ============================================================================
@@ -498,20 +613,35 @@ async function handleStartBatch(
   const { segments: rawSegments, targetAspectRatio } = body;
 
   if (!Array.isArray(rawSegments) || rawSegments.length === 0) {
-    return errorResponse(400, "segments array is required and must not be empty");
+    return errorResponse(
+      400,
+      "segments array is required and must not be empty",
+    );
   }
 
   // Validate segments
   const segments: SegmentDescriptor[] = [];
   for (const seg of rawSegments) {
-    if (!seg || typeof seg.id !== "string" || typeof seg.startTime !== "number" || typeof seg.endTime !== "number" || seg.endTime <= seg.startTime) {
+    if (
+      !seg ||
+      typeof seg.id !== "string" ||
+      typeof seg.startTime !== "number" ||
+      typeof seg.endTime !== "number" ||
+      seg.endTime <= seg.startTime
+    ) {
       return errorResponse(400, `Invalid segment: ${JSON.stringify(seg)}`);
     }
-    segments.push({ id: seg.id, startTime: seg.startTime, endTime: seg.endTime });
+    segments.push({
+      id: seg.id,
+      startTime: seg.startTime,
+      endTime: seg.endTime,
+    });
   }
 
   const validAspectRatios: TargetAspectRatio[] = ["16:9", "1:1", "9:16"];
-  const aspectRatio: TargetAspectRatio = validAspectRatios.includes(targetAspectRatio as TargetAspectRatio)
+  const aspectRatio: TargetAspectRatio = validAspectRatios.includes(
+    targetAspectRatio as TargetAspectRatio,
+  )
     ? (targetAspectRatio as TargetAspectRatio)
     : "9:16";
 
@@ -520,8 +650,14 @@ async function handleStartBatch(
     new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
   );
   const existingJob = projectCheck.Item?.framingJob;
-  if (existingJob && (existingJob.status === "pending" || existingJob.status === "analyzing")) {
-    return errorResponse(409, "A framing job is already running for this project");
+  if (
+    existingJob &&
+    (existingJob.status === "pending" || existingJob.status === "analyzing")
+  ) {
+    return errorResponse(
+      409,
+      "A framing job is already running for this project",
+    );
   }
 
   const jobId = randomUUID();
@@ -562,12 +698,18 @@ async function handleStartBatch(
     }),
   );
 
-  console.log(`[Framing] Started async batch job ${jobId}: ${segments.length} segments`);
+  console.log(
+    `[Framing] Started async batch job ${jobId}: ${segments.length} segments`,
+  );
 
   return {
     statusCode: 202,
     headers: CORS_HEADERS,
-    body: JSON.stringify({ message: "Framing analysis started", jobId, status: "pending" }),
+    body: JSON.stringify({
+      message: "Framing analysis started",
+      jobId,
+      status: "pending",
+    }),
   };
 }
 
@@ -578,7 +720,9 @@ async function handleStartBatch(
 async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
   const { projectId, segments, targetAspectRatio, jobId } = payload;
 
-  console.log(`[Framing] Executing job ${jobId}: ${segments.length} segments (target: ${targetAspectRatio})`);
+  console.log(
+    `[Framing] Executing job ${jobId}: ${segments.length} segments (target: ${targetAspectRatio})`,
+  );
 
   try {
     // Verify this job is still the active one (a newer job may have replaced us)
@@ -594,58 +738,88 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
 
     // For 16:9, no AI needed — just write defaults
     if (targetAspectRatio === "16:9") {
-      await writeFramingResults(projectId, segments, new Map(
-        segments.map((_, i) => [i, [{ id: "ai-kf-0", time: 0, focusX: 0.5, focusY: 0.5, zoom: 0.0, aiReasoning: "Fit for landscape", isAiGenerated: true }]])
-      ), targetAspectRatio, jobId);
-      await updateFramingJob(projectId, { status: "completed", completedAt: new Date().toISOString(), completedCount: segments.length });
+      await writeFramingResults(
+        projectId,
+        segments,
+        new Map(
+          segments.map((_, i) => [
+            i,
+            [
+              {
+                id: "ai-kf-0",
+                time: 0,
+                focusX: 0.5,
+                focusY: 0.5,
+                zoom: 0.0,
+                aiReasoning: "Fit for landscape",
+                isAiGenerated: true,
+              },
+            ],
+          ]),
+        ),
+        targetAspectRatio,
+        jobId,
+      );
+      await updateFramingJob(projectId, {
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        completedCount: segments.length,
+      });
       return;
     }
 
-    const { assetId, project, twelvelabs } = await getAssetAndWrapper(projectId);
+    const { assetId, project, twelvelabs } =
+      await getAssetAndWrapper(projectId);
 
-    // Process in chunks of MAX_SEGMENTS_PER_CALL
+    // Single batch call — all segments in one Pegasus request.
+    // 12Labs bills full video duration per analyze() call regardless of segments,
+    // so one call is always cheaper than multiple.
     const allKeyframes = new Map<number, FramingKeyframe[]>();
-    const sortedIndices = segments.map((_, i) => i).sort((a, b) => segments[a].startTime - segments[b].startTime);
 
-    for (let chunkStart = 0; chunkStart < sortedIndices.length; chunkStart += MAX_SEGMENTS_PER_CALL) {
-      const chunkIndices = sortedIndices.slice(chunkStart, chunkStart + MAX_SEGMENTS_PER_CALL);
-      const chunkSegments = chunkIndices.map((idx) => segments[idx]);
-      const chunkNum = Math.floor(chunkStart / MAX_SEGMENTS_PER_CALL) + 1;
-      const totalChunks = Math.ceil(sortedIndices.length / MAX_SEGMENTS_PER_CALL);
+    console.log(
+      `[Framing] Analyzing all ${segments.length} segments in one call`,
+    );
 
-      console.log(`[Framing] Chunk ${chunkNum}/${totalChunks}: ${chunkSegments.length} segments`);
+    const prompt = buildBatchFramingPrompt(segments, targetAspectRatio);
 
-      const prompt = buildBatchFramingPrompt(chunkSegments, targetAspectRatio);
-      const minStart = Math.min(...chunkSegments.map((s) => s.startTime));
-      const maxEnd = Math.max(...chunkSegments.map((s) => s.endTime));
+    try {
+      const response = await twelvelabs.analyze(assetId, { prompt });
+      const responseText = stripChunkPrefixes(response.data);
+      console.log(
+        `[Framing] Response (${responseText.length} chars):`,
+        responseText,
+      );
 
-      try {
-        const response = await twelvelabs.analyze(assetId, { prompt, startTime: minStart, endTime: maxEnd });
-        const responseText = stripChunkPrefixes(response.data);
-        console.log(`[Framing] Chunk ${chunkNum} response (${responseText.length} chars):`, responseText);
-
-        const parsed = parseBatchFlatResponse(responseText, chunkSegments);
-
-        // Map back to original indices
-        for (let li = 0; li < chunkIndices.length; li++) {
-          allKeyframes.set(chunkIndices[li], parsed.get(li) || [makeFallbackKeyframe()]);
-        }
-      } catch (err) {
-        console.error(`[Framing] Chunk ${chunkNum} failed:`, err);
-        for (const idx of chunkIndices) {
-          allKeyframes.set(idx, [makeFallbackKeyframe()]);
-        }
+      const parsed = parseBatchFlatResponse(responseText, segments);
+      for (let i = 0; i < segments.length; i++) {
+        allKeyframes.set(i, parsed.get(i) || [makeFallbackKeyframe()]);
       }
-
-      // Update progress
-      await updateFramingJob(projectId, { completedCount: Math.min(chunkStart + MAX_SEGMENTS_PER_CALL, segments.length) });
+    } catch (err) {
+      console.error(`[Framing] Analysis failed:`, err);
+      for (let i = 0; i < segments.length; i++) {
+        allKeyframes.set(i, [makeFallbackKeyframe()]);
+      }
     }
 
-    // Write all framing results to the project's segments in DynamoDB
-    await writeFramingResults(projectId, segments, allKeyframes, targetAspectRatio, jobId);
-    await updateFramingJob(projectId, { status: "completed", completedAt: new Date().toISOString(), completedCount: segments.length });
+    await updateFramingJob(projectId, { completedCount: segments.length });
 
-    console.log(`[Framing] Job ${jobId} completed: ${segments.length} segments`);
+    // Write all framing results to the project's segments in DynamoDB
+    await writeFramingResults(
+      projectId,
+      segments,
+      allKeyframes,
+      targetAspectRatio,
+      jobId,
+    );
+    await updateFramingJob(projectId, {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+      completedCount: segments.length,
+    });
+
+    console.log(
+      `[Framing] Job ${jobId} completed: ${segments.length} segments`,
+    );
   } catch (err) {
     console.error(`[Framing] Job ${jobId} failed:`, err);
     await updateFramingJob(projectId, {
@@ -671,7 +845,8 @@ async function writeFramingResults(
   const projectRes = await docClient.send(
     new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
   );
-  if (!projectRes.Item) throw new Error("Project not found during result write");
+  if (!projectRes.Item)
+    throw new Error("Project not found during result write");
 
   // Abort if a newer job has taken over
   if (jobId && projectRes.Item.framingJob?.jobId !== jobId) {
@@ -682,7 +857,10 @@ async function writeFramingResults(
   const currentSegments = projectRes.Item.segments || [];
 
   // Build a map of segment ID → framing result
-  const framingBySegmentId = new Map<string, { keyframes: FramingKeyframe[]; legacy: FramingResult }>();
+  const framingBySegmentId = new Map<
+    string,
+    { keyframes: FramingKeyframe[]; legacy: FramingResult }
+  >();
   for (let i = 0; i < requestedSegments.length; i++) {
     const kfs = keyframesMap.get(i) || [makeFallbackKeyframe()];
     framingBySegmentId.set(requestedSegments[i].id, {
@@ -725,7 +903,9 @@ async function writeFramingResults(
     }),
   );
 
-  console.log(`[Framing] Wrote framing for ${framingBySegmentId.size} segments to DynamoDB`);
+  console.log(
+    `[Framing] Wrote framing for ${framingBySegmentId.size} segments to DynamoDB`,
+  );
 }
 
 // ============================================================================

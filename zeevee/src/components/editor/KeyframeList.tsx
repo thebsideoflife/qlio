@@ -117,7 +117,7 @@ export function KeyframeList() {
       })}
 
       {/* Add keyframe */}
-      {!isShortSegment && sorted.length < 4 && (
+      {!isShortSegment && (
         <button
           onClick={handleAddKeyframe}
           className="flex items-center justify-center w-6 h-6 rounded-md border border-dashed border-border text-muted-foreground hover:text-foreground hover:border-blue-500/50 transition-all"
@@ -128,7 +128,7 @@ export function KeyframeList() {
       )}
 
       <span className="text-[10px] text-muted-foreground ml-auto shrink-0">
-        {sorted.length}/4
+        {sorted.length}
       </span>
     </div>
   );

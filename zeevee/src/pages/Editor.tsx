@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useCallback } from "react";
 import { Timeline } from "@/components/editor/Timeline";
 import {
   MicrodramaGenerator,
@@ -17,9 +17,7 @@ import {
   setSegments,
   setProjectId,
   resetEditor,
-  setSegmentFraming,
   setGlobalAspectRatio,
-  selectKeyframe,
   updateFramingKeyframe,
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
@@ -30,7 +28,6 @@ import { useSeamlessPlayback } from "@/hooks/useSeamlessPlayback";
 import {
   generateSegments,
   pollGenerationStatus,
-  analyzeSegmentFraming,
   startBatchFraming,
   getProject,
   type GenerationJob,
@@ -50,7 +47,7 @@ import {
   Monitor,
 } from "lucide-react";
 import { getEffectiveKeyframes } from "@/remotion/types";
-import type { SegmentFraming, AspectRatio } from "@/remotion/types";
+import type { AspectRatio } from "@/remotion/types";
 
 export default function Editor() {
   const { projectId } = useParams();
@@ -72,6 +69,9 @@ export default function Editor() {
   const selectedKeyframeId = useSelector(
     (state: RootState) => state.editor.selectedKeyframeId,
   );
+  const showKeyframes = useSelector(
+    (state: RootState) => state.editor.showKeyframes,
+  );
 
   // Local State
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -80,10 +80,8 @@ export default function Editor() {
   );
   const [isGenerating, setIsGenerating] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
-  const [isAnalyzingFraming, setIsAnalyzingFraming] = useState(false);
   const [isBatchAnalyzing, setIsBatchAnalyzing] = useState(false);
   const [batchProgress, setBatchProgress] = useState<string | null>(null);
-  const [framingTooltip, setFramingTooltip] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Ref to track current projectId for async callbacks (prevents stale closures)
@@ -133,29 +131,30 @@ export default function Editor() {
     : previewFocus.y;
 
   // Unified helper: update keyframe if segment selected, otherwise update local preview
-  const updateFramingValue = (
-    changes: Partial<{ focusX: number; focusY: number; zoom: number }>,
-  ) => {
-    if (selectedSegmentId && selectedKeyframe) {
-      dispatch(
-        updateFramingKeyframe({
-          segmentId: selectedSegmentId,
-          keyframeId: selectedKeyframe.id,
-          changes,
-        }),
-      );
-    } else {
-      if (changes.focusX !== undefined || changes.focusY !== undefined) {
-        setPreviewFocus((prev) => ({
-          x: changes.focusX ?? prev.x,
-          y: changes.focusY ?? prev.y,
-        }));
+  const updateFramingValue = useCallback(
+    (changes: Partial<{ focusX: number; focusY: number; zoom: number }>) => {
+      if (selectedSegmentId && selectedKeyframe) {
+        dispatch(
+          updateFramingKeyframe({
+            segmentId: selectedSegmentId,
+            keyframeId: selectedKeyframe.id,
+            changes,
+          }),
+        );
+      } else {
+        if (changes.focusX !== undefined || changes.focusY !== undefined) {
+          setPreviewFocus((prev) => ({
+            x: changes.focusX ?? prev.x,
+            y: changes.focusY ?? prev.y,
+          }));
+        }
+        if (changes.zoom !== undefined) {
+          setPreviewZoom(changes.zoom);
+        }
       }
-      if (changes.zoom !== undefined) {
-        setPreviewZoom(changes.zoom);
-      }
-    }
-  };
+    },
+    [selectedSegmentId, selectedKeyframe, dispatch],
+  );
 
   const framingContainerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -225,7 +224,7 @@ export default function Editor() {
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [isDragging, selectedSegmentId, selectedKeyframe, dispatch]);
+  }, [isDragging, updateFramingValue]);
 
   // Handle click on video container (play/pause) - only if we didn't drag
   const handleFramingClick = (e: React.MouseEvent) => {
@@ -233,130 +232,6 @@ export default function Editor() {
       handleVideoClick(e);
     }
     hasDraggedRef.current = false;
-  };
-
-  // Generate a clean tooltip message from framing result
-  const getFramingTooltipMessage = (mode: string, focusX: number): string => {
-    if (mode === "fit") return "Fit to show all";
-
-    // Map focusX to position label
-    if (focusX <= 0.1) return "Crop far left";
-    if (focusX <= 0.35) return "Crop slight left";
-    if (focusX <= 0.65) return "Crop center";
-    if (focusX <= 0.9) return "Crop slight right";
-    return "Crop far right";
-  };
-
-  // AI analyze framing for a single segment (used by per-segment and batch)
-  const analyzeSegmentFramingAndApply = async (
-    seg: {
-      id: string;
-      startTime: number;
-      endTime: number;
-      framing?: SegmentFraming;
-    },
-    startingProjectId: string,
-  ) => {
-    const result = await analyzeSegmentFraming(
-      startingProjectId,
-      seg.id,
-      seg.startTime,
-      seg.endTime,
-      globalFraming.aspectRatio,
-    );
-
-    if (projectIdRef.current !== startingProjectId) return;
-
-    if (result.keyframes && result.keyframes.length > 0) {
-      // Set full framing with keyframes in one dispatch
-      dispatch(
-        setSegmentFraming({
-          segmentId: seg.id,
-          framing: {
-            aspectRatio: globalFraming.aspectRatio,
-            mode: result.framing.mode,
-            focusX: result.framing.focusX,
-            focusY: result.framing.focusY,
-            aiReasoning: result.framing.aiReasoning,
-            isAiGenerated: result.framing.isAiGenerated,
-            keyframes: result.keyframes,
-          },
-        }),
-      );
-      // Select the first keyframe
-      if (result.keyframes.length > 0) {
-        dispatch(selectKeyframe(result.keyframes[0].id));
-      }
-    } else {
-      // Legacy single-keyframe response
-      dispatch(
-        setSegmentFraming({
-          segmentId: seg.id,
-          framing: {
-            aspectRatio: globalFraming.aspectRatio,
-            mode: result.framing.mode,
-            focusX: result.framing.focusX,
-            focusY: result.framing.focusY,
-            aiReasoning: result.framing.aiReasoning,
-            isAiGenerated: result.framing.isAiGenerated,
-          },
-        }),
-      );
-    }
-
-    return result;
-  };
-
-  // AI analyze framing for current segment
-  const handleAnalyzeFraming = async () => {
-    if (!projectId || !selectedSegment) return;
-
-    // Confirm if user has manual edits (but not for fresh/default framing)
-    if (selectedSegment.framing?.keyframes?.length) {
-      const hasManualEdits = selectedSegment.framing.keyframes.some(
-        (kf) => !kf.isAiGenerated,
-      );
-      if (hasManualEdits) {
-        if (
-          !confirm("This will replace your manual keyframe edits. Continue?")
-        ) {
-          return;
-        }
-      }
-    }
-
-    const startingProjectId = projectId;
-    setIsAnalyzingFraming(true);
-    setFramingTooltip(null);
-    try {
-      const result = await analyzeSegmentFramingAndApply(
-        selectedSegment,
-        startingProjectId,
-      );
-
-      if (projectIdRef.current !== startingProjectId || !result) return;
-
-      const kfCount = result.keyframes?.length || 1;
-      const message =
-        kfCount > 1
-          ? `${kfCount} keyframes detected`
-          : getFramingTooltipMessage(
-              result.framing.mode,
-              result.framing.focusX,
-            );
-      setFramingTooltip(message);
-      setTimeout(() => setFramingTooltip(null), 5000);
-    } catch (error) {
-      if (projectIdRef.current === startingProjectId) {
-        console.error("Failed to analyze framing:", error);
-        setFramingTooltip("Analysis failed");
-        setTimeout(() => setFramingTooltip(null), 2000);
-      }
-    } finally {
-      if (projectIdRef.current === startingProjectId) {
-        setIsAnalyzingFraming(false);
-      }
-    }
   };
 
   // Batch auto-frame all segments (async — start job, poll for completion)
@@ -440,21 +315,12 @@ export default function Editor() {
 
         if (job.status === "failed") {
           console.error("Batch framing failed:", job.error);
-          setFramingTooltip("Auto-framing failed");
-          setTimeout(() => setFramingTooltip(null), 3000);
           break;
         }
       }
     } catch (error: unknown) {
       if (projectIdRef.current === startingProjectId) {
-        const axiosErr = error as { response?: { status?: number } };
-        const is409 = axiosErr?.response?.status === 409;
-        const msg = is409
-          ? "Framing job already running"
-          : "Auto-framing failed";
         console.error("Batch framing failed:", error);
-        setFramingTooltip(msg);
-        setTimeout(() => setFramingTooltip(null), 3000);
       }
     } finally {
       if (projectIdRef.current === startingProjectId) {
@@ -488,10 +354,8 @@ export default function Editor() {
     // Reset all async operation state when project changes
     setIsGenerating(false);
     setGenerationStatus(null);
-    setIsAnalyzingFraming(false);
     setIsBatchAnalyzing(false);
     setBatchProgress(null);
-    setFramingTooltip(null);
     // Reset preview mode since segments are different per project
     setPreviewMode(false);
 
@@ -817,7 +681,7 @@ export default function Editor() {
                 "relative overflow-hidden bg-black rounded-2xl select-none shadow-2xl shadow-black/50",
                 isDragging
                   ? "cursor-grabbing ring-4 ring-blue-500 ring-offset-4 ring-offset-zinc-950"
-                  : displayZoom > 0
+                  : showKeyframes && displayZoom > 0
                     ? "cursor-grab ring-2 ring-zinc-600 hover:ring-zinc-500"
                     : "cursor-pointer ring-2 ring-zinc-700",
               )}
@@ -826,8 +690,16 @@ export default function Editor() {
                 maxHeight: aspectRatioValue < 1 ? "100%" : "90%",
                 maxWidth: aspectRatioValue >= 1 ? "100%" : "90%",
               }}
-              onMouseDown={displayZoom > 0 ? handleFramingMouseDown : undefined}
-              onClick={displayZoom > 0 ? handleFramingClick : handleVideoClick}
+              onMouseDown={
+                showKeyframes && displayZoom > 0
+                  ? handleFramingMouseDown
+                  : undefined
+              }
+              onClick={
+                showKeyframes && displayZoom > 0
+                  ? handleFramingClick
+                  : handleVideoClick
+              }
             >
               <video
                 ref={videoRef}
@@ -873,69 +745,37 @@ export default function Editor() {
                 }
               />
 
-              {/* Overlay Controls - Top Right */}
-              <div className="absolute top-3 right-3 flex items-center gap-2">
-                {/* Zoom slider */}
-                <div
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900/80 backdrop-blur-sm border border-zinc-700"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <Maximize2 className="h-3.5 w-3.5 text-zinc-400" />
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={displayZoom}
-                    onChange={(e) => {
-                      updateFramingValue({ zoom: parseFloat(e.target.value) });
-                    }}
-                    className="w-20 h-1 accent-blue-500 cursor-pointer"
-                    title={`Zoom: ${Math.round(displayZoom * 100)}%`}
-                  />
-                  <Crop className="h-3.5 w-3.5 text-zinc-400" />
-                </div>
-
-                {/* AI Auto-frame Button - only for segments */}
-                {selectedSegment && (
-                  <div className="relative">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleAnalyzeFraming();
+              {/* Overlay Controls - Top Right (only when keyframe toggle is on) */}
+              {showKeyframes && (
+                <div className="absolute top-3 right-3 flex items-center gap-2">
+                  {/* Zoom slider */}
+                  <div
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900/80 backdrop-blur-sm border border-zinc-700"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Maximize2 className="h-3.5 w-3.5 text-zinc-400" />
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={displayZoom}
+                      onChange={(e) => {
+                        updateFramingValue({
+                          zoom: parseFloat(e.target.value),
+                        });
                       }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      disabled={isAnalyzingFraming}
-                      className={cn(
-                        "flex items-center justify-center w-10 h-10 rounded-lg transition-all",
-                        "bg-zinc-900/80 hover:bg-zinc-800 text-white backdrop-blur-sm border border-zinc-700 hover:border-zinc-600",
-                        isAnalyzingFraming && "opacity-70",
-                      )}
-                      title="Auto-frame with AI"
-                    >
-                      {isAnalyzingFraming ? (
-                        <Loader2 className="h-5 w-5 animate-spin" />
-                      ) : (
-                        <Sparkles className="h-5 w-5" />
-                      )}
-                    </button>
-
-                    {/* AI Response Tooltip */}
-                    {framingTooltip && (
-                      <div className="absolute top-1/2 right-full -translate-y-1/2 mr-2 z-50 animate-in fade-in slide-in-from-right-1 duration-200">
-                        <div className="relative bg-zinc-900 text-white text-sm font-semibold px-3 py-2 rounded-lg whitespace-nowrap backdrop-blur-sm shadow-xl border border-zinc-700">
-                          <div className="absolute top-1/2 -right-1.5 -translate-y-1/2 w-3 h-3 bg-zinc-900 border-r border-b border-zinc-700 rotate-[-45deg]" />
-                          <span className="relative">{framingTooltip}</span>
-                        </div>
-                      </div>
-                    )}
+                      className="w-20 h-1 accent-blue-500 cursor-pointer"
+                      title={`Zoom: ${Math.round(displayZoom * 100)}%`}
+                    />
+                    <Crop className="h-3.5 w-3.5 text-zinc-400" />
                   </div>
-                )}
-              </div>
+                </div>
+              )}
 
               {/* Drag hint overlay */}
-              {displayZoom > 0 && !isDragging && (
+              {showKeyframes && displayZoom > 0 && !isDragging && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
                   <span className="text-white text-sm font-medium px-3 py-1.5 bg-black/70 rounded-full backdrop-blur-sm">
                     Drag to reposition • Double-click sliders to center
@@ -943,8 +783,8 @@ export default function Editor() {
                 </div>
               )}
 
-              {/* Position sliders - visible when zoom > 0 */}
-              {displayZoom > 0 && (
+              {/* Position sliders - visible when keyframe toggle + zoom > 0 */}
+              {showKeyframes && displayZoom > 0 && (
                 <>
                   {/* Vertical slider for landscape */}
                   {globalFraming.aspectRatio === "16:9" && (

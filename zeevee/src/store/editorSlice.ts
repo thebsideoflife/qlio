@@ -49,6 +49,8 @@ interface EditorState {
   captionSettings: CaptionSettings;
   // Framing state
   globalFraming: GlobalFramingSettings;
+  // Keyframe toggle — shows keyframe lane + framing controls
+  showKeyframes: boolean;
   // Last rendered segments - cached to avoid re-renders
   lastSegmentRenders:
     | { segmentId: string; title: string; url: string }[]
@@ -74,6 +76,7 @@ const initialState: EditorState = {
   captionSettings: DEFAULT_CAPTION_SETTINGS,
   // Framing state
   globalFraming: DEFAULT_GLOBAL_FRAMING,
+  showKeyframes: false,
   // Last rendered segments
   lastSegmentRenders: null,
 };
@@ -599,6 +602,10 @@ export const editorSlice = createSlice({
       markEdited(state);
     },
 
+    toggleShowKeyframes: (state) => {
+      state.showKeyframes = !state.showKeyframes;
+    },
+
     // Keyframe CRUD actions
     selectKeyframe: (state, action: PayloadAction<string | null>) => {
       state.selectedKeyframeId = action.payload;
@@ -748,6 +755,7 @@ export const {
   updateSegmentFocusX,
   applyFramingToAllSegments,
   // Keyframe actions
+  toggleShowKeyframes,
   selectKeyframe,
   setSegmentKeyframes,
   addFramingKeyframe,
