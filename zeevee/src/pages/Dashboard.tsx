@@ -1,5 +1,9 @@
 import { useEffect, useState, useMemo } from "react";
-import { AssetCard, getRecentAssets, touchRecentAsset } from "@/components/dashboard/AssetCard";
+import {
+  AssetCard,
+  getRecentAssets,
+  touchRecentAsset,
+} from "@/components/dashboard/AssetCard";
 import { AssetCardSkeleton } from "@/components/dashboard/AssetCardSkeleton";
 import { CreateProjectModal } from "@/components/dashboard/CreateProjectModal";
 import { useDispatch, useSelector } from "react-redux";
@@ -7,7 +11,6 @@ import { fetchAssets, removeAsset, updateAsset } from "@/store/assetsSlice";
 import type { Asset } from "@/store/assetsSlice";
 import { deleteAsset } from "@/services/api";
 import type { RootState, AppDispatch } from "@/store/store";
-import { cn } from "@/lib/utils";
 import { Plus } from "lucide-react";
 
 export default function Dashboard() {
@@ -46,7 +49,10 @@ export default function Dashboard() {
   }, [assets, recencyVersion]);
 
   // Default spotlight to first sorted asset
-  const spotlightAsset = sortedAssets.find((a) => a.id === spotlightAssetId) || sortedAssets[0] || null;
+  const spotlightAsset =
+    sortedAssets.find((a) => a.id === spotlightAssetId) ||
+    sortedAssets[0] ||
+    null;
   const otherAssets = sortedAssets.filter((a) => a.id !== spotlightAsset?.id);
 
   const handleCreateProject = (assetId: string) => {
@@ -79,12 +85,16 @@ export default function Dashboard() {
           </div>
         </div>
       ) : error ? (
-        <div className="text-center py-20 text-red-500 font-medium">Error: {error}</div>
+        <div className="text-center py-20 text-red-500 font-medium">
+          Error: {error}
+        </div>
       ) : assets.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-full gap-4">
           <p className="text-muted-foreground text-lg">No assets yet</p>
           <button
-            onClick={() => window.dispatchEvent(new CustomEvent("open-upload-wizard"))}
+            onClick={() =>
+              window.dispatchEvent(new CustomEvent("open-upload-wizard"))
+            }
             className="flex items-center gap-2 px-6 py-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-all shadow-lg hover:shadow-xl"
           >
             <Plus className="h-5 w-5" />
@@ -115,10 +125,7 @@ export default function Dashboard() {
               </h3>
               <div className="grid grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
                 {otherAssets.map((asset) => (
-                  <div
-                    key={asset.id}
-                    className="transition-all rounded-xl"
-                  >
+                  <div key={asset.id} className="transition-all rounded-xl">
                     <AssetCard
                       asset={asset}
                       onCreateProject={handleCreateProject}
