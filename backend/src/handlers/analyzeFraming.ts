@@ -130,8 +130,8 @@ function parseGeminiKeyframeResponse(
       continue;
     }
 
-    const timestamp = parseFloat(parts[0]);
-    if (isNaN(timestamp) || timestamp < 0) continue;
+    const timestamp = parseTimestamp(parts[0]);
+    if (timestamp === null || timestamp < 0) continue;
 
     const time = Math.min(timestamp, segmentDuration);
     const zoomToken = parts[1];
@@ -172,6 +172,35 @@ function parseGeminiKeyframeResponse(
   });
 
   return deduped;
+}
+
+/**
+ * Parse timestamps in formats: "30.5" (seconds), "1:03.0" (M:SS.S), "0.19" ambiguous.
+ * Gemini sometimes outputs "0.19" meaning 19s (not 0.19s). Heuristic: if the integer
+ * part is 0 and the decimal part has 2+ digits, treat as M:SS (i.e. 0 min 19 sec).
+ */
+function parseTimestamp(raw: string): number | null {
+  const trimmed = raw.trim();
+
+  // Handle M:SS or MM:SS format
+  const colonMatch = trimmed.match(/^(\d+):(\d{1,2}(?:\.\d+)?)$/);
+  if (colonMatch) {
+    const minutes = parseInt(colonMatch[1], 10);
+    const seconds = parseFloat(colonMatch[2]);
+    return minutes * 60 + seconds;
+  }
+
+  // Plain number — but detect ambiguous "0.19" meaning 19s
+  const val = parseFloat(trimmed);
+  if (isNaN(val)) return null;
+
+  // If format is "0.XX" where XX is 2+ digits, Gemini likely means 0 min XX sec
+  const dotMatch = trimmed.match(/^0\.(\d{2,})$/);
+  if (dotMatch) {
+    return parseFloat(dotMatch[1]);
+  }
+
+  return val;
 }
 
 function makeFallbackKeyframe(): FramingKeyframe {
@@ -234,8 +263,9 @@ The area outside the red lines is slightly darkened to help you see the TIGHT cr
 Your job: at each moment, pick the crop level where all important subjects fit inside the lines.
 
 Format: TIME|ZOOM
-- TIME: seconds from start (0.0 to ${segmentDuration.toFixed(1)})
+- TIME: plain decimal seconds from start, e.g. 0.0, 8.5, 35.2, 120.0 (NOT minutes:seconds, NOT timestamps)
 - ZOOM: TIGHT, MEDIUM, WIDE, or FULL
+- The clip is ${segmentDuration.toFixed(1)} seconds long, so TIME ranges from 0.0 to ${segmentDuration.toFixed(1)}
 
 Decision guide:
 - Use TIGHT (red) when all subjects fit between the red lines — gives the most impactful close framing
