@@ -19,5 +19,10 @@ data "aws_secretsmanager_secret" "anthropic_api_key" {
   name = "${var.project_name}/anthropic-api-key"
 }
 
+resource "aws_secretsmanager_secret" "gemini_api_key" {
+  name        = "qlio/gemini-api-key"
+  description = "API Key for Google Gemini"
+}
+
 # We don't set the version/value here to keep it out of git.
 # User must manually set it in console: aws secretsmanager put-secret-value ...

@@ -82,6 +82,7 @@ export default function Editor() {
   const [previewMode, setPreviewMode] = useState(false);
   const [isBatchAnalyzing, setIsBatchAnalyzing] = useState(false);
   const [batchProgress, setBatchProgress] = useState<string | null>(null);
+  const [isSegmentAnalyzing, setIsSegmentAnalyzing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Ref to track current projectId for async callbacks (prevents stale closures)
@@ -326,6 +327,61 @@ export default function Editor() {
       if (projectIdRef.current === startingProjectId) {
         setIsBatchAnalyzing(false);
         setBatchProgress(null);
+      }
+    }
+  };
+
+  // Single-segment AI framing — uses the async batch pipeline with just one segment
+  const handleSingleSegmentFraming = async () => {
+    if (!projectId || !selectedSegment) return;
+
+    const startingProjectId = projectId;
+    setIsSegmentAnalyzing(true);
+
+    try {
+      await startBatchFraming(
+        startingProjectId,
+        [
+          {
+            id: selectedSegment.id,
+            startTime: selectedSegment.startTime,
+            endTime: selectedSegment.endTime,
+          },
+        ],
+        globalFraming.aspectRatio,
+      );
+
+      // Poll for completion (same pattern as batch)
+      const POLL_INTERVAL = 3000;
+      const MAX_WAIT = 120000; // 2 min
+      const start = Date.now();
+
+      while (Date.now() - start < MAX_WAIT) {
+        if (projectIdRef.current !== startingProjectId) break;
+
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+        const project = await getProject(startingProjectId);
+        const job: FramingJob | undefined = project.framingJob;
+
+        if (!job) break;
+
+        if (job.status === "completed") {
+          if (project.segments?.length) {
+            dispatch(setSegments(project.segments));
+          }
+          break;
+        }
+
+        if (job.status === "failed") {
+          console.error("Segment framing failed:", job.error);
+          break;
+        }
+      }
+    } catch (error) {
+      console.error("Single segment framing failed:", error);
+    } finally {
+      if (projectIdRef.current === startingProjectId) {
+        setIsSegmentAnalyzing(false);
       }
     }
   };
@@ -667,7 +723,39 @@ export default function Editor() {
                   <Sparkles className="h-5 w-5" />
                 )}
                 <span className="text-[10px] font-bold leading-none">
-                  {isBatchAnalyzing ? "Stop" : "Frame"}
+                  {isBatchAnalyzing ? "Stop" : "All"}
+                </span>
+              </button>
+            )}
+
+            {/* Single segment auto-frame */}
+            {selectedSegment && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleSingleSegmentFraming();
+                }}
+                disabled={isSegmentAnalyzing || isBatchAnalyzing}
+                className={cn(
+                  "w-14 py-2 mt-1 rounded-xl flex flex-col items-center gap-1 transition-all border-2",
+                  isSegmentAnalyzing
+                    ? "bg-purple-600 text-white border-purple-500"
+                    : "bg-zinc-800 hover:bg-purple-700 text-zinc-400 hover:text-white border-zinc-700 hover:border-purple-600",
+                  (isSegmentAnalyzing || isBatchAnalyzing) && "opacity-70",
+                )}
+                title={
+                  isSegmentAnalyzing
+                    ? "Analyzing segment..."
+                    : `Auto-frame selected segment`
+                }
+              >
+                {isSegmentAnalyzing ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-5 w-5" />
+                )}
+                <span className="text-[10px] font-bold leading-none">
+                  {isSegmentAnalyzing ? "..." : "1 Seg"}
                 </span>
               </button>
             )}
