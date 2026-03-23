@@ -10,7 +10,7 @@ import {
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
@@ -221,28 +221,35 @@ function getFileManager(): GoogleAIFileManager {
 }
 
 function buildGeminiPrompt(segmentDuration: number): string {
-  return `You are analyzing a short video clip for framing decisions. This clip will be cropped from 16:9 landscape to a vertical (9:16) or square (1:1) format.
+  return `You are analyzing a video clip to decide how to crop it from 16:9 landscape to 9:16 vertical.
 
-Your job: decide how tightly to zoom in at each moment. Output zoom keyframes.
+The video has colored guide lines showing exactly where each crop level cuts:
+- RED lines: TIGHT crop — only the area between the red lines will be visible
+- YELLOW lines: MEDIUM crop — the area between yellow lines will be visible
+- GREEN lines: WIDE crop — the area between green lines will be visible
+- FULL: no crop, the entire frame is shown (with letterboxing)
+
+The area outside the red lines is slightly darkened to help you see the TIGHT crop region.
+
+Your job: at each moment, pick the crop level where all important subjects fit inside the lines.
 
 Format: TIME|ZOOM
-- TIME: seconds from start of this clip (0.0 to ${segmentDuration.toFixed(1)})
-- ZOOM: one of TIGHT, MEDIUM, WIDE, FULL
+- TIME: seconds from start (0.0 to ${segmentDuration.toFixed(1)})
+- ZOOM: TIGHT, MEDIUM, WIDE, or FULL
 
-Zoom guide:
-- TIGHT: One person's face/upper body fills the frame. Use for close-ups, interviews, emotional moments.
-- MEDIUM: One person with breathing room, or two people close together. Default for dialogue.
-- WIDE: Two+ people who need space between them, someone walking/moving, action scenes.
-- FULL: Establishing shots, large groups, landscapes, wide rooms. Shows the entire frame.
+Decision guide:
+- Use TIGHT (red) when all subjects fit between the red lines — gives the most impactful close framing
+- Use MEDIUM (yellow) if subjects spill outside red but fit inside yellow
+- Use WIDE (green) if subjects spill outside yellow but fit inside green
+- Use FULL only if subjects extend beyond the green lines
 
 Rules:
 - First keyframe MUST be at 0.0
-- Only add a new keyframe when the shot composition actually changes (cut, camera move, people entering/exiting)
+- Add a new keyframe when the shot changes or subjects move enough to need a different crop
 - If nothing changes, output just one line
 - Maximum 20 keyframes per clip
-- Watch for actual shot changes — don't invent transitions that aren't there
 
-Output ONLY the lines. No explanations, no markdown.`;
+Output ONLY the TIME|ZOOM lines. No explanations.`;
 }
 
 // ============================================================================
@@ -331,6 +338,22 @@ async function analyzeSegmentWithGemini(
   return parseGeminiKeyframeResponse(responseText, segmentDuration);
 }
 
+async function getAnnotatedKey(s3Key: string): Promise<string> {
+  // Check for annotated version: raw/abc.mp4 → annotated/abc.mp4
+  const annotatedKey = s3Key.replace(/^raw\//, "annotated/");
+  if (annotatedKey === s3Key) return s3Key; // no raw/ prefix, use original
+
+  try {
+    await s3Client.send(
+      new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: annotatedKey }),
+    );
+    console.log(`[Framing] Using annotated version: ${annotatedKey}`);
+    return annotatedKey;
+  } catch {
+    return s3Key; // annotated version doesn't exist, use original
+  }
+}
+
 async function processSegment(
   client: GoogleGenerativeAI,
   s3Key: string,
@@ -341,7 +364,7 @@ async function processSegment(
   const clipPath = `/tmp/segment-${segIndex}.mp4`;
 
   try {
-    // 1. Cut segment with FFmpeg
+    // 1. Cut segment with FFmpeg (uses annotated version if available)
     await cutSegmentClip(s3Key, segment.startTime, duration, clipPath);
 
     // 2. Upload to Gemini File API
@@ -497,7 +520,7 @@ async function handleSingleSegment(
 
   const { asset } = await getAssetRecord(projectId);
   const segmentDuration = endTime - startTime;
-  const s3Key = asset.key;
+  const s3Key = await getAnnotatedKey(asset.key);
 
   const client = await getGeminiClient();
   let keyframes: FramingKeyframe[];
@@ -698,7 +721,7 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
 
     // Get asset S3 key
     const { asset } = await getAssetRecord(projectId);
-    const s3Key = asset.key;
+    const s3Key = await getAnnotatedKey(asset.key);
 
     // Get Gemini client
     const client = await getGeminiClient();
