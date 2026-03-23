@@ -394,39 +394,6 @@ async function processSegment(
 }
 
 // ============================================================================
-// PROMPTS (legacy single-segment — kept for synchronous endpoint)
-// ============================================================================
-
-function buildFramingPrompt(
-  startTime: number,
-  endTime: number,
-  targetAspectRatio: TargetAspectRatio,
-): string {
-  const segDuration = endTime - startTime;
-
-  if (targetAspectRatio === "16:9") {
-    return `This is 16:9 video targeting 16:9. Respond: 0.0|FULL`;
-  }
-
-  return `Analyze this video clip (${segDuration.toFixed(0)}s long) for vertical cropping.
-
-Format: TIME|ZOOM
-TIME: seconds from 0.0 to ${segDuration.toFixed(1)}
-ZOOM: TIGHT / MEDIUM / WIDE / FULL
-
-Rules:
-- TIGHT: close-up of one person
-- MEDIUM: one person with space, or two people close
-- WIDE: two+ people, movement
-- FULL: establishing shot, large group
-- First line must be 0.0
-- Only add keyframes at actual shot changes
-- Max 5 keyframes
-
-Output ONLY the lines.`;
-}
-
-// ============================================================================
 // SHARED HELPERS
 // ============================================================================
 
@@ -598,7 +565,7 @@ async function handleStartBatch(
     ? (targetAspectRatio as TargetAspectRatio)
     : "9:16";
 
-  // Reject if a job is already running
+  // Reject if a job is already running (unless it's stale — >15 min old)
   const projectCheck = await docClient.send(
     new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
   );
@@ -607,10 +574,15 @@ async function handleStartBatch(
     existingJob &&
     (existingJob.status === "pending" || existingJob.status === "analyzing")
   ) {
-    return errorResponse(
-      409,
-      "A framing job is already running for this project",
-    );
+    const ageMs = Date.now() - new Date(existingJob.startedAt).getTime();
+    const STALE_THRESHOLD_MS = 15 * 60 * 1000;
+    if (ageMs < STALE_THRESHOLD_MS) {
+      return errorResponse(
+        409,
+        "A framing job is already running for this project",
+      );
+    }
+    console.log(`[Framing] Overwriting stale job ${existingJob.jobId} (${Math.round(ageMs / 1000)}s old)`);
   }
 
   const jobId = randomUUID();
