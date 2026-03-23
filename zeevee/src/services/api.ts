@@ -419,37 +419,6 @@ export interface AnalyzeFramingResponse {
 }
 
 /**
- * Analyze a video segment to determine optimal framing for the target aspect ratio.
- * Uses 12labs Pegasus to decide whether to crop (focus on subject) or fit (show full scene).
- *
- * @param projectId - The project ID
- * @param segmentId - Optional segment ID for the API route
- * @param startTime - Segment start time in seconds
- * @param endTime - Segment end time in seconds
- * @param targetAspectRatio - The target output aspect ratio ("16:9", "1:1", or "9:16")
- */
-export const analyzeSegmentFraming = async (
-  projectId: string,
-  segmentId: string | null,
-  startTime: number,
-  endTime: number,
-  targetAspectRatio: "16:9" | "1:1" | "9:16" = "9:16",
-): Promise<AnalyzeFramingResponse> => {
-  const url = segmentId
-    ? `${API_URL}/projects/${projectId}/segments/${segmentId}/analyze-framing`
-    : `${API_URL}/projects/${projectId}/analyze-framing`;
-
-  const response = await axios.post(
-    url,
-    { startTime, endTime, targetAspectRatio },
-    {
-      headers: getAuthHeaders(),
-    },
-  );
-  return response.data;
-};
-
-/**
  * Start batch framing analysis for all segments (async — returns immediately).
  * Poll getProject() for framingJob status; results written to segments in DB.
  */

@@ -106,7 +106,8 @@ data "aws_iam_policy_document" "lambda_policy" {
       aws_secretsmanager_secret.twelve_labs_key.arn,
       aws_secretsmanager_secret.api_password.arn,
       aws_secretsmanager_secret.twelve_labs_signing_secret.arn,
-      data.aws_secretsmanager_secret.anthropic_api_key.arn
+      data.aws_secretsmanager_secret.anthropic_api_key.arn,
+      aws_secretsmanager_secret.gemini_api_key.arn
     ]
   }
   statement {
@@ -508,7 +509,17 @@ resource "aws_lambda_function" "generate_segments" {
   }
 }
 
-# --- Analyze Framing (Smart Autoframing with 12labs) ---
+# --- FFmpeg Lambda Layer ---
+# Built by running ./build-ffmpeg-layer.sh before tofu apply
+resource "aws_lambda_layer_version" "ffmpeg" {
+  filename            = "${path.module}/layers/ffmpeg-layer.zip"
+  layer_name          = "${var.project_name}-ffmpeg"
+  compatible_runtimes = ["nodejs20.x"]
+  description         = "Static FFmpeg binary for video segment cutting"
+  source_code_hash    = filebase64sha256("${path.module}/layers/ffmpeg-layer.zip")
+}
+
+# --- Analyze Framing (Smart Autoframing with Gemini) ---
 data "archive_file" "analyze_framing_zip" {
   type        = "zip"
   source_file = "../backend/dist/analyzeFraming.js"
@@ -523,14 +534,20 @@ resource "aws_lambda_function" "analyze_framing" {
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.analyze_framing_zip.output_base64sha256
   timeout          = 900  # 15 minutes — batch framing can be slow
+  memory_size      = 1024 # FFmpeg + Gemini SDK needs more memory
+  layers           = [aws_lambda_layer_version.ffmpeg.arn]
+
+  ephemeral_storage {
+    size = 2048 # 2GB — for FFmpeg segment clips in /tmp
+  }
 
   environment {
     variables = {
       PROJECTS_TABLE          = aws_dynamodb_table.projects.name
       ASSETS_TABLE            = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-      SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
-      TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
+      GEMINI_SECRET_ARN       = aws_secretsmanager_secret.gemini_api_key.arn
+      BUCKET_NAME             = aws_s3_bucket.media.bucket
     }
   }
 }

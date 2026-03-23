@@ -21,6 +21,7 @@
     "@aws-sdk/lib-dynamodb": "^3.400.0",
     "@aws-sdk/lib-storage": "^3.948.0",
     "@aws-sdk/s3-request-presigner": "^3.400.0",
+    "@google/generative-ai": "^0.24.1",
     "@remotion/lambda": "^4.0.387",
     "@remotion/renderer": "^4.0.387",
     "axios": "^1.6.0",

@@ -10,19 +10,33 @@ import {
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
+import { S3Client, GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
 import { randomUUID } from "crypto";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import * as fs from "fs";
+import * as path from "path";
 import { checkAuth } from "../utils/auth";
-import { createTwelveLabsWrapper } from "../services/twelvelabs";
+
+const execFileAsync = promisify(execFile);
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
 const secretsClient = new SecretsManagerClient({});
 const lambdaClient = new LambdaClient({});
+const s3Client = new S3Client({});
 
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
-const SECRET_ARN = process.env.SECRET_ARN!;
+const BUCKET_NAME = process.env.BUCKET_NAME!;
+const GEMINI_SECRET_ARN = process.env.GEMINI_SECRET_ARN!;
 const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
+const FFMPEG_PATH = "/opt/bin/ffmpeg";
+
+const CONCURRENCY_LIMIT = 5;
 
 // ============================================================================
 // TYPES
@@ -30,14 +44,7 @@ const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 
 type TargetAspectRatio = "16:9" | "1:1" | "9:16";
 
-type HorizontalPosition =
-  | "FAR_LEFT"
-  | "SLIGHT_LEFT"
-  | "CENTER"
-  | "SLIGHT_RIGHT"
-  | "FAR_RIGHT";
-
-type ZoomLevel = "TIGHT" | "CLOSE" | "MEDIUM" | "WIDE" | "LOOSE" | "FULL";
+type ZoomLevel = "TIGHT" | "MEDIUM" | "WIDE" | "FULL";
 
 interface FramingKeyframe {
   id: string;
@@ -82,57 +89,23 @@ interface AsyncJobPayload {
 }
 
 // ============================================================================
-// POSITION & ZOOM MAPPING
+// ZOOM MAPPING
 // ============================================================================
 
-const HORIZONTAL_POSITION_MAP: Record<HorizontalPosition, number> = {
-  FAR_LEFT: 0.0,
-  SLIGHT_LEFT: 0.25,
-  CENTER: 0.5,
-  SLIGHT_RIGHT: 0.75,
-  FAR_RIGHT: 1.0,
-};
-
-// Extended map handles both the single-segment tokens (FAR_LEFT/SLIGHT_LEFT/etc)
-// and batch prompt tokens (LEFT/CENTER_LEFT/CENTER_RIGHT/RIGHT)
-const POSITION_LOOKUP: Record<string, number> = {
-  FAR_LEFT: 0.0,
-  LEFT: 0.15,
-  SLIGHT_LEFT: 0.25,
-  CENTER_LEFT: 0.35,
-  CENTER: 0.5,
-  CENTER_RIGHT: 0.65,
-  SLIGHT_RIGHT: 0.75,
-  RIGHT: 0.85,
-  FAR_RIGHT: 1.0,
-};
-
-const VALID_POSITIONS = new Set<string>(Object.keys(POSITION_LOOKUP));
-
 const ZOOM_LEVEL_MAP: Record<ZoomLevel, number> = {
-  TIGHT: 1.0, // ~30% of frame visible
-  CLOSE: 0.7, // ~40% of frame visible
-  MEDIUM: 0.5, // ~50% of frame visible
-  WIDE: 0.25, // ~65% of frame visible
-  LOOSE: 0.1, // ~80% of frame visible
-  FULL: 0.0, // 100% of frame visible
+  TIGHT: 1.0,
+  MEDIUM: 0.5,
+  WIDE: 0.25,
+  FULL: 0.0,
 };
 
 const VALID_ZOOM_LEVELS = new Set<string>(Object.keys(ZOOM_LEVEL_MAP));
-
-const POSITION_LABELS: Record<HorizontalPosition, string> = {
-  FAR_LEFT: "far left",
-  SLIGHT_LEFT: "slight left",
-  CENTER: "center",
-  SLIGHT_RIGHT: "slight right",
-  FAR_RIGHT: "far right",
-};
 
 // ============================================================================
 // PARSING
 // ============================================================================
 
-function parseMultiKeyframeResponse(
+function parseGeminiKeyframeResponse(
   response: string,
   segmentDuration: number,
 ): FramingKeyframe[] {
@@ -140,7 +113,7 @@ function parseMultiKeyframeResponse(
     .trim()
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l.length > 0);
+    .filter((l) => l.length > 0 && !l.startsWith("#") && !l.startsWith("//"));
 
   if (lines.length === 0) {
     return [makeFallbackKeyframe()];
@@ -152,30 +125,26 @@ function parseMultiKeyframeResponse(
     const line = lines[i];
     const parts = line.split("|").map((p) => p.trim().toUpperCase());
 
-    if (parts.length < 3) {
+    if (parts.length < 2) {
       console.warn(`[Framing] Skipping malformed line: "${line}"`);
       continue;
     }
 
-    const timestamp = parseFloat(parts[0]);
-    if (isNaN(timestamp) || timestamp < 0) continue;
+    const timestamp = parseTimestamp(parts[0]);
+    if (timestamp === null || timestamp < 0) continue;
 
     const time = Math.min(timestamp, segmentDuration);
-    const positionToken = parts[1].replace(/\s+/g, "_");
-    const focusX = POSITION_LOOKUP[positionToken] ?? 0.5;
-    const zoomToken = parts[2];
-    const zoom = ZOOM_LEVEL_MAP[zoomToken as ZoomLevel] ?? 0.5;
-
-    const posLabel = positionToken.toLowerCase().replace(/_/g, " ");
-    const zoomLabel = zoomToken.toLowerCase();
+    const zoomToken = parts[1];
+    const zoom =
+      ZOOM_LEVEL_MAP[zoomToken as ZoomLevel] ?? ZOOM_LEVEL_MAP.MEDIUM;
 
     keyframes.push({
       id: `ai-kf-${i}`,
       time,
-      focusX,
+      focusX: 0.5,
       focusY: 0.5,
       zoom,
-      aiReasoning: `${zoomLabel} on ${posLabel} at ${time.toFixed(1)}s`,
+      aiReasoning: `${zoomToken.toLowerCase()} at ${time.toFixed(1)}s`,
       isAiGenerated: true,
     });
   }
@@ -189,27 +158,49 @@ function parseMultiKeyframeResponse(
     keyframes[0].time = 0;
   }
 
-  // Deduplicate consecutive keyframes with identical framing (focusX + zoom)
+  // Deduplicate consecutive keyframes with identical zoom
   const deduped: FramingKeyframe[] = [keyframes[0]];
   for (let i = 1; i < keyframes.length; i++) {
     const prev = deduped[deduped.length - 1];
     const curr = keyframes[i];
-    if (
-      curr.focusX === prev.focusX &&
-      curr.focusY === prev.focusY &&
-      curr.zoom === prev.zoom
-    ) {
-      continue; // Skip — same framing as previous
-    }
+    if (curr.zoom === prev.zoom) continue;
     deduped.push(curr);
   }
 
-  // Re-assign IDs after dedup
   deduped.forEach((kf, i) => {
     kf.id = `ai-kf-${i}`;
   });
 
   return deduped;
+}
+
+/**
+ * Parse timestamps in formats: "30.5" (seconds), "1:03.0" (M:SS.S), "0.19" ambiguous.
+ * Gemini sometimes outputs "0.19" meaning 19s (not 0.19s). Heuristic: if the integer
+ * part is 0 and the decimal part has 2+ digits, treat as M:SS (i.e. 0 min 19 sec).
+ */
+function parseTimestamp(raw: string): number | null {
+  const trimmed = raw.trim();
+
+  // Handle M:SS or MM:SS format
+  const colonMatch = trimmed.match(/^(\d+):(\d{1,2}(?:\.\d+)?)$/);
+  if (colonMatch) {
+    const minutes = parseInt(colonMatch[1], 10);
+    const seconds = parseFloat(colonMatch[2]);
+    return minutes * 60 + seconds;
+  }
+
+  // Plain number — but detect ambiguous "0.19" meaning 19s
+  const val = parseFloat(trimmed);
+  if (isNaN(val)) return null;
+
+  // If format is "0.XX" where XX is 2+ digits, Gemini likely means 0 min XX sec
+  const dotMatch = trimmed.match(/^0\.(\d{2,})$/);
+  if (dotMatch) {
+    return parseFloat(dotMatch[1]);
+  }
+
+  return val;
 }
 
 function makeFallbackKeyframe(): FramingKeyframe {
@@ -218,8 +209,8 @@ function makeFallbackKeyframe(): FramingKeyframe {
     time: 0,
     focusX: 0.5,
     focusY: 0.5,
-    zoom: 0.0,
-    aiReasoning: "Could not parse AI response, defaulting to fit",
+    zoom: 0.5,
+    aiReasoning: "Could not parse AI response, defaulting to medium",
     isAiGenerated: true,
   };
 }
@@ -235,199 +226,201 @@ function keyframesToLegacyResult(keyframes: FramingKeyframe[]): FramingResult {
   };
 }
 
-/** Parse batch response: N|TIME|POSITION|ZOOM → framing keyframes */
-function parseBatchFlatResponse(
-  response: string,
-  segments: SegmentDescriptor[],
-): Map<number, FramingKeyframe[]> {
-  const result = new Map<number, FramingKeyframe[]>();
-  const linesBySegment = new Map<number, string[]>();
+// ============================================================================
+// GEMINI HELPERS
+// ============================================================================
 
-  const lines = response
-    .trim()
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0 && l.includes("|"));
+let geminiClient: GoogleGenerativeAI | null = null;
+let fileManager: GoogleAIFileManager | null = null;
 
-  for (const line of lines) {
-    const parts = line.split("|").map((p) => p.trim());
-    if (parts.length < 4) continue;
+async function getGeminiClient(): Promise<GoogleGenerativeAI> {
+  if (geminiClient) return geminiClient;
+  const secret = await secretsClient.send(
+    new GetSecretValueCommand({ SecretId: GEMINI_SECRET_ARN }),
+  );
+  if (!secret.SecretString) throw new Error("Gemini API key not found");
+  geminiClient = new GoogleGenerativeAI(secret.SecretString);
+  fileManager = new GoogleAIFileManager(secret.SecretString);
+  return geminiClient;
+}
 
-    const segNum = parseInt(parts[0]);
-    if (isNaN(segNum) || segNum < 1 || segNum > segments.length) continue;
+function getFileManager(): GoogleAIFileManager {
+  if (!fileManager) throw new Error("Call getGeminiClient() first");
+  return fileManager;
+}
 
-    // Strip segment number; rest is TIME|POSITION|ZOOM
-    const keyframeLine = parts.slice(1).join("|");
-    const existing = linesBySegment.get(segNum) || [];
-    existing.push(keyframeLine);
-    linesBySegment.set(segNum, existing);
+function buildGeminiPrompt(segmentDuration: number): string {
+  return `You are analyzing a video clip to decide how to crop it from 16:9 landscape to 9:16 vertical.
+
+The video has colored guide lines showing exactly where each crop level cuts:
+- RED lines: TIGHT crop — only the area between the red lines will be visible
+- YELLOW lines: MEDIUM crop — the area between yellow lines will be visible
+- GREEN lines: WIDE crop — the area between green lines will be visible
+- FULL: no crop, the entire frame is shown (with letterboxing)
+
+The area outside the red lines is slightly darkened to help you see the TIGHT crop region.
+
+Your job: at each moment, pick the crop level where all important subjects fit inside the lines.
+
+Format: TIME|ZOOM
+- TIME: plain decimal seconds from start, e.g. 0.0, 8.5, 35.2, 120.0 (NOT minutes:seconds, NOT timestamps)
+- ZOOM: TIGHT, MEDIUM, WIDE, or FULL
+- The clip is ${segmentDuration.toFixed(1)} seconds long, so TIME ranges from 0.0 to ${segmentDuration.toFixed(1)}
+
+Decision guide:
+- Use TIGHT (red) when all subjects fit between the red lines — gives the most impactful close framing
+- Use MEDIUM (yellow) if subjects spill outside red but fit inside yellow
+- Use WIDE (green) if subjects spill outside yellow but fit inside green
+- Use FULL only if subjects extend beyond the green lines
+
+Rules:
+- First keyframe MUST be at 0.0
+- Add a new keyframe when the shot changes or subjects move enough to need a different crop
+- If nothing changes, output just one line
+- Maximum 20 keyframes per clip
+
+Output ONLY the TIME|ZOOM lines. No explanations.`;
+}
+
+// ============================================================================
+// FFMPEG + GEMINI PIPELINE
+// ============================================================================
+
+async function cutSegmentClip(
+  s3Key: string,
+  startTime: number,
+  duration: number,
+  outputPath: string,
+): Promise<void> {
+  const presignedUrl = await getSignedUrl(
+    s3Client,
+    new GetObjectCommand({ Bucket: BUCKET_NAME, Key: s3Key }),
+    { expiresIn: 900 },
+  );
+
+  const args = [
+    "-ss",
+    startTime.toFixed(3),
+    "-t",
+    duration.toFixed(3),
+    "-i",
+    presignedUrl,
+    "-c",
+    "copy",
+    "-y",
+    outputPath,
+  ];
+
+  console.log(
+    `[Framing] FFmpeg cutting ${startTime.toFixed(1)}s-${(startTime + duration).toFixed(1)}s → ${outputPath}`,
+  );
+  await execFileAsync(FFMPEG_PATH, args, { timeout: 120_000 });
+}
+
+async function uploadToGemini(filePath: string): Promise<string> {
+  const fm = getFileManager();
+
+  const uploadResult = await fm.uploadFile(filePath, {
+    mimeType: "video/mp4",
+    displayName: path.basename(filePath),
+  });
+
+  let file = uploadResult.file;
+  console.log(`[Framing] Uploaded ${filePath} → ${file.name} (${file.state})`);
+
+  // Poll until ACTIVE
+  let attempts = 0;
+  while (file.state === FileState.PROCESSING && attempts < 30) {
+    await new Promise((r) => setTimeout(r, 2000));
+    file = await fm.getFile(file.name);
+    attempts++;
   }
 
-  for (const [segNum, kfLines] of linesBySegment) {
-    const segIndex = segNum - 1;
-    const segDuration =
-      segments[segIndex].endTime - segments[segIndex].startTime;
-    const keyframes = parseMultiKeyframeResponse(
-      kfLines.join("\n"),
-      segDuration,
+  if (file.state !== FileState.ACTIVE) {
+    throw new Error(`File ${file.name} failed processing: ${file.state}`);
+  }
+
+  return file.uri;
+}
+
+async function analyzeSegmentWithGemini(
+  client: GoogleGenerativeAI,
+  fileUri: string,
+  segmentDuration: number,
+): Promise<FramingKeyframe[]> {
+  const model = client.getGenerativeModel({ model: "gemini-2.5-pro" });
+
+  const prompt = buildGeminiPrompt(segmentDuration);
+
+  const result = await model.generateContent([
+    { text: prompt },
+    {
+      fileData: {
+        mimeType: "video/mp4",
+        fileUri,
+      },
+    },
+  ]);
+
+  const responseText = result.response.text();
+  console.log(`[Framing] Gemini response: ${responseText}`);
+
+  return parseGeminiKeyframeResponse(responseText, segmentDuration);
+}
+
+async function getAnnotatedKey(s3Key: string): Promise<string> {
+  // Check for annotated version: raw/abc.mp4 → annotated/abc.mp4
+  const annotatedKey = s3Key.replace(/^raw\//, "annotated/");
+  if (annotatedKey === s3Key) return s3Key; // no raw/ prefix, use original
+
+  try {
+    await s3Client.send(
+      new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: annotatedKey }),
     );
+    console.log(`[Framing] Using annotated version: ${annotatedKey}`);
+    return annotatedKey;
+  } catch {
+    return s3Key; // annotated version doesn't exist, use original
+  }
+}
+
+async function processSegment(
+  client: GoogleGenerativeAI,
+  s3Key: string,
+  segment: SegmentDescriptor,
+  segIndex: number,
+): Promise<FramingKeyframe[]> {
+  const duration = segment.endTime - segment.startTime;
+  const clipPath = `/tmp/segment-${segIndex}.mp4`;
+
+  try {
+    // 1. Cut segment with FFmpeg (uses annotated version if available)
+    await cutSegmentClip(s3Key, segment.startTime, duration, clipPath);
+
+    // 2. Upload to Gemini File API
+    const fileUri = await uploadToGemini(clipPath);
+
+    // 3. Query Gemini for zoom keyframes
+    const keyframes = await analyzeSegmentWithGemini(client, fileUri, duration);
+
+    // Re-id keyframes with segment index
     keyframes.forEach((kf, i) => {
       kf.id = `ai-kf-${segIndex}-${i}`;
     });
-    result.set(segIndex, keyframes);
+
+    return keyframes;
+  } catch (err) {
+    console.error(
+      `[Framing] Segment ${segIndex} (${segment.startTime.toFixed(1)}s-${segment.endTime.toFixed(1)}s) failed:`,
+      err,
+    );
+    return [makeFallbackKeyframe()];
+  } finally {
+    // Clean up clip
+    try {
+      fs.unlinkSync(clipPath);
+    } catch {}
   }
-
-  for (let i = 0; i < segments.length; i++) {
-    if (!result.has(i)) {
-      console.warn(
-        `[Framing] No response for segment ${i + 1}/${segments.length}`,
-      );
-      result.set(i, [makeFallbackKeyframe()]);
-    }
-  }
-
-  return result;
-}
-
-// ============================================================================
-// LEGACY SINGLE-LINE PARSING (for old "CROP, CENTER" responses)
-// ============================================================================
-
-function extractFromResponse(raw: string) {
-  const normalized = raw.toUpperCase().trim();
-  const parts = normalized.split(",").map((p) => p.trim());
-  return {
-    strategy: parts[0] || "",
-    position: (parts[1] || "").replace(/\s+/g, "_"),
-    raw,
-  };
-}
-
-function validateAndConvert(
-  parsed: { strategy: string; position: string },
-  targetAspectRatio: TargetAspectRatio,
-): FramingResult | null {
-  const { strategy, position } = parsed;
-
-  if (strategy === "FIT") {
-    return {
-      mode: "fit",
-      focusX: 0.5,
-      focusY: 0.5,
-      aiReasoning: "Showing full frame with letterboxing",
-      isAiGenerated: true,
-    };
-  }
-
-  if (strategy === "CROP") {
-    if (targetAspectRatio === "16:9") {
-      return {
-        mode: "fit",
-        focusX: 0.5,
-        focusY: 0.5,
-        aiReasoning: "Using fit for landscape output",
-        isAiGenerated: true,
-      };
-    }
-    const focusX =
-      HORIZONTAL_POSITION_MAP[position as HorizontalPosition] ?? 0.5;
-    const positionLabel =
-      POSITION_LABELS[position as HorizontalPosition] || "center";
-    return {
-      mode: "crop",
-      focusX,
-      focusY: 0.5,
-      aiReasoning: `Cropping to focus on ${positionLabel}`,
-      isAiGenerated: true,
-    };
-  }
-
-  return null;
-}
-
-// ============================================================================
-// PROMPTS
-// ============================================================================
-
-function buildFramingPrompt(
-  startTime: number,
-  endTime: number,
-  targetAspectRatio: TargetAspectRatio,
-): string {
-  const segDuration = endTime - startTime;
-
-  if (targetAspectRatio === "16:9") {
-    return `Look at the video segment from ${startTime.toFixed(1)}s to ${endTime.toFixed(1)}s. The original video is 16:9 landscape and the target is also 16:9.\n\nSince the aspect ratios match, just respond: 0.0|CENTER|FULL`;
-  }
-
-  const ratioLabel =
-    targetAspectRatio === "9:16" ? "9:16 portrait (vertical)" : "1:1 square";
-
-  return `Look at the video from ${startTime.toFixed(1)}s to ${endTime.toFixed(1)}s.
-Target: ${ratioLabel} from 16:9 source.
-
-Identify 1-4 FRAMING SECTIONS where the camera framing should change.
-A new section is needed when:
-- A different speaker starts talking
-- Subjects move to different positions
-- The number of on-screen subjects changes
-
-For each section respond: TIME|POSITION|ZOOM
-
-TIME: seconds from segment start (0.0 = start, max ${segDuration.toFixed(1)})
-POSITION: FAR_LEFT / SLIGHT_LEFT / CENTER / SLIGHT_RIGHT / FAR_RIGHT
-ZOOM: TIGHT / CLOSE / MEDIUM / WIDE / LOOSE / FULL
-  — 1 speaker: TIGHT or CLOSE. 2 people: MEDIUM or WIDE. Group/wide shot: WIDE or LOOSE.
-
-First line MUST start at 0.0. If framing doesn't change, just one line.
-
-Respond with ONLY the lines.`;
-}
-
-function buildBatchFramingPrompt(
-  segments: SegmentDescriptor[],
-  targetAspectRatio: TargetAspectRatio,
-): string {
-  const ratioLabel =
-    targetAspectRatio === "9:16" ? "9:16 portrait" : "1:1 square";
-
-  const segmentLines = segments
-    .map((s, i) => {
-      const dur = (s.endTime - s.startTime).toFixed(0);
-      return `${i + 1}: ${s.startTime.toFixed(1)}s-${s.endTime.toFixed(1)}s (${dur}s)`;
-    })
-    .join("\n");
-
-  return `Crop each segment of this 16:9 video to ${ratioLabel}. Output framing keyframes.
-
-Segments:
-${segmentLines}
-
-Format: N|TIME|POSITION|ZOOM
-
-ZOOM — pick based on what you see:
-- TIGHT: one person close-up, face or upper body fills the frame
-- MEDIUM: one person with space around them, or two people close together
-- WIDE: two people who need room between them, or someone moving across the frame
-- FULL: wide establishing shot, large group, or whole-room view
-
-POSITION — where the subject actually is in the 16:9 frame:
-LEFT / CENTER_LEFT / CENTER / CENTER_RIGHT / RIGHT
-
-Rules:
-- First keyframe per segment must be at 0.0
-- Only add a new keyframe when the shot composition changes
-- Look at where subjects actually are — do not default to CENTER every time
-- For two people talking, zoom WIDE and position the crop between them
-
-Example (varied — yours should reflect what you actually see):
-1|0.0|CENTER_RIGHT|TIGHT
-1|18.0|CENTER|WIDE
-2|0.0|LEFT|TIGHT
-3|0.0|CENTER|FULL
-4|0.0|CENTER_LEFT|MEDIUM
-
-ONLY output lines. No explanations.`;
 }
 
 // ============================================================================
@@ -440,18 +433,27 @@ const CORS_HEADERS = {
 };
 
 function errorResponse(statusCode: number, error: string) {
-  return { statusCode, headers: CORS_HEADERS, body: JSON.stringify({ error }) };
+  return {
+    statusCode,
+    headers: CORS_HEADERS,
+    body: JSON.stringify({ error }),
+  };
 }
 
 function successResponse(data: object) {
-  return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify(data) };
+  return {
+    statusCode: 200,
+    headers: CORS_HEADERS,
+    body: JSON.stringify(data),
+  };
 }
 
-async function getAssetAndWrapper(projectId: string) {
+async function getAssetRecord(projectId: string) {
   const projectRes = await docClient.send(
     new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
   );
-  if (!projectRes.Item) throw { statusCode: 404, message: "Project not found" };
+  if (!projectRes.Item)
+    throw { statusCode: 404, message: "Project not found" };
 
   const assetId = projectRes.Item.assetId;
   const assetRes = await docClient.send(
@@ -459,34 +461,11 @@ async function getAssetAndWrapper(projectId: string) {
   );
   if (!assetRes.Item) throw { statusCode: 404, message: "Asset not found" };
 
-  const asset = assetRes.Item;
-  if (
-    !asset.isChunked &&
-    (!asset.twelveLabsVideoId || asset.twelveLabsVideoId === "unknown")
-  ) {
-    throw {
-      statusCode: 400,
-      message: "Asset has not been indexed by 12 Labs yet",
-    };
-  }
-  if (asset.isChunked && (asset.chunks || []).some((c: any) => !c.videoId)) {
-    throw { statusCode: 400, message: "Asset chunks are still being indexed" };
-  }
-
-  const secretVal = await secretsClient.send(
-    new GetSecretValueCommand({ SecretId: SECRET_ARN }),
-  );
-  if (!secretVal.SecretString) throw new Error("12Labs API Key not found");
-
   return {
     assetId,
+    asset: assetRes.Item,
     project: projectRes.Item,
-    twelvelabs: createTwelveLabsWrapper(secretVal.SecretString, ASSETS_TABLE),
   };
-}
-
-function stripChunkPrefixes(raw: string): string {
-  return raw.replace(/\[Chunk \d+ \([^\)]*\)\]:\s*/gi, "").trim();
 }
 
 async function updateFramingJob(
@@ -518,7 +497,7 @@ async function updateFramingJob(
 }
 
 // ============================================================================
-// SINGLE SEGMENT HANDLER (synchronous — still used by per-segment button)
+// SINGLE SEGMENT HANDLER (synchronous)
 // ============================================================================
 
 async function handleSingleSegment(
@@ -536,54 +515,23 @@ async function handleSingleSegment(
     return errorResponse(400, "endTime must be greater than startTime");
   }
 
-  const validAspectRatios: TargetAspectRatio[] = ["16:9", "1:1", "9:16"];
-  const aspectRatio: TargetAspectRatio = validAspectRatios.includes(
-    body.targetAspectRatio as TargetAspectRatio,
-  )
-    ? (body.targetAspectRatio as TargetAspectRatio)
-    : "9:16";
-
-  const { assetId, twelvelabs } = await getAssetAndWrapper(projectId);
+  const { asset } = await getAssetRecord(projectId);
   const segmentDuration = endTime - startTime;
+  const s3Key = await getAnnotatedKey(asset.key);
 
-  const prompt = buildFramingPrompt(startTime, endTime, aspectRatio);
+  const client = await getGeminiClient();
   let keyframes: FramingKeyframe[];
   let legacyFraming: FramingResult;
 
   try {
-    const response = await twelvelabs.analyze(assetId, {
-      prompt,
-      startTime,
-      endTime,
-    });
-    const responseText = stripChunkPrefixes(response.data);
-    console.log("[Framing] AI response:", responseText);
-
-    if (responseText.includes("|")) {
-      keyframes = parseMultiKeyframeResponse(responseText, segmentDuration);
-      legacyFraming = keyframesToLegacyResult(keyframes);
-    } else {
-      const parsed = extractFromResponse(responseText);
-      const result = validateAndConvert(parsed, aspectRatio);
-      legacyFraming = result || {
-        mode: "fit",
-        focusX: 0.5,
-        focusY: 0.5,
-        aiReasoning: "Could not parse response",
-        isAiGenerated: true,
-      };
-      keyframes = [
-        {
-          id: "ai-kf-0",
-          time: 0,
-          focusX: legacyFraming.focusX,
-          focusY: legacyFraming.focusY,
-          zoom: legacyFraming.mode === "crop" ? 1.0 : 0.0,
-          aiReasoning: legacyFraming.aiReasoning,
-          isAiGenerated: true,
-        },
-      ];
-    }
+    const clipPath = `/tmp/single-segment.mp4`;
+    await cutSegmentClip(s3Key, startTime, segmentDuration, clipPath);
+    const fileUri = await uploadToGemini(clipPath);
+    keyframes = await analyzeSegmentWithGemini(client, fileUri, segmentDuration);
+    legacyFraming = keyframesToLegacyResult(keyframes);
+    try {
+      fs.unlinkSync(clipPath);
+    } catch {}
   } catch (err) {
     console.error("[Framing] AI analysis failed:", err);
     keyframes = [makeFallbackKeyframe()];
@@ -622,7 +570,6 @@ async function handleStartBatch(
     );
   }
 
-  // Validate segments
   const segments: SegmentDescriptor[] = [];
   for (const seg of rawSegments) {
     if (
@@ -648,7 +595,7 @@ async function handleStartBatch(
     ? (targetAspectRatio as TargetAspectRatio)
     : "9:16";
 
-  // Reject if a job is already running
+  // Reject if a job is already running (unless it's stale — >15 min old)
   const projectCheck = await docClient.send(
     new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
   );
@@ -657,15 +604,19 @@ async function handleStartBatch(
     existingJob &&
     (existingJob.status === "pending" || existingJob.status === "analyzing")
   ) {
-    return errorResponse(
-      409,
-      "A framing job is already running for this project",
-    );
+    const ageMs = Date.now() - new Date(existingJob.startedAt).getTime();
+    const STALE_THRESHOLD_MS = 15 * 60 * 1000;
+    if (ageMs < STALE_THRESHOLD_MS) {
+      return errorResponse(
+        409,
+        "A framing job is already running for this project",
+      );
+    }
+    console.log(`[Framing] Overwriting stale job ${existingJob.jobId} (${Math.round(ageMs / 1000)}s old)`);
   }
 
   const jobId = randomUUID();
 
-  // Write pending framingJob to project
   await docClient.send(
     new UpdateCommand({
       TableName: PROJECTS_TABLE,
@@ -684,7 +635,6 @@ async function handleStartBatch(
     }),
   );
 
-  // Self-invoke async
   const payload: AsyncJobPayload = {
     isAsyncJob: true,
     projectId,
@@ -717,7 +667,7 @@ async function handleStartBatch(
 }
 
 // ============================================================================
-// ASYNC JOB EXECUTION
+// ASYNC JOB EXECUTION — Gemini per-segment pipeline
 // ============================================================================
 
 async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
@@ -728,7 +678,7 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
   );
 
   try {
-    // Verify this job is still the active one (a newer job may have replaced us)
+    // Verify this job is still the active one
     const check = await docClient.send(
       new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
     );
@@ -739,7 +689,7 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
 
     await updateFramingJob(projectId, { status: "analyzing" });
 
-    // For 16:9, no AI needed — just write defaults
+    // For 16:9, no AI needed
     if (targetAspectRatio === "16:9") {
       await writeFramingResults(
         projectId,
@@ -771,55 +721,50 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
       return;
     }
 
-    const { assetId, project, twelvelabs } =
-      await getAssetAndWrapper(projectId);
+    // Get asset S3 key
+    const { asset } = await getAssetRecord(projectId);
+    const s3Key = await getAnnotatedKey(asset.key);
 
-    // Single batch call — all segments in one Pegasus request.
-    // 12Labs bills full video duration per analyze() call regardless of segments,
-    // so one call is always cheaper than multiple.
+    // Get Gemini client
+    const client = await getGeminiClient();
+
+    // Process segments in parallel with concurrency limit
     const allKeyframes = new Map<number, FramingKeyframe[]>();
+    let completedCount = 0;
 
-    console.log(
-      `[Framing] Analyzing all ${segments.length} segments in one call`,
-    );
+    const processWithLimit = async () => {
+      const queue = segments.map((seg, i) => ({ seg, i }));
+      const workers = Array.from(
+        { length: Math.min(CONCURRENCY_LIMIT, queue.length) },
+        async () => {
+          while (queue.length > 0) {
+            const item = queue.shift()!;
+            console.log(
+              `[Framing] Processing segment ${item.i + 1}/${segments.length}: ${item.seg.startTime.toFixed(1)}s-${item.seg.endTime.toFixed(1)}s`,
+            );
 
-    const prompt = buildBatchFramingPrompt(segments, targetAspectRatio);
+            const keyframes = await processSegment(
+              client,
+              s3Key,
+              item.seg,
+              item.i,
+            );
+            allKeyframes.set(item.i, keyframes);
 
-    try {
-      // Use streaming to avoid 12Labs' 60s hard timeout on non-streaming analyze
-      const videoIds = await twelvelabs.getVideoIds(assetId);
-      if (videoIds.length === 0) throw new Error("No videoId found for asset");
-      const stream = await twelvelabs.getClient().analyzeStream(
-        { videoId: videoIds[0], prompt, temperature: 0.5, maxTokens: 4096 },
-        { timeoutInSeconds: 600 },
+            completedCount++;
+            await updateFramingJob(projectId, {
+              completedCount,
+            });
+          }
+        },
       );
 
-      let responseText = "";
-      for await (const event of stream) {
-        if (event.eventType === "text_generation") {
-          responseText += event.text ?? "";
-        }
-      }
-      responseText = stripChunkPrefixes(responseText);
-      console.log(
-        `[Framing] Response (${responseText.length} chars):`,
-        responseText,
-      );
+      await Promise.all(workers);
+    };
 
-      const parsed = parseBatchFlatResponse(responseText, segments);
-      for (let i = 0; i < segments.length; i++) {
-        allKeyframes.set(i, parsed.get(i) || [makeFallbackKeyframe()]);
-      }
-    } catch (err) {
-      console.error(`[Framing] Analysis failed:`, err);
-      for (let i = 0; i < segments.length; i++) {
-        allKeyframes.set(i, [makeFallbackKeyframe()]);
-      }
-    }
+    await processWithLimit();
 
-    await updateFramingJob(projectId, { completedCount: segments.length });
-
-    // Write all framing results to the project's segments in DynamoDB
+    // Write all results
     await writeFramingResults(
       projectId,
       segments,
@@ -842,13 +787,12 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
       status: "failed",
       completedAt: new Date().toISOString(),
       error: err instanceof Error ? err.message : "Unknown error",
-    }).catch(() => {}); // Don't throw on status update failure
+    }).catch(() => {});
   }
 }
 
 /**
  * Write framing results directly into the project's segments in DynamoDB.
- * Reads current segments, patches framing on matching IDs, writes back.
  */
 async function writeFramingResults(
   projectId: string,
@@ -857,14 +801,12 @@ async function writeFramingResults(
   targetAspectRatio: TargetAspectRatio,
   jobId?: string,
 ): Promise<void> {
-  // Read current project to get segments
   const projectRes = await docClient.send(
     new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
   );
   if (!projectRes.Item)
     throw new Error("Project not found during result write");
 
-  // Abort if a newer job has taken over
   if (jobId && projectRes.Item.framingJob?.jobId !== jobId) {
     console.log(`[Framing] Job ${jobId} superseded before write, aborting`);
     return;
@@ -872,7 +814,6 @@ async function writeFramingResults(
 
   const currentSegments = projectRes.Item.segments || [];
 
-  // Build a map of segment ID → framing result
   const framingBySegmentId = new Map<
     string,
     { keyframes: FramingKeyframe[]; legacy: FramingResult }
@@ -885,7 +826,6 @@ async function writeFramingResults(
     });
   }
 
-  // Patch framing onto each matching segment
   const updatedSegments = currentSegments.map((seg: any) => {
     const result = framingBySegmentId.get(seg.id);
     if (!result) return seg;
@@ -905,7 +845,6 @@ async function writeFramingResults(
     };
   });
 
-  // Write back
   await docClient.send(
     new UpdateCommand({
       TableName: PROJECTS_TABLE,
@@ -929,12 +868,9 @@ async function writeFramingResults(
 // ============================================================================
 
 export const handler: Handler = async (event, context, callback) => {
-  // Async job execution (self-invoked)
   if (event.isAsyncJob) {
     return executeFramingJob(event as AsyncJobPayload);
   }
-
-  // API Gateway request
   return handleApiRequest(event, context, callback);
 };
 
@@ -950,12 +886,10 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
 
     const body = JSON.parse(event.body || "{}");
 
-    // Batch mode: body contains segments[] → start async job
     if (Array.isArray(body.segments)) {
       return await handleStartBatch(projectId, body);
     }
 
-    // Single segment mode (synchronous, still fits in 30s)
     return await handleSingleSegment(projectId, segmentId, body);
   } catch (error: any) {
     if (error.statusCode) {
