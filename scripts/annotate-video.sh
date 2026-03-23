@@ -23,8 +23,12 @@ DST_KEY="annotated/${ASSET_ID}.mp4"
 TMP_SRC="/tmp/framing-src-${ASSET_ID}.mp4"
 TMP_DST="${OUTPUT_DIR}/annotated-${ASSET_ID}.mp4"
 
-echo "Downloading s3://${BUCKET}/${SRC_KEY}..."
-aws s3 cp "s3://${BUCKET}/${SRC_KEY}" "$TMP_SRC" --profile "$PROFILE" --region "$REGION"
+if [ -f "$TMP_SRC" ]; then
+  echo "Source already exists at $TMP_SRC, skipping download."
+else
+  echo "Downloading s3://${BUCKET}/${SRC_KEY}..."
+  aws s3 cp "s3://${BUCKET}/${SRC_KEY}" "$TMP_SRC" --profile "$PROFILE" --region "$REGION"
+fi
 
 # Crop guide lines for 9:16 target.
 # Uses iw/ih expressions so it works at any resolution.
