@@ -9,6 +9,7 @@ import {
   setLastSegmentRenders,
 } from "@/store/editorSlice";
 import { getProject, type GenerationJob } from "@/services/api";
+import { DEFAULT_CAPTION_SETTINGS } from "@/remotion/types";
 import type { CaptionWord } from "@/remotion/types";
 
 // Generation input metadata stored with project
@@ -46,9 +47,16 @@ export function useProjectData(projectId: string | undefined) {
         dispatch(setSegments(project.segments));
       }
 
-      // Load caption settings if they exist
+      // Load caption settings, merging with defaults so new fields are picked up
       if (project.captionSettings) {
-        dispatch(setCaptionSettings(project.captionSettings));
+        dispatch(setCaptionSettings({
+          ...DEFAULT_CAPTION_SETTINGS,
+          ...project.captionSettings,
+          style: {
+            ...DEFAULT_CAPTION_SETTINGS.style,
+            ...project.captionSettings.style,
+          },
+        }));
       }
 
       // Load global framing settings if they exist

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
   TooltipContent,
@@ -32,19 +33,7 @@ import { cn } from "@/lib/utils";
 import type { LucideIcon } from "lucide-react";
 import type { IconType } from "react-icons";
 import type { AspectRatio } from "@/remotion/types";
-
-interface GenerationStatus {
-  status:
-    | "pending"
-    | "detecting_scenes"
-    | "generating"
-    | "completed"
-    | "failed";
-  jobId: string;
-  startedAt: string;
-  completedAt?: string;
-  error?: string;
-}
+import type { GenerationJob } from "@/services/api";
 
 interface InitialSelections {
   type?: string;
@@ -58,9 +47,11 @@ interface InitialSelections {
 interface MicrodramaGeneratorProps {
   onGenerate: (selections: Selections) => Promise<void>;
   isGenerating: boolean;
-  generationStatus?: GenerationStatus | null;
+  generationStatus?: GenerationJob | null;
   onAspectRatioChange?: (ratio: AspectRatio) => void;
   initialSelections?: InitialSelections | null;
+  autoFrameEnabled: boolean;
+  onAutoFrameChange: (enabled: boolean) => void;
 }
 
 // Platform → Aspect Ratio mapping
@@ -128,10 +119,10 @@ const PURPOSES: Option[] = [
     tooltip: "Split into chapters (1-3 min each)",
   },
   {
-    value: "trailer",
-    label: "Trailer",
+    value: "highlights",
+    label: "Highlights",
     icon: PlayCircle,
-    tooltip: "Promo preview",
+    tooltip: "Highlight reel",
   },
   {
     value: "tunein",
@@ -169,7 +160,7 @@ const PURPOSES: Option[] = [
 const DURATION_PRESETS: Record<string, [string, string]> = {
   // full_video: no duration - uses entire video
   // compact_video: uses percent picker instead
-  trailer: ["90s", "2 min"],
+  highlights: ["90s", "2 min"],
   tunein: ["15s", "30s"],
   bridge: ["30s", "60s"],
   episode_recap: ["60s", "90s"],
@@ -208,6 +199,8 @@ export function MicrodramaGenerator({
   generationStatus,
   onAspectRatioChange,
   initialSelections,
+  autoFrameEnabled,
+  onAutoFrameChange,
 }: MicrodramaGeneratorProps) {
   const [selections, setSelections] = useState<Selections>(() => ({
     type: initialSelections?.type || "",
@@ -455,7 +448,23 @@ export function MicrodramaGenerator({
         )}
 
         {/* Generate Button */}
-        <div className="p-4 border-t bg-muted/50">
+        <div className="p-4 border-t bg-muted/50 space-y-3">
+          {/* Auto-frame toggle */}
+          <div className="flex items-center justify-between px-1">
+            <Label
+              htmlFor="auto-frame-toggle"
+              className="text-xs font-semibold text-muted-foreground cursor-pointer"
+            >
+              Auto-frame after generating
+            </Label>
+            <Switch
+              id="auto-frame-toggle"
+              checked={autoFrameEnabled}
+              onCheckedChange={onAutoFrameChange}
+              disabled={isGenerating}
+            />
+          </div>
+
           <Button
             onClick={() => onGenerate(selections)}
             disabled={isGenerating || !isComplete}
@@ -470,6 +479,8 @@ export function MicrodramaGenerator({
                   "Detecting Scenes..."}
                 {generationStatus?.status === "generating" &&
                   "Generating Segments..."}
+                {generationStatus?.status === "framing" &&
+                  "Applying Framing..."}
                 {!generationStatus && "Analyzing Video..."}
               </>
             ) : (
@@ -480,10 +491,12 @@ export function MicrodramaGenerator({
             )}
           </Button>
           {isGenerating && generationStatus && (
-            <p className="text-xs text-muted-foreground text-center mt-2">
+            <p className="text-xs text-muted-foreground text-center">
               {generationStatus.status === "detecting_scenes"
                 ? "Scene detection may take a few minutes for longer videos"
-                : "This may take 1-2 minutes for longer videos"}
+                : generationStatus.status === "framing"
+                  ? "Analyzing framing for each segment..."
+                  : "This may take 1-2 minutes for longer videos"}
             </p>
           )}
         </div>
@@ -525,13 +538,13 @@ function ChatQuestion({
                     "flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium transition-all",
                     isSelected
                       ? "bg-blue-600 text-white shadow-md"
-                      : "bg-card border-2 border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-foreground"
+                      : "bg-card border-2 border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-foreground",
                   )}
                 >
                   <opt.icon
                     className={cn(
                       "h-4 w-4",
-                      isSelected ? "text-white" : "text-muted-foreground"
+                      isSelected ? "text-white" : "text-muted-foreground",
                     )}
                   />
                   <span>{opt.label}</span>
@@ -581,7 +594,7 @@ function DurationPicker({
               isSelected
                 ? "bg-blue-600 text-white shadow-md"
                 : "bg-card border-2 border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-foreground",
-              opt === "Auto" && !isSelected && "border-dashed"
+              opt === "Auto" && !isSelected && "border-dashed",
             )}
           >
             {opt}
@@ -610,7 +623,7 @@ function DurationPicker({
             "px-3 py-2 rounded-xl text-sm font-medium transition-all border-2 border-dashed",
             isCustom
               ? "bg-blue-600 text-white border-blue-600 shadow-md"
-              : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-muted-foreground"
+              : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-muted-foreground",
           )}
         >
           {isCustom ? selected : "Other"}
@@ -661,7 +674,7 @@ function PercentPicker({
                   "px-4 py-2 rounded-xl text-sm font-medium transition-all",
                   isSelected
                     ? "bg-blue-600 text-white shadow-md"
-                    : "bg-card border-2 border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-foreground"
+                    : "bg-card border-2 border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-foreground",
                 )}
               >
                 {opt.label}
@@ -693,7 +706,7 @@ function PercentPicker({
             "px-3 py-2 rounded-xl text-sm font-medium transition-all border-2 border-dashed",
             isCustom
               ? "bg-blue-600 text-white border-blue-600 shadow-md"
-              : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-muted-foreground"
+              : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-muted-foreground",
           )}
         >
           {isCustom ? `${selected}%` : "Other"}
@@ -749,19 +762,19 @@ function OptionGrid({
                   "flex flex-col items-center gap-1 p-2.5 rounded-lg border-2 transition-all",
                   isSelected
                     ? "bg-blue-600 border-blue-600 text-white shadow-md"
-                    : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30"
+                    : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30",
                 )}
               >
                 <opt.icon
                   className={cn(
                     "h-5 w-5",
-                    isSelected ? "text-white" : "text-muted-foreground"
+                    isSelected ? "text-white" : "text-muted-foreground",
                   )}
                 />
                 <span
                   className={cn(
                     "text-[10px] font-semibold leading-tight text-center",
-                    isSelected ? "text-white" : "text-foreground"
+                    isSelected ? "text-white" : "text-foreground",
                   )}
                 >
                   {opt.label}
@@ -805,7 +818,7 @@ function UserPromptSection({
             <div
               className={cn(
                 "text-xs text-right pr-1",
-                remaining < 50 ? "text-amber-500" : "text-muted-foreground/60"
+                remaining < 50 ? "text-amber-500" : "text-muted-foreground/60",
               )}
             >
               {remaining}
@@ -831,7 +844,7 @@ function UserPromptSection({
           <div
             className={cn(
               "text-xs text-right",
-              remaining < 50 ? "text-amber-500" : "text-muted-foreground/60"
+              remaining < 50 ? "text-amber-500" : "text-muted-foreground/60",
             )}
           >
             {remaining}

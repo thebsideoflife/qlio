@@ -15,6 +15,7 @@ export interface CaptionLine {
 export interface CaptionStyle {
   fontSize: number; // Percentage of video height
   fontFamily: string;
+  fontWeight?: string; // CSS font-weight, e.g. "400", "600", "700"
   color: string;
   backgroundColor: string;
   position: { x: number; y: number }; // 0-100 percentage coordinates
@@ -35,11 +36,11 @@ export type FramingMode = "crop" | "fit";
 
 // A single framing keyframe within a segment
 export interface FramingKeyframe {
-  id: string;              // unique ID for UI operations
-  time: number;            // seconds relative to segment START (0 = segment start)
-  focusX: number;          // 0.0-1.0
-  focusY: number;          // 0.0-1.0
-  zoom: number;            // 0.0=fit (full frame visible), 1.0=max crop (tightest)
+  id: string; // unique ID for UI operations
+  time: number; // seconds relative to segment START (0 = segment start)
+  focusX: number; // 0.0-1.0
+  focusY: number; // 0.0-1.0
+  zoom: number; // 0.0=fit (full frame visible), 1.0=max crop (tightest)
   aiReasoning?: string;
   isAiGenerated: boolean;
 }
@@ -47,12 +48,12 @@ export interface FramingKeyframe {
 // Framing settings for a segment
 export interface SegmentFraming {
   aspectRatio: AspectRatio;
-  mode: FramingMode;           // legacy compat — derived from first keyframe zoom
-  focusX: number;              // legacy compat — first keyframe value
-  focusY: number;              // legacy compat
+  mode: FramingMode; // legacy compat — derived from first keyframe zoom
+  focusX: number; // legacy compat — first keyframe value
+  focusY: number; // legacy compat
   aiReasoning?: string;
   isAiGenerated: boolean;
-  keyframes?: FramingKeyframe[];  // if empty/undefined, legacy fields = single keyframe
+  keyframes?: FramingKeyframe[]; // if empty/undefined, legacy fields = single keyframe
 }
 
 /**
@@ -60,17 +61,21 @@ export interface SegmentFraming {
  * If the framing already has keyframes, returns them.
  * Otherwise, synthesizes a single keyframe from the legacy fields.
  */
-export function getEffectiveKeyframes(framing: SegmentFraming): FramingKeyframe[] {
+export function getEffectiveKeyframes(
+  framing: SegmentFraming,
+): FramingKeyframe[] {
   if (framing.keyframes?.length) return framing.keyframes;
-  return [{
-    id: 'legacy-0',
-    time: 0,
-    focusX: framing.focusX,
-    focusY: framing.focusY,
-    zoom: framing.mode === 'crop' ? 1.0 : 0.0,
-    isAiGenerated: framing.isAiGenerated,
-    aiReasoning: framing.aiReasoning,
-  }];
+  return [
+    {
+      id: "legacy-0",
+      time: 0,
+      focusX: framing.focusX,
+      focusY: framing.focusY,
+      zoom: framing.mode === "crop" ? 1.0 : 0.0,
+      isAiGenerated: framing.isAiGenerated,
+      aiReasoning: framing.aiReasoning,
+    },
+  ];
 }
 
 // Default framing settings
@@ -119,12 +124,13 @@ export const SNAP_POSITIONS = [
 export const DEFAULT_CAPTION_SETTINGS: CaptionSettings = {
   enabled: true,
   style: {
-    fontSize: 2,
+    fontSize: 3,
     fontFamily: "Inter, system-ui, sans-serif",
+    fontWeight: "600",
     color: "#ffffff",
-    backgroundColor: "rgba(0, 0, 0, 0.8)",
+    backgroundColor: "rgba(0,0,0,0.5)",
     position: { x: 50, y: 85 },
     maxWidth: 95,
-    highlightColor: "#fbbf24",
+    highlightColor: "#60a5fa",
   },
 };

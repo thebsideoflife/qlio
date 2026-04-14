@@ -179,6 +179,7 @@ export interface CaptionSettings {
   style: {
     fontSize: number;
     fontFamily: string;
+    fontWeight?: string;
     color: string;
     backgroundColor: string;
     position: { x: number; y: number };
@@ -224,6 +225,7 @@ export interface GenerationJob {
     | "pending"
     | "detecting_scenes"
     | "generating"
+    | "framing"
     | "completed"
     | "failed";
   jobId: string;

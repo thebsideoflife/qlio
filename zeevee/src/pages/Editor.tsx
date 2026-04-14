@@ -31,7 +31,6 @@ import {
   startBatchFraming,
   getProject,
   type GenerationJob,
-  type FramingJob,
 } from "@/services/api";
 import {
   FileText,
@@ -39,12 +38,7 @@ import {
   Captions,
   Crop,
   Maximize2,
-  Sparkles,
-  Loader2,
   Clock,
-  Smartphone,
-  Square,
-  Monitor,
 } from "lucide-react";
 import { getEffectiveKeyframes } from "@/remotion/types";
 import type { AspectRatio } from "@/remotion/types";
@@ -78,12 +72,22 @@ export default function Editor() {
   const [activeTab, setActiveTab] = useState<"transcript" | "ai" | "captions">(
     "ai",
   );
+  // Track the last projectId we initialized state for — used to reset state on project change
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationStatus, setGenerationStatus] =
+    useState<GenerationJob | null>(null);
   const [previewMode, setPreviewMode] = useState(false);
-  const [isBatchAnalyzing, setIsBatchAnalyzing] = useState(false);
-  const [batchProgress, setBatchProgress] = useState<string | null>(null);
-  const [isSegmentAnalyzing, setIsSegmentAnalyzing] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [autoFrameEnabled, setAutoFrameEnabled] = useState(true);
+
+  // Reset async state when navigating to a different project (during render, avoids cascading effects)
+  if (projectId !== activeProjectId) {
+    setActiveProjectId(projectId ?? null);
+    setIsGenerating(false);
+    setGenerationStatus(null);
+    setPreviewMode(false);
+  }
 
   // Ref to track current projectId for async callbacks (prevents stale closures)
   const projectIdRef = useRef(projectId);
@@ -120,7 +124,7 @@ export default function Editor() {
       return kfs.find((kf) => kf.id === selectedKeyframeId) || kfs[0];
     }
     return kfs[0];
-  }, [selectedSegment?.framing, selectedKeyframeId]);
+  }, [selectedSegment, selectedKeyframeId]);
 
   // Derive display values from selected keyframe or preview state
   const displayZoom = selectedKeyframe ? selectedKeyframe.zoom : previewZoom;
@@ -235,157 +239,6 @@ export default function Editor() {
     hasDraggedRef.current = false;
   };
 
-  // Batch auto-frame all segments (async — start job, poll for completion)
-  const batchCancelRef = useRef(false);
-  const handleBatchAnalyzeFraming = async () => {
-    if (!projectId || segments.length === 0) return;
-
-    // Confirm if any segment has manual keyframe edits
-    const hasManualEdits = segments.some((seg) => {
-      if (!seg.framing?.keyframes?.length) return false;
-      return seg.framing.keyframes.some((kf) => !kf.isAiGenerated);
-    });
-    if (hasManualEdits) {
-      if (
-        !confirm(
-          "Some segments have manual keyframe edits. Auto-framing will replace them. Continue?",
-        )
-      ) {
-        return;
-      }
-    }
-
-    const startingProjectId = projectId;
-    batchCancelRef.current = false;
-    setIsBatchAnalyzing(true);
-    setBatchProgress("Starting...");
-
-    try {
-      // Start async job
-      const batchSegments = segments.map((seg) => ({
-        id: seg.id,
-        startTime: seg.startTime,
-        endTime: seg.endTime,
-      }));
-
-      await startBatchFraming(
-        startingProjectId,
-        batchSegments,
-        globalFraming.aspectRatio,
-      );
-
-      // Poll for completion
-      const POLL_INTERVAL = 3000;
-      const MAX_WAIT = 300000; // 5 min
-      const startTime = Date.now();
-
-      while (Date.now() - startTime < MAX_WAIT) {
-        if (
-          batchCancelRef.current ||
-          projectIdRef.current !== startingProjectId
-        )
-          break;
-
-        await new Promise((r) => setTimeout(r, POLL_INTERVAL));
-
-        if (
-          batchCancelRef.current ||
-          projectIdRef.current !== startingProjectId
-        )
-          break;
-
-        const project = await getProject(startingProjectId);
-        const job: FramingJob | undefined = project.framingJob;
-
-        if (!job) break;
-
-        if (job.status === "analyzing") {
-          const done = job.completedCount || 0;
-          const total = job.segmentCount || segments.length;
-          setBatchProgress(`Analyzing ${done}/${total}...`);
-        }
-
-        if (job.status === "completed") {
-          // Framing results are written to segments in DB — reload them
-          if (project.segments?.length) {
-            dispatch(setSegments(project.segments));
-          }
-          setBatchProgress(null);
-          break;
-        }
-
-        if (job.status === "failed") {
-          console.error("Batch framing failed:", job.error);
-          break;
-        }
-      }
-    } catch (error: unknown) {
-      if (projectIdRef.current === startingProjectId) {
-        console.error("Batch framing failed:", error);
-      }
-    } finally {
-      if (projectIdRef.current === startingProjectId) {
-        setIsBatchAnalyzing(false);
-        setBatchProgress(null);
-      }
-    }
-  };
-
-  // Single-segment AI framing — uses the async batch pipeline with just one segment
-  const handleSingleSegmentFraming = async () => {
-    if (!projectId || !selectedSegment) return;
-
-    const startingProjectId = projectId;
-    setIsSegmentAnalyzing(true);
-
-    try {
-      await startBatchFraming(
-        startingProjectId,
-        [
-          {
-            id: selectedSegment.id,
-            startTime: selectedSegment.startTime,
-            endTime: selectedSegment.endTime,
-          },
-        ],
-        globalFraming.aspectRatio,
-      );
-
-      // Poll for completion (same pattern as batch)
-      const POLL_INTERVAL = 3000;
-      const MAX_WAIT = 120000; // 2 min
-      const start = Date.now();
-
-      while (Date.now() - start < MAX_WAIT) {
-        if (projectIdRef.current !== startingProjectId) break;
-
-        await new Promise((r) => setTimeout(r, POLL_INTERVAL));
-        const project = await getProject(startingProjectId);
-        const job: FramingJob | undefined = project.framingJob;
-
-        if (!job) break;
-
-        if (job.status === "completed") {
-          if (project.segments?.length) {
-            dispatch(setSegments(project.segments));
-          }
-          break;
-        }
-
-        if (job.status === "failed") {
-          console.error("Segment framing failed:", job.error);
-          break;
-        }
-      }
-    } catch (error) {
-      console.error("Single segment framing failed:", error);
-    } finally {
-      if (projectIdRef.current === startingProjectId) {
-        setIsSegmentAnalyzing(false);
-      }
-    }
-  };
-
   // Calculate aspect ratio for preview container
   const getAspectRatioValue = (ratio: AspectRatio): number => {
     switch (ratio) {
@@ -407,13 +260,6 @@ export default function Editor() {
     if (projectId) {
       dispatch(setProjectId(projectId));
     }
-    // Reset all async operation state when project changes
-    setIsGenerating(false);
-    setGenerationStatus(null);
-    setIsBatchAnalyzing(false);
-    setBatchProgress(null);
-    // Reset preview mode since segments are different per project
-    setPreviewMode(false);
 
     return () => {
       dispatch(resetEditor());
@@ -434,11 +280,14 @@ export default function Editor() {
       `[Editor] Resuming polling for in-progress job: ${generationJob.jobId} (${generationJob.status})`,
     );
 
-    setIsGenerating(true);
-    setGenerationStatus(generationJob);
-
     // Capture projectId at start to check against later
     const startingProjectId = projectId;
+
+    // Defer state updates out of the synchronous effect body to avoid cascading renders
+    Promise.resolve().then(() => {
+      setIsGenerating(true);
+      setGenerationStatus(generationJob);
+    });
 
     // Resume polling - use shorter initial delay since job is already running
     pollGenerationStatus(projectId, {
@@ -549,10 +398,6 @@ export default function Editor() {
     }
   };
 
-  // Track generation status for UI feedback
-  const [generationStatus, setGenerationStatus] =
-    useState<GenerationJob | null>(null);
-
   const handleGenerateSegments = async (selections: Selections) => {
     if (!projectId) return;
 
@@ -606,7 +451,62 @@ export default function Editor() {
       }
 
       if (result.segments.length > 0) {
-        dispatch(setSegments(result.segments));
+        // Phase 2: auto-frame before surfacing segments to user
+        if (autoFrameEnabled && projectIdRef.current === startingProjectId) {
+          setGenerationStatus({
+            status: "framing",
+            jobId,
+            startedAt: new Date().toISOString(),
+          });
+          try {
+            await startBatchFraming(
+              startingProjectId,
+              result.segments.map((seg) => ({
+                id: seg.id,
+                startTime: seg.startTime,
+                endTime: seg.endTime,
+              })),
+              globalFraming.aspectRatio,
+            );
+
+            const FRAMING_POLL = 3000;
+            const FRAMING_MAX = 600000; // 10 min
+            const framingStart = Date.now();
+
+            while (Date.now() - framingStart < FRAMING_MAX) {
+              if (projectIdRef.current !== startingProjectId) break;
+              await new Promise((r) => setTimeout(r, FRAMING_POLL));
+              if (projectIdRef.current !== startingProjectId) break;
+              let project;
+              try {
+                project = await getProject(startingProjectId);
+              } catch {
+                // network error — surface segments without framing
+                dispatch(setSegments(result.segments));
+                break;
+              }
+              const job = project.framingJob;
+              if (!job) break;
+              if (job.status === "completed") {
+                if (project.segments?.length) {
+                  dispatch(setSegments(project.segments));
+                }
+                break;
+              }
+              if (job.status === "failed") {
+                // framing failed — still show segments without framing
+                dispatch(setSegments(result.segments));
+                break;
+              }
+            }
+          } catch {
+            // framing error — still show segments without framing
+            dispatch(setSegments(result.segments));
+          }
+        } else {
+          dispatch(setSegments(result.segments));
+        }
+
         console.log(
           `[Editor] Generation complete: ${result.segments.length} segments`,
         );
@@ -662,105 +562,6 @@ export default function Editor() {
           className="flex-1 bg-zinc-950 relative flex items-center justify-center min-h-0 p-4 gap-4"
           onClick={handleBackgroundClick}
         >
-          {/* Aspect Ratio + Framing Controls */}
-          <div className="flex flex-col gap-2 shrink-0">
-            {[
-              {
-                value: "9:16" as AspectRatio,
-                icon: Smartphone,
-                label: "Reels",
-              },
-              { value: "1:1" as AspectRatio, icon: Square, label: "Post" },
-              { value: "16:9" as AspectRatio, icon: Monitor, label: "Video" },
-            ].map((ratio) => (
-              <button
-                key={ratio.value}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  dispatch(setGlobalAspectRatio(ratio.value));
-                }}
-                className={cn(
-                  "w-14 py-2 rounded-xl flex flex-col items-center gap-1 transition-all border-2",
-                  globalFraming.aspectRatio === ratio.value
-                    ? "bg-blue-600 text-white border-blue-500 ring-2 ring-blue-400 ring-offset-2 ring-offset-zinc-950 shadow-lg shadow-blue-500/30"
-                    : "bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white border-zinc-700 hover:border-zinc-600",
-                )}
-                title={`${ratio.label} (${ratio.value})`}
-              >
-                <ratio.icon className="h-5 w-5" />
-                <span className="text-[10px] font-bold leading-none">
-                  {ratio.label}
-                </span>
-              </button>
-            ))}
-
-            {/* Batch auto-frame */}
-            {segments.length > 0 && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (isBatchAnalyzing) {
-                    batchCancelRef.current = true;
-                  } else {
-                    handleBatchAnalyzeFraming();
-                  }
-                }}
-                className={cn(
-                  "w-14 py-2 mt-1 rounded-xl flex flex-col items-center gap-1 transition-all border-2",
-                  isBatchAnalyzing
-                    ? "bg-amber-600 text-white border-amber-500"
-                    : "bg-zinc-800 hover:bg-purple-700 text-zinc-400 hover:text-white border-zinc-700 hover:border-purple-600",
-                )}
-                title={
-                  isBatchAnalyzing
-                    ? `${batchProgress} — click to cancel`
-                    : "Auto-frame all segments with AI"
-                }
-              >
-                {isBatchAnalyzing ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  <Sparkles className="h-5 w-5" />
-                )}
-                <span className="text-[10px] font-bold leading-none">
-                  {isBatchAnalyzing ? "Stop" : "All"}
-                </span>
-              </button>
-            )}
-
-            {/* Single segment auto-frame */}
-            {selectedSegment && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleSingleSegmentFraming();
-                }}
-                disabled={isSegmentAnalyzing || isBatchAnalyzing}
-                className={cn(
-                  "w-14 py-2 mt-1 rounded-xl flex flex-col items-center gap-1 transition-all border-2",
-                  isSegmentAnalyzing
-                    ? "bg-purple-600 text-white border-purple-500"
-                    : "bg-zinc-800 hover:bg-purple-700 text-zinc-400 hover:text-white border-zinc-700 hover:border-purple-600",
-                  (isSegmentAnalyzing || isBatchAnalyzing) && "opacity-70",
-                )}
-                title={
-                  isSegmentAnalyzing
-                    ? "Analyzing segment..."
-                    : `Auto-frame selected segment`
-                }
-              >
-                {isSegmentAnalyzing ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  <Sparkles className="h-5 w-5" />
-                )}
-                <span className="text-[10px] font-bold leading-none">
-                  {isSegmentAnalyzing ? "..." : "1 Seg"}
-                </span>
-              </button>
-            )}
-          </div>
-
           {videoUrl ? (
             /* Framing Preview - aspect ratio container with draggable video */
             <div
@@ -1000,6 +801,8 @@ export default function Editor() {
                       dispatch(setGlobalAspectRatio(ratio))
                     }
                     initialSelections={generationMetadata}
+                    autoFrameEnabled={autoFrameEnabled}
+                    onAutoFrameChange={setAutoFrameEnabled}
                   />
                 )}
                 {activeTab === "captions" && <CaptionEditor />}
