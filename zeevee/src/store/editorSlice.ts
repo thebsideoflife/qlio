@@ -690,16 +690,19 @@ export const editorSlice = createSlice({
       const kfs = ensureMaterializedKeyframes(segment.framing);
       // Enforce min 1 keyframe
       if (kfs.length <= 1) return;
-      // Don't allow removing the first keyframe (time=0)
       const kf = kfs.find((k) => k.id === action.payload.keyframeId);
       if (!kf) return;
       const sorted = [...kfs].sort((a, b) => a.time - b.time);
-      if (sorted[0].id === kf.id) return; // Can't delete first
+      const isFirst = sorted[0].id === kf.id;
+      if (isFirst) {
+        // Second keyframe absorbs the space — move it to time 0
+        sorted[1].time = 0;
+      }
       segment.framing.keyframes = kfs.filter(
         (k) => k.id !== action.payload.keyframeId,
       );
       syncLegacyFromKeyframes(segment.framing);
-      // If we deleted the selected keyframe, select the first one
+      // If we deleted the selected keyframe, select the new first one
       if (state.selectedKeyframeId === action.payload.keyframeId) {
         state.selectedKeyframeId = segment.framing.keyframes[0]?.id ?? null;
       }

@@ -14,6 +14,7 @@ import {
   toggleShowKeyframes,
   updateFramingKeyframe,
   addFramingKeyframe,
+  removeFramingKeyframe,
 } from "@/store/editorSlice";
 import type { FramingKeyframe } from "@/remotion/types";
 import { getEffectiveKeyframes } from "@/remotion/types";
@@ -84,6 +85,18 @@ export function Timeline({
   const [isDragging, setIsDragging] = useState(false);
   const dragRef = useRef<DragInfo | null>(null);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
+  // "segment" = blue bar was clicked directly; "keyframe" = a framing block was clicked
+  const [selectionMode, setSelectionMode] = useState<"segment" | "keyframe">(
+    "segment",
+  );
+  const selectionModeRef = useRef<"segment" | "keyframe">("segment");
+  const selectedKeyframeIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectionModeRef.current = selectionMode;
+  }, [selectionMode]);
+  useEffect(() => {
+    selectedKeyframeIdRef.current = selectedKeyframeId;
+  }, [selectedKeyframeId]);
   const [containerWidth, setContainerWidth] = useState(800);
   const [isPlaying, setIsPlaying] = useState(false);
   const showAllKeyframes = useSelector(
@@ -327,8 +340,20 @@ export function Timeline({
           }
         }
       } else if (e.code === "Delete" || e.code === "Backspace") {
-        if (selectedId) {
-          e.preventDefault();
+        e.preventDefault();
+        // Dispatch is deferred to avoid stale closure — call site logic duplicated from handleDelete
+        if (
+          selectionModeRef.current === "keyframe" &&
+          selectedKeyframeIdRef.current &&
+          selectedId
+        ) {
+          dispatch(
+            removeFramingKeyframe({
+              segmentId: selectedId,
+              keyframeId: selectedKeyframeIdRef.current,
+            }),
+          );
+        } else if (selectionModeRef.current === "segment" && selectedId) {
           dispatch(deleteSegment(selectedId));
         }
       } else if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
@@ -486,6 +511,7 @@ export function Timeline({
   // Handle segment click - select AND seek to click position
   const handleSegmentClick = (e: React.MouseEvent, segmentId: string) => {
     e.stopPropagation();
+    setSelectionMode("segment");
     dispatch(selectSegment(segmentId));
 
     const time = getTimeFromClickEvent(e);
@@ -506,6 +532,7 @@ export function Timeline({
     dispatch(setCurrentTime(time));
 
     // Deselect segment when clicking on empty track
+    setSelectionMode("segment");
     dispatch(selectSegment(null));
   };
 
@@ -629,11 +656,37 @@ export function Timeline({
     dispatch(addSegment({ atTime: currentTime }));
   };
 
-  const handleDelete = () => {
-    if (selectedId) {
+  // True when the focused keyframe can be deleted (segment has >1 keyframes)
+  const canDeleteKeyframe = useMemo(() => {
+    if (!selectedKeyframeId || !selectedId) return false;
+    const seg = segments.find((s) => s.id === selectedId);
+    if (!seg?.framing) return false;
+    return getEffectiveKeyframes(seg.framing).length > 1;
+  }, [selectedKeyframeId, selectedId, segments]);
+
+  const handleDelete = useCallback(() => {
+    if (
+      selectionMode === "keyframe" &&
+      selectedKeyframeId &&
+      selectedId &&
+      canDeleteKeyframe
+    ) {
+      dispatch(
+        removeFramingKeyframe({
+          segmentId: selectedId,
+          keyframeId: selectedKeyframeId,
+        }),
+      );
+    } else if (selectionMode === "segment" && selectedId) {
       dispatch(deleteSegment(selectedId));
     }
-  };
+  }, [
+    selectionMode,
+    selectedKeyframeId,
+    selectedId,
+    canDeleteKeyframe,
+    dispatch,
+  ]);
 
   // Button zoom - bigger steps (50% change)
   const handleZoomIn = () => {
@@ -1003,9 +1056,15 @@ export function Timeline({
           size="sm"
           variant="outline"
           onClick={handleDelete}
-          disabled={!selectedId}
+          disabled={
+            selectionMode === "keyframe" ? !canDeleteKeyframe : !selectedId
+          }
           className="h-9 w-9 p-0 text-red-500 hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/50 disabled:opacity-30"
-          title="Delete selected segment"
+          title={
+            selectionMode === "keyframe"
+              ? "Delete framing keyframe"
+              : "Delete selected segment"
+          }
         >
           <Trash2 className="h-4 w-4" />
         </Button>
@@ -1048,7 +1107,7 @@ export function Timeline({
             if (segsToShow.length === 0) return null;
 
             return (
-              <div className="h-5 shrink-0 relative mb-0.5">
+              <div className="h-5 shrink-0 relative mb-0.5 overflow-visible">
                 {segsToShow.map((seg) => {
                   const kfs = getEffectiveKeyframes(seg.framing!);
                   const segDuration = seg.endTime - seg.startTime;
@@ -1093,86 +1152,71 @@ export function Timeline({
                             <div
                               key={kf.id}
                               className={cn(
-                                "absolute top-0 bottom-0 rounded transition-colors",
-                                isSelected
-                                  ? "cursor-pointer"
-                                  : "cursor-default",
+                                "absolute top-0 bottom-0 rounded transition-colors cursor-pointer",
                                 isKfSelected
                                   ? "bg-amber-500/90 ring-1 ring-amber-400/60"
                                   : isSelected
                                     ? "bg-amber-600/40 hover:bg-amber-500/55"
-                                    : "bg-amber-600/20",
+                                    : "bg-amber-600/20 hover:bg-amber-600/35",
                               )}
                               style={{
                                 left: `${blockLeft}px`,
                                 width: `${blockWidth}px`,
                               }}
-                              onClick={
-                                isSelected
-                                  ? (e) => {
-                                      e.stopPropagation();
-                                      dispatch(selectKeyframe(kf.id));
-                                      const rect =
-                                        e.currentTarget.getBoundingClientRect();
-                                      const pct =
-                                        (e.clientX - rect.left) / rect.width;
-                                      const blockDuration = nextTime - kf.time;
-                                      const timeInSeg =
-                                        kf.time + pct * blockDuration;
-                                      const seekTo = seg.startTime + timeInSeg;
-                                      if (videoRef.current) {
-                                        videoRef.current.currentTime = seekTo;
-                                      }
-                                      dispatch(setCurrentTime(seekTo));
-                                    }
-                                  : undefined
-                              }
-                              onDoubleClick={
-                                isSelected
-                                  ? (e) => {
-                                      if (isShort) return;
-                                      e.stopPropagation();
-                                      const rect =
-                                        e.currentTarget.getBoundingClientRect();
-                                      const clickX = e.clientX - rect.left;
-                                      const pct = clickX / rect.width;
-                                      const blockDuration = nextTime - kf.time;
-                                      const timeInSeg =
-                                        kf.time + pct * blockDuration;
-                                      const rounded =
-                                        Math.round(
-                                          Math.max(
-                                            0.1,
-                                            Math.min(
-                                              segDuration - 0.1,
-                                              timeInSeg,
-                                            ),
-                                          ) * 10,
-                                        ) / 10;
-                                      if (
-                                        sortedKfs.some(
-                                          (k) =>
-                                            Math.abs(k.time - rounded) < 0.5,
-                                        )
-                                      )
-                                        return;
-                                      const newKf: FramingKeyframe = {
-                                        id: crypto.randomUUID(),
-                                        time: rounded,
-                                        focusX: kf.focusX,
-                                        focusY: kf.focusY,
-                                        zoom: kf.zoom,
-                                        isAiGenerated: false,
-                                      };
-                                      dispatch(
-                                        addFramingKeyframe({
-                                          segmentId: seg.id,
-                                          keyframe: newKf,
-                                        }),
-                                      );
-                                    }
-                                  : undefined
-                              }
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectionMode("keyframe");
+                                dispatch(selectSegment(seg.id));
+                                dispatch(selectKeyframe(kf.id));
+                                const rect =
+                                  e.currentTarget.getBoundingClientRect();
+                                const pct =
+                                  (e.clientX - rect.left) / rect.width;
+                                const blockDuration = nextTime - kf.time;
+                                const timeInSeg = kf.time + pct * blockDuration;
+                                const seekTo = seg.startTime + timeInSeg;
+                                if (videoRef.current) {
+                                  videoRef.current.currentTime = seekTo;
+                                }
+                                dispatch(setCurrentTime(seekTo));
+                              }}
+                              onDoubleClick={(e) => {
+                                if (isShort) return;
+                                e.stopPropagation();
+                                const rect =
+                                  e.currentTarget.getBoundingClientRect();
+                                const clickX = e.clientX - rect.left;
+                                const pct = clickX / rect.width;
+                                const blockDuration = nextTime - kf.time;
+                                const timeInSeg = kf.time + pct * blockDuration;
+                                const rounded =
+                                  Math.round(
+                                    Math.max(
+                                      0.1,
+                                      Math.min(segDuration - 0.1, timeInSeg),
+                                    ) * 10,
+                                  ) / 10;
+                                if (
+                                  sortedKfs.some(
+                                    (k) => Math.abs(k.time - rounded) < 0.5,
+                                  )
+                                )
+                                  return;
+                                const newKf: FramingKeyframe = {
+                                  id: crypto.randomUUID(),
+                                  time: rounded,
+                                  focusX: kf.focusX,
+                                  focusY: kf.focusY,
+                                  zoom: kf.zoom,
+                                  isAiGenerated: false,
+                                };
+                                dispatch(
+                                  addFramingKeyframe({
+                                    segmentId: seg.id,
+                                    keyframe: newKf,
+                                  }),
+                                );
+                              }}
                             >
                               {/* Drag handle on the left edge (not for first keyframe, only selected segment) */}
                               {isSelected && !isFirst && (
@@ -1203,6 +1247,40 @@ export function Timeline({
                           );
                         })}
                       </div>
+                      {/* Delete framing keyframe button — floats over lane, same style as split indicator */}
+                      {isSelected && (() => {
+                        const selKf = selectedKeyframeId
+                          ? sortedKfs.find((k) => k.id === selectedKeyframeId)
+                          : null;
+                        if (!selKf || sortedKfs.length <= 1) return null;
+                        const selIdx = sortedKfs.indexOf(selKf);
+                        const nextT = selIdx < sortedKfs.length - 1
+                          ? sortedKfs[selIdx + 1].time
+                          : segDuration;
+                        const centerPx = (nextT / segDuration) * laneWidth - 4;
+                        return (
+                          <div
+                            className="absolute z-20 group cursor-pointer"
+                            style={{
+                              left: `${laneLeft + centerPx}px`,
+                              transform: "translateX(-50%)",
+                              width: "14px",
+                              top: "-14px",
+                              height: "14px",
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              dispatch(removeFramingKeyframe({ segmentId: seg.id, keyframeId: selKf.id }));
+                            }}
+                            title="Delete framing keyframe"
+                          >
+                            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-zinc-800 border border-red-500/60 group-hover:border-red-400 flex items-center justify-center transition-colors">
+                              <span className="text-[9px] font-bold text-red-400 group-hover:text-red-300 leading-none">×</span>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
                       {/* Split-framing indicator — only for selected segment */}
                       {isSelected &&
                         (() => {
@@ -1296,9 +1374,11 @@ export function Timeline({
                   key={segment.id}
                   className={cn(
                     "absolute top-1 bottom-1 cursor-pointer rounded",
-                    selectedId === segment.id
+                    selectedId === segment.id && selectionMode === "segment"
                       ? "bg-blue-500 ring-2 ring-blue-400 z-10"
-                      : "bg-blue-600/70 hover:bg-blue-500/80",
+                      : selectedId === segment.id
+                        ? "bg-blue-600/70 ring-2 ring-amber-400/60 z-10"
+                        : "bg-blue-600/70 hover:bg-blue-500/80",
                   )}
                   style={{ left: `${left}px`, width: `${width}px` }}
                   onClick={(e) => handleSegmentClick(e, segment.id)}

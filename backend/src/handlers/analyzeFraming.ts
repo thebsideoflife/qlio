@@ -205,7 +205,7 @@ function parseTimestamp(raw: string): number | null {
 
 function makeFallbackKeyframe(): FramingKeyframe {
   return {
-    id: "ai-kf-0",
+    id: `ai-kf-fb-${randomUUID()}`,
     time: 0,
     focusX: 0.5,
     focusY: 0.5,
@@ -403,7 +403,6 @@ async function processSegment(
     // 3. Query Gemini for zoom keyframes
     const keyframes = await analyzeSegmentWithGemini(client, fileUri, duration);
 
-    // Re-id keyframes with segment index
     keyframes.forEach((kf, i) => {
       kf.id = `ai-kf-${segIndex}-${i}`;
     });
@@ -699,7 +698,7 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
             i,
             [
               {
-                id: "ai-kf-0",
+                id: `ai-kf-${i}-0`,
                 time: 0,
                 focusX: 0.5,
                 focusY: 0.5,
