@@ -687,7 +687,6 @@ export default function Editor() {
                     objectFit: "contain" as const,
                     transformOrigin: "center center",
                     transform: `translate(${offsetX}%, ${offsetY}%) scale(${scale})`,
-                    transition: "transform 0.15s ease-out",
                   };
                 })()}
                 onLoadedMetadata={(e) =>
