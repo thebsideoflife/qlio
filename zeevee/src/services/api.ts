@@ -244,10 +244,15 @@ export interface GenerateSegmentsResponse {
 export const generateSegments = async (
   projectId: string,
   metadata: Record<string, unknown>,
+  options?: { autoFrame?: boolean; targetAspectRatio?: string },
 ): Promise<GenerateSegmentsResponse> => {
   const response = await axios.post(
     `${API_URL}/projects/${projectId}/generate`,
-    { metadata },
+    {
+      metadata,
+      autoFrame: options?.autoFrame ?? false,
+      targetAspectRatio: options?.targetAspectRatio ?? "9:16",
+    },
     {
       headers: getAuthHeaders(),
     },

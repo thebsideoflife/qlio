@@ -47,6 +47,8 @@ interface AsyncJobPayload {
   projectId: string;
   metadata: any;
   jobId: string;
+  autoFrame?: boolean;
+  targetAspectRatio?: string;
 }
 
 interface Segment {
@@ -119,7 +121,7 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
     }
 
     const body = JSON.parse(event.body || "{}");
-    const { metadata } = body;
+    const { metadata, autoFrame, targetAspectRatio } = body;
 
     // Generate a job ID
     const jobId = randomUUID();
@@ -147,6 +149,8 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
       projectId,
       metadata,
       jobId,
+      autoFrame: !!autoFrame,
+      targetAspectRatio: targetAspectRatio || "9:16",
     };
 
     await lambdaClient.send(
@@ -184,8 +188,10 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
 /**
  * Execute the actual generation job (called asynchronously)
  */
+const ANALYZE_FRAMING_FUNCTION_NAME = process.env.ANALYZE_FRAMING_FUNCTION_NAME;
+
 async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
-  const { projectId, metadata, jobId } = payload;
+  const { projectId, metadata, jobId, autoFrame, targetAspectRatio } = payload;
 
   console.log(
     `[generateSegments] Executing job ${jobId} for project ${projectId}`
@@ -399,27 +405,75 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
     // Sort segments chronologically
     generatedSegments.sort((a, b) => a.startTime - b.startTime);
 
-    // Update Project with segments and mark job as completed
+    // Write segments to DB first (without marking completed yet)
+    await docClient.send(
+      new UpdateCommand({
+        TableName: PROJECTS_TABLE,
+        Key: { projectId },
+        UpdateExpression: `set #seg = :s, #meta = :m, updatedAt = :u`,
+        ExpressionAttributeNames: { "#seg": "segments", "#meta": "metadata" },
+        ExpressionAttributeValues: {
+          ":s": generatedSegments,
+          ":m": metadata || {},
+          ":u": new Date().toISOString(),
+        },
+      })
+    );
+
+    // If auto-framing requested, start the framing job BEFORE marking generation
+    // as completed — this guarantees framingJob exists in DynamoDB when the
+    // frontend polls and sees generationJob.status = "completed".
+    if (autoFrame && ANALYZE_FRAMING_FUNCTION_NAME && generatedSegments.length > 0) {
+      const batchSegments = generatedSegments.map((seg) => ({
+        id: seg.id,
+        startTime: seg.startTime,
+        endTime: seg.endTime,
+      }));
+      console.log(`[generateSegments] Starting auto-framing for ${batchSegments.length} segments`);
+      try {
+        const framingResponse = await lambdaClient.send(
+          new InvokeCommand({
+            FunctionName: ANALYZE_FRAMING_FUNCTION_NAME,
+            InvocationType: "RequestResponse",
+            Payload: JSON.stringify({
+              isDirectBatchStart: true,
+              projectId,
+              segments: batchSegments,
+              targetAspectRatio: targetAspectRatio || "9:16",
+            }),
+          })
+        );
+        // Check if handleStartBatch returned an error (409 conflict, 400 bad input, etc.)
+        if (framingResponse.FunctionError) {
+          console.error(`[generateSegments] Auto-framing Lambda error: ${framingResponse.FunctionError}`);
+        } else {
+          const payload = framingResponse.Payload
+            ? JSON.parse(Buffer.from(framingResponse.Payload).toString())
+            : null;
+          if (payload?.statusCode >= 400) {
+            console.error(`[generateSegments] Auto-framing rejected (${payload.statusCode}): ${payload.body}`);
+          } else {
+            console.log(`[generateSegments] Auto-framing job started`);
+          }
+        }
+      } catch (framingErr) {
+        console.error(`[generateSegments] Failed to start auto-framing (non-fatal):`, framingErr);
+      }
+    }
+
+    // Now mark generation as completed — framingJob is already in DynamoDB if auto-frame was requested
     await docClient.send(
       new UpdateCommand({
         TableName: PROJECTS_TABLE,
         Key: { projectId },
         UpdateExpression: `
-          set #seg = :s, 
-              #meta = :m, 
-              generationJob.#status = :status,
+          set generationJob.#status = :status,
               generationJob.completedAt = :completedAt,
               generationJob.segmentCount = :segmentCount,
               updatedAt = :u
         `,
-        ExpressionAttributeNames: {
-          "#seg": "segments",
-          "#meta": "metadata",
-          "#status": "status",
-        },
+        ExpressionAttributeNames: { "#status": "status" },
         ExpressionAttributeValues: {
-          ":s": generatedSegments,
-          ":m": metadata || {},
           ":status": "completed",
           ":completedAt": new Date().toISOString(),
           ":segmentCount": generatedSegments.length,

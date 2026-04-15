@@ -8,7 +8,11 @@ import {
   setGlobalFraming,
   setLastSegmentRenders,
 } from "@/store/editorSlice";
-import { getProject, type GenerationJob } from "@/services/api";
+import {
+  getProject,
+  type GenerationJob,
+  type FramingJob,
+} from "@/services/api";
 import { DEFAULT_CAPTION_SETTINGS } from "@/remotion/types";
 import type { CaptionWord } from "@/remotion/types";
 
@@ -28,8 +32,9 @@ export function useProjectData(projectId: string | undefined) {
   const [generationMetadata, setGenerationMetadata] =
     useState<GenerationMetadata | null>(null);
   const [generationJob, setGenerationJob] = useState<GenerationJob | null>(
-    null
+    null,
   );
+  const [framingJob, setFramingJob] = useState<FramingJob | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,14 +54,16 @@ export function useProjectData(projectId: string | undefined) {
 
       // Load caption settings, merging with defaults so new fields are picked up
       if (project.captionSettings) {
-        dispatch(setCaptionSettings({
-          ...DEFAULT_CAPTION_SETTINGS,
-          ...project.captionSettings,
-          style: {
-            ...DEFAULT_CAPTION_SETTINGS.style,
-            ...project.captionSettings.style,
-          },
-        }));
+        dispatch(
+          setCaptionSettings({
+            ...DEFAULT_CAPTION_SETTINGS,
+            ...project.captionSettings,
+            style: {
+              ...DEFAULT_CAPTION_SETTINGS.style,
+              ...project.captionSettings.style,
+            },
+          }),
+        );
       }
 
       // Load global framing settings if they exist
@@ -82,6 +89,11 @@ export function useProjectData(projectId: string | undefined) {
         setGenerationJob(project.generationJob);
       }
 
+      // Load framing job status (for resuming polling after page refresh)
+      if (project.framingJob) {
+        setFramingJob(project.framingJob);
+      }
+
       dispatch(
         setProjectMetadata({
           title: project.title || "Untitled Project",
@@ -89,7 +101,7 @@ export function useProjectData(projectId: string | undefined) {
             project.asset?.originalName ||
             project.asset?.title ||
             "Unknown Asset",
-        })
+        }),
       );
 
       // Fetch transcription if available
@@ -126,6 +138,7 @@ export function useProjectData(projectId: string | undefined) {
     transcription,
     generationMetadata,
     generationJob,
+    framingJob,
     loading,
     error,
   };

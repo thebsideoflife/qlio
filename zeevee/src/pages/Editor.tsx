@@ -28,7 +28,6 @@ import { useSeamlessPlayback } from "@/hooks/useSeamlessPlayback";
 import {
   generateSegments,
   pollGenerationStatus,
-  startBatchFraming,
   getProject,
   type GenerationJob,
 } from "@/services/api";
@@ -81,6 +80,14 @@ export default function Editor() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [autoFrameEnabled, setAutoFrameEnabled] = useState(true);
 
+  // Refs — declared before render-time reset block so they can be accessed there
+  const projectIdRef = useRef(projectId);
+  useEffect(() => {
+    projectIdRef.current = projectId;
+  }, [projectId]);
+  // Stores "projectId:jobId" — naturally unique per project, no reset needed on navigation
+  const resumedGenerationJobRef = useRef<string | null>(null);
+
   // Reset async state when navigating to a different project (during render, avoids cascading effects)
   if (projectId !== activeProjectId) {
     setActiveProjectId(projectId ?? null);
@@ -89,18 +96,13 @@ export default function Editor() {
     setPreviewMode(false);
   }
 
-  // Ref to track current projectId for async callbacks (prevents stale closures)
-  const projectIdRef = useRef(projectId);
-  useEffect(() => {
-    projectIdRef.current = projectId;
-  }, [projectId]);
-
   // Custom Hooks
   const {
     videoUrl,
     transcription,
     generationMetadata,
     generationJob,
+    framingJob,
     loading,
   } = useProjectData(projectId);
   // Seamless playback only in preview mode
@@ -276,6 +278,11 @@ export default function Editor() {
     // Already generating (user clicked button in this session)
     if (isGenerating) return;
 
+    // Already handled this job in this session — prevents re-firing when isGenerating resets
+    const resumeKey = `${projectId}:${generationJob.jobId}`;
+    if (resumedGenerationJobRef.current === resumeKey) return;
+    resumedGenerationJobRef.current = resumeKey;
+
     console.log(
       `[Editor] Resuming polling for in-progress job: ${generationJob.jobId} (${generationJob.status})`,
     );
@@ -289,6 +296,8 @@ export default function Editor() {
       setGenerationStatus(generationJob);
     });
 
+    let framingPollTookOver = false;
+
     // Resume polling - use shorter initial delay since job is already running
     pollGenerationStatus(projectId, {
       initialDelayMs: 5000, // 5s initial delay (job already started)
@@ -300,7 +309,7 @@ export default function Editor() {
         setGenerationStatus(job);
       },
     })
-      .then((result) => {
+      .then(async (result) => {
         // Guard: only dispatch if still on the same project
         if (projectIdRef.current !== startingProjectId) {
           console.log(
@@ -314,19 +323,106 @@ export default function Editor() {
             `[Editor] Generation complete (resumed): ${result.segments.length} segments`,
           );
         }
+
+        // Await framing check so finally() doesn't run until we know if framing is needed
+        if (projectIdRef.current !== startingProjectId) return;
+        try {
+          const project = await getProject(startingProjectId);
+          const fJob = project.framingJob;
+          if (
+            fJob &&
+            (fJob.status === "pending" || fJob.status === "analyzing") &&
+            projectIdRef.current === startingProjectId
+          ) {
+            framingPollTookOver = true;
+            setGenerationStatus({
+              status: "framing",
+              jobId: fJob.jobId,
+              startedAt: fJob.startedAt,
+            });
+            const POLL = 10000;
+            const MAX = 600000;
+            const start = Date.now();
+            (async () => {
+              while (Date.now() - start < MAX) {
+                if (projectIdRef.current !== startingProjectId) break;
+                await new Promise((r) => setTimeout(r, POLL));
+                if (projectIdRef.current !== startingProjectId) break;
+                let p;
+                try {
+                  p = await getProject(startingProjectId);
+                } catch {
+                  break;
+                }
+                if (p.framingJob?.status === "completed") {
+                  if (p.segments?.length) dispatch(setSegments(p.segments));
+                  break;
+                }
+                if (p.framingJob?.status === "failed") break;
+              }
+              if (projectIdRef.current === startingProjectId) {
+                setIsGenerating(false);
+                setGenerationStatus(null);
+              }
+            })();
+          }
+        } catch {
+          /* non-fatal */
+        }
       })
       .catch((error: unknown) => {
         console.error("Generation failed (resumed):", error);
         // Don't show alert for resumed jobs that fail - might be stale
       })
       .finally(() => {
-        // Only reset state if still on same project
-        if (projectIdRef.current === startingProjectId) {
+        // Only reset state if framing poll didn't take over
+        if (
+          !framingPollTookOver &&
+          projectIdRef.current === startingProjectId
+        ) {
           setIsGenerating(false);
           setGenerationStatus(null);
         }
       });
-  }, [projectId, generationJob, loading, isGenerating, dispatch]);
+  }, [projectId, generationJob, loading, dispatch]);
+
+  // Resume framing poll if there's an in-progress framing job (e.g., after page refresh)
+  useEffect(() => {
+    if (!projectId || !framingJob || loading) return;
+    if (framingJob.status !== "pending" && framingJob.status !== "analyzing")
+      return;
+    if (isGenerating) return; // generation flow will handle it
+
+    const startingProjectId = projectId;
+    let cancelled = false;
+
+    (async () => {
+      const POLL = 10000;
+      const MAX = 600000;
+      const start = Date.now();
+      while (!cancelled && Date.now() - start < MAX) {
+        await new Promise((r) => setTimeout(r, POLL));
+        if (cancelled || projectIdRef.current !== startingProjectId) break;
+        let project;
+        try {
+          project = await getProject(startingProjectId);
+        } catch {
+          break;
+        }
+        const job = project.framingJob;
+        if (!job) break;
+        if (job.status === "completed") {
+          if (project.segments?.length) dispatch(setSegments(project.segments));
+          break;
+        }
+        if (job.status === "failed") break;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, framingJob, loading, dispatch]);
 
   // Don't auto-seek when selecting segments - timeline handles seeking now
   // useEffect(() => {
@@ -414,17 +510,14 @@ export default function Editor() {
     const metadata = { ...selections, videoDuration };
 
     try {
-      // Start async generation job
-      const { jobId } = await generateSegments(projectId, metadata);
+      // Start async generation job — backend handles auto-framing if requested
+      const { jobId } = await generateSegments(projectId, metadata, {
+        autoFrame: autoFrameEnabled,
+        targetAspectRatio: globalFraming.aspectRatio,
+      });
       console.log(`[Editor] Started generation job: ${jobId}`);
 
-      // Guard: check if still on same project
-      if (projectIdRef.current !== startingProjectId) {
-        console.log(
-          `[Editor] Project changed, abandoning generation tracking for ${startingProjectId}`,
-        );
-        return;
-      }
+      if (projectIdRef.current !== startingProjectId) return;
 
       setGenerationStatus({
         status: "pending",
@@ -432,84 +525,52 @@ export default function Editor() {
         startedAt: new Date().toISOString(),
       });
 
-      // Poll for completion (30s initial delay, then 10s intervals)
+      // Poll until generation completes
       const result = await pollGenerationStatus(projectId, {
         onProgress: (job) => {
-          // Only update if still on same project
           if (projectIdRef.current !== startingProjectId) return;
-          console.log(`[Editor] Generation status: ${job.status}`);
           setGenerationStatus(job);
         },
       });
 
-      // Guard: only dispatch if still on the same project
-      if (projectIdRef.current !== startingProjectId) {
-        console.log(
-          `[Editor] Ignoring stale generation result for project ${startingProjectId}`,
-        );
-        return;
-      }
+      if (projectIdRef.current !== startingProjectId) return;
 
       if (result.segments.length > 0) {
-        // Phase 2: auto-frame before surfacing segments to user
-        if (autoFrameEnabled && projectIdRef.current === startingProjectId) {
+        dispatch(setSegments(result.segments));
+        console.log(
+          `[Editor] Generation complete: ${result.segments.length} segments`,
+        );
+
+        // If auto-frame was requested, poll for framing completion
+        if (autoFrameEnabled) {
           setGenerationStatus({
             status: "framing",
             jobId,
             startedAt: new Date().toISOString(),
           });
-          try {
-            await startBatchFraming(
-              startingProjectId,
-              result.segments.map((seg) => ({
-                id: seg.id,
-                startTime: seg.startTime,
-                endTime: seg.endTime,
-              })),
-              globalFraming.aspectRatio,
-            );
-
-            const FRAMING_POLL = 3000;
-            const FRAMING_MAX = 600000; // 10 min
-            const framingStart = Date.now();
-
-            while (Date.now() - framingStart < FRAMING_MAX) {
-              if (projectIdRef.current !== startingProjectId) break;
-              await new Promise((r) => setTimeout(r, FRAMING_POLL));
-              if (projectIdRef.current !== startingProjectId) break;
-              let project;
-              try {
-                project = await getProject(startingProjectId);
-              } catch {
-                // network error — surface segments without framing
-                dispatch(setSegments(result.segments));
-                break;
-              }
-              const job = project.framingJob;
-              if (!job) break;
-              if (job.status === "completed") {
-                if (project.segments?.length) {
-                  dispatch(setSegments(project.segments));
-                }
-                break;
-              }
-              if (job.status === "failed") {
-                // framing failed — still show segments without framing
-                dispatch(setSegments(result.segments));
-                break;
-              }
+          const FRAMING_POLL = 10000;
+          const FRAMING_MAX = 600000;
+          const framingStart = Date.now();
+          while (Date.now() - framingStart < FRAMING_MAX) {
+            if (projectIdRef.current !== startingProjectId) break;
+            await new Promise((r) => setTimeout(r, FRAMING_POLL));
+            if (projectIdRef.current !== startingProjectId) break;
+            let project;
+            try {
+              project = await getProject(startingProjectId);
+            } catch {
+              break;
             }
-          } catch {
-            // framing error — still show segments without framing
-            dispatch(setSegments(result.segments));
+            const job = project.framingJob;
+            if (!job) break;
+            if (job.status === "completed") {
+              if (project.segments?.length)
+                dispatch(setSegments(project.segments));
+              break;
+            }
+            if (job.status === "failed") break;
           }
-        } else {
-          dispatch(setSegments(result.segments));
         }
-
-        console.log(
-          `[Editor] Generation complete: ${result.segments.length} segments`,
-        );
       }
 
       setIsGenerating(false);

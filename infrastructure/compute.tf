@@ -504,7 +504,8 @@ resource "aws_lambda_function" "generate_segments" {
       SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
       TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
       BUCKET_NAME             = aws_s3_bucket.media.bucket
-      DETECT_SCENES_FUNCTION  = aws_lambda_function.detect_scenes.function_name
+      DETECT_SCENES_FUNCTION        = aws_lambda_function.detect_scenes.function_name
+      ANALYZE_FRAMING_FUNCTION_NAME = aws_lambda_function.analyze_framing.function_name
     }
   }
 }
