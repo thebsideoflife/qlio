@@ -82,6 +82,9 @@ export function Timeline({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Suppress playhead auto-scroll when user is manually scrolling
+  const userScrollingRef = useRef(false);
+  const userScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const dragRef = useRef<DragInfo | null>(null);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
@@ -381,16 +384,15 @@ export function Timeline({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [videoRef, selectedId, dispatch, currentTime, clampTime]);
 
-  // Auto-scroll to keep playhead visible when playing
+  // Auto-scroll to keep playhead visible when playing (suppressed while user scrolls manually)
   useEffect(() => {
-    if (!scrollRef.current || !isPlaying) return;
+    if (!scrollRef.current || !isPlaying || userScrollingRef.current) return;
 
     const scrollContainer = scrollRef.current;
     const playheadPx = timeToPx(effectiveCurrentTime);
     const containerWidth = scrollContainer.clientWidth;
     const scrollLeft = scrollContainer.scrollLeft;
 
-    // If playhead is outside visible area, scroll
     const buffer = containerWidth * 0.2;
     if (playheadPx < scrollLeft + buffer) {
       scrollContainer.scrollLeft = Math.max(0, playheadPx - buffer);
@@ -689,13 +691,20 @@ export function Timeline({
   ]);
 
   // Button zoom - bigger steps (50% change)
-  const handleZoomIn = () => {
-    setZoom((z) => Math.min(z * 1.5, MAX_ZOOM));
+  const applyZoom = (newZoom: number) => {
+    const scrollContainer = scrollRef.current;
+    if (!scrollContainer) return;
+    // Same math as gesture zoom — keep effectiveCurrentTime pinned to viewport center
+    const cursorX = scrollContainer.clientWidth / 2;
+    const newPps = effectiveDuration > 0 ? (containerWidth * newZoom) / effectiveDuration : 1;
+    const newScroll = Math.max(0, effectiveCurrentTime * newPps - cursorX);
+    zoomRef.current = newZoom;
+    flushSync(() => setZoom(newZoom));
+    scrollContainer.scrollLeft = newScroll;
   };
 
-  const handleZoomOut = () => {
-    setZoom((z) => Math.max(z / 1.5, MIN_ZOOM));
-  };
+  const handleZoomIn = () => applyZoom(Math.min(zoom * 1.5, MAX_ZOOM));
+  const handleZoomOut = () => applyZoom(Math.max(zoom / 1.5, MIN_ZOOM));
 
   // Touch-based pinch zoom (mobile)
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
@@ -816,8 +825,11 @@ export function Timeline({
         scrollContainer.scrollLeft = newScroll;
       } else {
         // Plain wheel = horizontal scroll
+        // Normalize deltaMode: 0=pixels (trackpad), 1=lines (mouse), 2=pages
         e.preventDefault();
-        scrollContainer.scrollLeft += e.deltaX || e.deltaY;
+        const raw = e.deltaX !== 0 ? e.deltaX : e.deltaY;
+        const delta = e.deltaMode === 1 ? raw * 40 : e.deltaMode === 2 ? raw * scrollContainer.clientWidth : raw;
+        scrollContainer.scrollLeft += delta;
       }
     };
 
@@ -1081,6 +1093,14 @@ export function Timeline({
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
+        onScroll={() => {
+          // Mark user as manually scrolling; suppress playhead auto-scroll for 2s
+          userScrollingRef.current = true;
+          if (userScrollTimeoutRef.current) clearTimeout(userScrollTimeoutRef.current);
+          userScrollTimeoutRef.current = setTimeout(() => {
+            userScrollingRef.current = false;
+          }, 2000);
+        }}
       >
         <div
           className="h-full flex flex-col relative ml-6 mr-3"
@@ -1218,6 +1238,17 @@ export function Timeline({
                                 );
                               }}
                             >
+                              {/* Start/end times — vertically centered in the block */}
+                              {isKfSelected && blockWidth > 40 && (
+                                <span className="absolute inset-y-0 left-0.5 flex items-center text-[8px] font-mono text-white/70 pointer-events-none leading-none">
+                                  {formatTime(seg.startTime + kf.time)}
+                                </span>
+                              )}
+                              {isKfSelected && blockWidth > 60 && (
+                                <span className="absolute inset-y-0 right-0.5 flex items-center text-[8px] font-mono text-white/70 pointer-events-none leading-none">
+                                  {formatTime(seg.startTime + nextTime)}
+                                </span>
+                              )}
                               {/* Drag handle on the left edge (not for first keyframe, only selected segment) */}
                               {isSelected && !isFirst && (
                                 <div
@@ -1406,18 +1437,17 @@ export function Timeline({
                       {segment.title}
                     </div>
                   )}
+                  {width > 60 && (
+                    <div className="absolute bottom-1 left-1 text-[9px] text-white/50 font-mono pointer-events-none">
+                      {formatTime(segment.startTime)}
+                    </div>
+                  )}
+                  {width > 80 && (
+                    <div className="absolute bottom-1 right-1 text-[9px] text-white/50 font-mono pointer-events-none">
+                      {formatTime(segment.endTime)}
+                    </div>
+                  )}
 
-                  {/* Keyframe count indicator */}
-                  {segment.framing &&
-                    (() => {
-                      const kfs = getEffectiveKeyframes(segment.framing);
-                      if (kfs.length <= 1) return null;
-                      return (
-                        <div className="absolute bottom-0.5 right-1 text-[9px] text-white/50 font-mono pointer-events-none">
-                          {kfs.length}kf
-                        </div>
-                      );
-                    })()}
                 </div>
               );
             })}
