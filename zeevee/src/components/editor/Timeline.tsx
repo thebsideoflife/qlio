@@ -84,7 +84,11 @@ export function Timeline({
   const scrollRef = useRef<HTMLDivElement>(null);
   // Suppress playhead auto-scroll when user is manually scrolling
   const userScrollingRef = useRef(false);
-  const userScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const userScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  // Set before programmatic scrolls so onScroll doesn't treat them as user scrolls
+  const programmaticScrollRef = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
   const dragRef = useRef<DragInfo | null>(null);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
@@ -395,9 +399,13 @@ export function Timeline({
 
     const buffer = containerWidth * 0.2;
     if (playheadPx < scrollLeft + buffer) {
+      programmaticScrollRef.current = true;
       scrollContainer.scrollLeft = Math.max(0, playheadPx - buffer);
+      programmaticScrollRef.current = false;
     } else if (playheadPx > scrollLeft + containerWidth - buffer) {
+      programmaticScrollRef.current = true;
       scrollContainer.scrollLeft = playheadPx - containerWidth + buffer;
+      programmaticScrollRef.current = false;
     }
   }, [effectiveCurrentTime, isPlaying, timeToPx]);
 
@@ -696,11 +704,16 @@ export function Timeline({
     if (!scrollContainer) return;
     // Same math as gesture zoom — keep effectiveCurrentTime pinned to viewport center
     const cursorX = scrollContainer.clientWidth / 2;
-    const newPps = effectiveDuration > 0 ? (containerWidth * newZoom) / effectiveDuration : 1;
+    const newPps =
+      effectiveDuration > 0
+        ? (containerWidth * newZoom) / effectiveDuration
+        : 600;
     const newScroll = Math.max(0, effectiveCurrentTime * newPps - cursorX);
     zoomRef.current = newZoom;
     flushSync(() => setZoom(newZoom));
+    programmaticScrollRef.current = true;
     scrollContainer.scrollLeft = newScroll;
+    programmaticScrollRef.current = false;
   };
 
   const handleZoomIn = () => applyZoom(Math.min(zoom * 1.5, MAX_ZOOM));
@@ -828,7 +841,12 @@ export function Timeline({
         // Normalize deltaMode: 0=pixels (trackpad), 1=lines (mouse), 2=pages
         e.preventDefault();
         const raw = e.deltaX !== 0 ? e.deltaX : e.deltaY;
-        const delta = e.deltaMode === 1 ? raw * 40 : e.deltaMode === 2 ? raw * scrollContainer.clientWidth : raw;
+        const delta =
+          e.deltaMode === 1
+            ? raw * 40
+            : e.deltaMode === 2
+              ? raw * scrollContainer.clientWidth
+              : raw;
         scrollContainer.scrollLeft += delta;
       }
     };
@@ -1094,9 +1112,11 @@ export function Timeline({
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onScroll={() => {
-          // Mark user as manually scrolling; suppress playhead auto-scroll for 2s
+          // Ignore programmatic scrolls (applyZoom, auto-scroll) — only react to user scrolls
+          if (programmaticScrollRef.current) return;
           userScrollingRef.current = true;
-          if (userScrollTimeoutRef.current) clearTimeout(userScrollTimeoutRef.current);
+          if (userScrollTimeoutRef.current)
+            clearTimeout(userScrollTimeoutRef.current);
           userScrollTimeoutRef.current = setTimeout(() => {
             userScrollingRef.current = false;
           }, 2000);
@@ -1279,38 +1299,48 @@ export function Timeline({
                         })}
                       </div>
                       {/* Delete framing keyframe button — floats over lane, same style as split indicator */}
-                      {isSelected && (() => {
-                        const selKf = selectedKeyframeId
-                          ? sortedKfs.find((k) => k.id === selectedKeyframeId)
-                          : null;
-                        if (!selKf || sortedKfs.length <= 1) return null;
-                        const selIdx = sortedKfs.indexOf(selKf);
-                        const nextT = selIdx < sortedKfs.length - 1
-                          ? sortedKfs[selIdx + 1].time
-                          : segDuration;
-                        const centerPx = (nextT / segDuration) * laneWidth - 4;
-                        return (
-                          <div
-                            className="absolute z-20 group cursor-pointer"
-                            style={{
-                              left: `${laneLeft + centerPx}px`,
-                              transform: "translateX(-50%)",
-                              width: "14px",
-                              top: "-14px",
-                              height: "14px",
-                            }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              dispatch(removeFramingKeyframe({ segmentId: seg.id, keyframeId: selKf.id }));
-                            }}
-                            title="Delete framing keyframe"
-                          >
-                            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-zinc-800 border border-red-500/60 group-hover:border-red-400 flex items-center justify-center transition-colors">
-                              <span className="text-[9px] font-bold text-red-400 group-hover:text-red-300 leading-none">×</span>
+                      {isSelected &&
+                        (() => {
+                          const selKf = selectedKeyframeId
+                            ? sortedKfs.find((k) => k.id === selectedKeyframeId)
+                            : null;
+                          if (!selKf || sortedKfs.length <= 1) return null;
+                          const selIdx = sortedKfs.indexOf(selKf);
+                          const nextT =
+                            selIdx < sortedKfs.length - 1
+                              ? sortedKfs[selIdx + 1].time
+                              : segDuration;
+                          const centerPx =
+                            (nextT / segDuration) * laneWidth - 4;
+                          return (
+                            <div
+                              className="absolute z-20 group cursor-pointer"
+                              style={{
+                                left: `${laneLeft + centerPx}px`,
+                                transform: "translateX(-50%)",
+                                width: "14px",
+                                top: "-14px",
+                                height: "14px",
+                              }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                dispatch(
+                                  removeFramingKeyframe({
+                                    segmentId: seg.id,
+                                    keyframeId: selKf.id,
+                                  }),
+                                );
+                              }}
+                              title="Delete framing keyframe"
+                            >
+                              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-zinc-800 border border-red-500/60 group-hover:border-red-400 flex items-center justify-center transition-colors">
+                                <span className="text-[9px] font-bold text-red-400 group-hover:text-red-300 leading-none">
+                                  x
+                                </span>
+                              </div>
                             </div>
-                          </div>
-                        );
-                      })()}
+                          );
+                        })()}
 
                       {/* Split-framing indicator — only for selected segment */}
                       {isSelected &&
@@ -1447,7 +1477,6 @@ export function Timeline({
                       {formatTime(segment.endTime)}
                     </div>
                   )}
-
                 </div>
               );
             })}
