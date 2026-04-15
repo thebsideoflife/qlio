@@ -230,10 +230,12 @@ function enforceMinHold(
   }
 
   // Drop keyframes that start in the last MIN_HOLD_SECONDS (can't hold long enough)
+  // Always keep at least the first keyframe (time=0)
   if (result.length > 1) {
-    result = result.filter(
+    const filtered = result.filter(
       (kf, i) => i === 0 || segmentDuration - kf.time >= MIN_HOLD_SECONDS,
     );
+    if (filtered.length > 0) result = filtered;
   }
 
   return result;
