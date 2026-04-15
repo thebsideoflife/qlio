@@ -32,6 +32,7 @@ export function CaptionText({ caption, style, currentTime }: CaptionTextProps) {
         style={{
           fontFamily: style.fontFamily,
           fontSize: `${style.fontSize}vh`,
+          fontWeight: style.fontWeight ?? "600",
           lineHeight: 1.25,
           color: style.color,
           textShadow: "0 1px 2px rgba(0,0,0,0.8)",

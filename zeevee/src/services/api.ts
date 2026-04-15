@@ -179,6 +179,7 @@ export interface CaptionSettings {
   style: {
     fontSize: number;
     fontFamily: string;
+    fontWeight?: string;
     color: string;
     backgroundColor: string;
     position: { x: number; y: number };
@@ -224,6 +225,7 @@ export interface GenerationJob {
     | "pending"
     | "detecting_scenes"
     | "generating"
+    | "framing"
     | "completed"
     | "failed";
   jobId: string;
@@ -242,10 +244,15 @@ export interface GenerateSegmentsResponse {
 export const generateSegments = async (
   projectId: string,
   metadata: Record<string, unknown>,
+  options?: { autoFrame?: boolean; targetAspectRatio?: string },
 ): Promise<GenerateSegmentsResponse> => {
   const response = await axios.post(
     `${API_URL}/projects/${projectId}/generate`,
-    { metadata },
+    {
+      metadata,
+      autoFrame: options?.autoFrame ?? false,
+      targetAspectRatio: options?.targetAspectRatio ?? "9:16",
+    },
     {
       headers: getAuthHeaders(),
     },

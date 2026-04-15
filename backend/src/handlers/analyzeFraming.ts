@@ -10,7 +10,11 @@ import {
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
-import { S3Client, GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  GetObjectCommand,
+  HeadObjectCommand,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
@@ -139,7 +143,7 @@ function parseGeminiKeyframeResponse(
       ZOOM_LEVEL_MAP[zoomToken as ZoomLevel] ?? ZOOM_LEVEL_MAP.MEDIUM;
 
     keyframes.push({
-      id: `ai-kf-${i}`,
+      id: randomUUID(),
       time,
       focusX: 0.5,
       focusY: 0.5,
@@ -167,11 +171,74 @@ function parseGeminiKeyframeResponse(
     deduped.push(curr);
   }
 
-  deduped.forEach((kf, i) => {
-    kf.id = `ai-kf-${i}`;
-  });
+  const enforced = enforceMinHold(deduped, segmentDuration);
 
-  return deduped;
+  // Dedup again — enforcing can create new consecutive identical zooms
+  const final: FramingKeyframe[] = [enforced[0]];
+  for (let i = 1; i < enforced.length; i++) {
+    if (enforced[i].zoom !== final[final.length - 1].zoom) {
+      final.push(enforced[i]);
+    }
+  }
+
+  return final;
+}
+
+const MIN_HOLD_SECONDS = 5;
+
+/**
+ * Enforce a minimum hold duration per keyframe. When two consecutive keyframes
+ * are closer than MIN_HOLD_SECONDS, merge them:
+ * - Default: keep the WIDER (lower zoom) to avoid over-aggressive framing
+ * - Exception: if one keyframe's hold is ≥2x the other's, use the longer one's
+ *   zoom (it's the dominant framing for that period)
+ * Runs iteratively until no more violations remain.
+ */
+function enforceMinHold(
+  keyframes: FramingKeyframe[],
+  segmentDuration: number,
+): FramingKeyframe[] {
+  if (keyframes.length <= 1) return keyframes;
+
+  let result = [...keyframes];
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < result.length - 1; i++) {
+      const holdI = result[i + 1].time - result[i].time;
+      if (holdI < MIN_HOLD_SECONDS) {
+        const nextNextTime =
+          i + 2 < result.length ? result[i + 2].time : segmentDuration;
+        const holdNext = nextNextTime - result[i + 1].time;
+
+        let winnerZoom: number;
+        if (holdNext >= holdI * 2) {
+          winnerZoom = result[i + 1].zoom; // next is much longer — use its zoom
+        } else if (holdI >= holdNext * 2) {
+          winnerZoom = result[i].zoom; // current is much longer — use its zoom
+        } else {
+          winnerZoom = Math.min(result[i].zoom, result[i + 1].zoom); // wider wins
+        }
+
+        result[i] = { ...result[i], zoom: winnerZoom };
+        result.splice(i + 1, 1);
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  // Drop keyframes that start in the last MIN_HOLD_SECONDS (can't hold long enough)
+  // Always keep at least the first keyframe (time=0)
+  if (result.length > 1) {
+    const filtered = result.filter(
+      (kf, i) => i === 0 || segmentDuration - kf.time >= MIN_HOLD_SECONDS,
+    );
+    if (filtered.length > 0) result = filtered;
+  }
+
+  return result;
 }
 
 /**
@@ -205,7 +272,7 @@ function parseTimestamp(raw: string): number | null {
 
 function makeFallbackKeyframe(): FramingKeyframe {
   return {
-    id: "ai-kf-0",
+    id: `ai-kf-fb-${randomUUID()}`,
     time: 0,
     focusX: 0.5,
     focusY: 0.5,
@@ -277,7 +344,7 @@ Rules:
 - First keyframe MUST be at 0.0
 - Add a new keyframe when the shot changes or subjects move enough to need a different crop
 - If nothing changes, output just one line
-- Maximum 20 keyframes per clip
+- Maximum 8 keyframes per clip
 
 Output ONLY the TIME|ZOOM lines. No explanations.`;
 }
@@ -401,14 +468,7 @@ async function processSegment(
     const fileUri = await uploadToGemini(clipPath);
 
     // 3. Query Gemini for zoom keyframes
-    const keyframes = await analyzeSegmentWithGemini(client, fileUri, duration);
-
-    // Re-id keyframes with segment index
-    keyframes.forEach((kf, i) => {
-      kf.id = `ai-kf-${segIndex}-${i}`;
-    });
-
-    return keyframes;
+    return await analyzeSegmentWithGemini(client, fileUri, duration);
   } catch (err) {
     console.error(
       `[Framing] Segment ${segIndex} (${segment.startTime.toFixed(1)}s-${segment.endTime.toFixed(1)}s) failed:`,
@@ -452,8 +512,7 @@ async function getAssetRecord(projectId: string) {
   const projectRes = await docClient.send(
     new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
   );
-  if (!projectRes.Item)
-    throw { statusCode: 404, message: "Project not found" };
+  if (!projectRes.Item) throw { statusCode: 404, message: "Project not found" };
 
   const assetId = projectRes.Item.assetId;
   const assetRes = await docClient.send(
@@ -527,7 +586,11 @@ async function handleSingleSegment(
     const clipPath = `/tmp/single-segment.mp4`;
     await cutSegmentClip(s3Key, startTime, segmentDuration, clipPath);
     const fileUri = await uploadToGemini(clipPath);
-    keyframes = await analyzeSegmentWithGemini(client, fileUri, segmentDuration);
+    keyframes = await analyzeSegmentWithGemini(
+      client,
+      fileUri,
+      segmentDuration,
+    );
     legacyFraming = keyframesToLegacyResult(keyframes);
     try {
       fs.unlinkSync(clipPath);
@@ -612,7 +675,9 @@ async function handleStartBatch(
         "A framing job is already running for this project",
       );
     }
-    console.log(`[Framing] Overwriting stale job ${existingJob.jobId} (${Math.round(ageMs / 1000)}s old)`);
+    console.log(
+      `[Framing] Overwriting stale job ${existingJob.jobId} (${Math.round(ageMs / 1000)}s old)`,
+    );
   }
 
   const jobId = randomUUID();
@@ -699,7 +764,7 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
             i,
             [
               {
-                id: "ai-kf-0",
+                id: randomUUID(),
                 time: 0,
                 focusX: 0.5,
                 focusY: 0.5,
@@ -870,6 +935,10 @@ async function writeFramingResults(
 export const handler: Handler = async (event, context, callback) => {
   if (event.isAsyncJob) {
     return executeFramingJob(event as AsyncJobPayload);
+  }
+  // Direct Lambda-to-Lambda invocation (e.g., from generateSegments)
+  if (event.isDirectBatchStart) {
+    return handleStartBatch(event.projectId, event);
   }
   return handleApiRequest(event, context, callback);
 };
