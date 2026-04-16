@@ -1,9 +1,9 @@
 import { useSelector, useDispatch } from "react-redux";
-import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import type { RootState } from "@/store/store";
 import { updateCaptionPosition, updateCaptionStyle } from "@/store/editorSlice";
 import { SNAP_POSITIONS } from "@/remotion/types";
-import { CaptionText } from "./CaptionText";
+import { CaptionDisplay } from "./CaptionDisplay";
 
 interface CaptionOverlayProps {
   currentTime: number;
@@ -15,10 +15,11 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
   const dispatch = useDispatch();
   const captions = useSelector((state: RootState) => state.editor.captions);
   const { enabled, style } = useSelector(
-    (state: RootState) => state.editor.captionSettings
+    (state: RootState) => state.editor.captionSettings,
   );
 
-  const captionRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerHeight, setContainerHeight] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
@@ -26,12 +27,6 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
   const [initialPos, setInitialPos] = useState({ x: 0, y: 0 });
   const [initialSize, setInitialSize] = useState(0);
   const [resizeDirection, setResizeDirection] = useState({ x: 1, y: 1 });
-
-  // Find active caption - memoized since currentTime updates 60fps
-  const activeCaption = useMemo(
-    () => captions.find((c) => currentTime >= c.startTime && currentTime < c.endTime),
-    [captions, currentTime]
-  );
 
   // Snap helper
   const findSnap = useCallback((x: number, y: number) => {
@@ -55,7 +50,7 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
       setDragStart({ x: e.clientX, y: e.clientY });
       setInitialPos({ x: style.position.x, y: style.position.y });
     },
-    [style.position]
+    [style.position],
   );
 
   // Resize start - detect which corner
@@ -77,7 +72,7 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
       };
       setResizeDirection(directions[corner] || { x: 1, y: 1 });
     },
-    [style.fontSize]
+    [style.fontSize],
   );
 
   // Global mouse handlers
@@ -85,7 +80,7 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
     if (!isDragging && !isResizing) return;
 
     const onMove = (e: MouseEvent) => {
-      const container = captionRef.current?.parentElement;
+      const container = containerRef.current;
       if (!container) return;
       const rect = container.getBoundingClientRect();
 
@@ -134,60 +129,53 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
     dispatch,
   ]);
 
-  if (!enabled || !activeCaption) return null;
+  useEffect(() => {
+    if (containerRef.current)
+      setContainerHeight(containerRef.current.offsetHeight);
+  }, []);
+
+  if (!enabled) return null;
 
   return (
     <div
-      ref={captionRef}
+      ref={containerRef}
       className="absolute inset-0 pointer-events-none"
       style={{ zIndex: 10 }}
+      onMouseDown={onDragStart}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
     >
-      <div
-        className="absolute pointer-events-auto cursor-move select-none flex justify-center"
-        style={{
-          left: `${style.position.x}%`,
-          top: `${style.position.y}%`,
-          transform: "translate(-50%, -50%)",
-          width: `${style.maxWidth}%`,
-        }}
-        onMouseDown={onDragStart}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
+      <CaptionDisplay
+        captions={captions}
+        settings={{ enabled, style }}
+        currentTime={currentTime}
+        containerHeight={containerHeight}
       >
-        <div
-          className={`relative ${
-            isHovered || isDragging ? "ring-2 ring-green-500 rounded" : ""
-          }`}
-        >
-          <CaptionText
-            caption={activeCaption}
-            style={style}
-            currentTime={currentTime}
-          />
-
-          {/* Resize handles - all four corners */}
-          {(isHovered || isResizing) && (
-            <>
-              <div
-                className="absolute -bottom-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nwse-resize transition-opacity"
-                onMouseDown={(e) => onResizeStart(e, "bottom-right")}
-              />
-              <div
-                className="absolute -bottom-1 -left-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nesw-resize transition-opacity"
-                onMouseDown={(e) => onResizeStart(e, "bottom-left")}
-              />
-              <div
-                className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nesw-resize transition-opacity"
-                onMouseDown={(e) => onResizeStart(e, "top-right")}
-              />
-              <div
-                className="absolute -top-1 -left-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nwse-resize transition-opacity"
-                onMouseDown={(e) => onResizeStart(e, "top-left")}
-              />
-            </>
-          )}
-        </div>
-      </div>
+        {/* Drag ring + resize handles */}
+        {(isHovered || isDragging) && (
+          <div className="absolute inset-0 ring-2 ring-green-500 rounded pointer-events-none" />
+        )}
+        {(isHovered || isResizing) && (
+          <>
+            <div
+              className="absolute -bottom-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nwse-resize pointer-events-auto"
+              onMouseDown={(e) => onResizeStart(e, "bottom-right")}
+            />
+            <div
+              className="absolute -bottom-1 -left-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nesw-resize pointer-events-auto"
+              onMouseDown={(e) => onResizeStart(e, "bottom-left")}
+            />
+            <div
+              className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nesw-resize pointer-events-auto"
+              onMouseDown={(e) => onResizeStart(e, "top-right")}
+            />
+            <div
+              className="absolute -top-1 -left-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nwse-resize pointer-events-auto"
+              onMouseDown={(e) => onResizeStart(e, "top-left")}
+            />
+          </>
+        )}
+      </CaptionDisplay>
     </div>
   );
 }

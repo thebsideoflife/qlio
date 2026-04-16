@@ -240,9 +240,7 @@ resource "aws_lambda_function" "render_video" {
       ASSETS_TABLE            = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
       AWS_REGION_NAME         = var.aws_region
-      # These will be set after Remotion Lambda deployment
-      REMOTION_SERVE_URL     = "https://remotionlambda-uswest2-0g1upoverr.s3.us-west-2.amazonaws.com/sites/zeevee-renderer/index.html"
-      REMOTION_FUNCTION_NAME = "remotion-render-4-0-387-mem2048mb-disk2048mb-240sec"
+      STITCH_FUNCTION_NAME    = aws_lambda_function.stitch_segments.function_name
     }
   }
 }
@@ -262,6 +260,7 @@ resource "aws_lambda_function" "get_render_status" {
     variables = {
       RENDER_JOBS_TABLE       = aws_dynamodb_table.render_jobs.name
       RENDERS_BUCKET          = aws_s3_bucket.renders.id
+      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
       REMOTION_FUNCTION_NAME  = "remotion-render-4-0-387-mem2048mb-disk2048mb-240sec"
       AWS_REGION_NAME         = var.aws_region
