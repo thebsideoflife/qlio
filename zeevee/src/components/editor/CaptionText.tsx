@@ -4,6 +4,8 @@ interface CaptionTextProps {
   caption: CaptionLine;
   style: CaptionStyle;
   currentTime: number;
+  /** Height of the rendering context in px. fontSize is treated as % of this. */
+  containerHeight: number;
 }
 
 /**
@@ -11,9 +13,14 @@ interface CaptionTextProps {
  * - CaptionOverlay (editor preview with drag/resize)
  * - CaptionDisplay in Remotion (final video render)
  */
-export function CaptionText({ caption, style, currentTime }: CaptionTextProps) {
+export function CaptionText({
+  caption,
+  style,
+  currentTime,
+  containerHeight,
+}: CaptionTextProps) {
   const activeWordIndex = caption.words.findIndex(
-    (w) => currentTime >= w.start && currentTime < w.end
+    (w) => currentTime >= w.start && currentTime < w.end,
   );
 
   const highlightColor = style.highlightColor || "#fbbf24";
@@ -31,7 +38,7 @@ export function CaptionText({ caption, style, currentTime }: CaptionTextProps) {
       <span
         style={{
           fontFamily: style.fontFamily,
-          fontSize: `${style.fontSize}vh`,
+          fontSize: `${(style.fontSize / 100) * containerHeight}px`,
           fontWeight: style.fontWeight ?? "600",
           lineHeight: 1.25,
           color: style.color,

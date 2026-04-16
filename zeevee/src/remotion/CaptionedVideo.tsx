@@ -13,48 +13,7 @@ import type {
 } from "./types";
 import { DEFAULT_SEGMENT_FRAMING } from "./types";
 import { AutoFramedVideo } from "./AutoFramedVideo";
-import { CaptionText } from "../components/editor/CaptionText";
-
-interface CaptionDisplayProps {
-  captions: CaptionLine[];
-  settings: CaptionSettings;
-  currentTime: number;
-}
-
-function CaptionDisplay({
-  captions,
-  settings,
-  currentTime,
-}: CaptionDisplayProps) {
-  if (!settings.enabled) return null;
-
-  const activeCaption = captions.find(
-    (c) => currentTime >= c.startTime && currentTime < c.endTime,
-  );
-
-  if (!activeCaption) return null;
-
-  const { style } = settings;
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: `${style.position.x}%`,
-        top: `${style.position.y}%`,
-        transform: "translate(-50%, -50%)",
-        maxWidth: `${style.maxWidth}%`,
-        textAlign: "center",
-      }}
-    >
-      <CaptionText
-        caption={activeCaption}
-        style={style}
-        currentTime={currentTime}
-      />
-    </div>
-  );
-}
+import { CaptionDisplay } from "../components/editor/CaptionDisplay";
 
 interface SegmentClipProps {
   videoUrl: string;
@@ -76,7 +35,7 @@ function SegmentClip({
   framingEnabled = false,
 }: SegmentClipProps) {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
+  const { fps, height } = useVideoConfig();
 
   // Current time within the original video
   const currentTime = startTime + frame / fps;
@@ -119,6 +78,7 @@ function SegmentClip({
           captions={captions}
           settings={captionSettings}
           currentTime={currentTime}
+          containerHeight={height}
         />
       </AutoFramedVideo>
     );
@@ -136,6 +96,7 @@ function SegmentClip({
         captions={captions}
         settings={captionSettings}
         currentTime={currentTime}
+        containerHeight={height}
       />
     </AbsoluteFill>
   );
@@ -149,7 +110,7 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
   globalFraming,
 }) => {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
+  const { fps, height } = useVideoConfig();
 
   const framingEnabled = globalFraming?.enabled ?? false;
 
@@ -199,6 +160,7 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
             captions={captions}
             settings={captionSettings}
             currentTime={currentTime}
+            containerHeight={height}
           />
         </AutoFramedVideo>
       );
@@ -211,6 +173,7 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
           captions={captions}
           settings={captionSettings}
           currentTime={currentTime}
+          containerHeight={height}
         />
       </AbsoluteFill>
     );
