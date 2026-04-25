@@ -1,3 +1,4 @@
+import { useState, useRef } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
 import {
@@ -16,11 +17,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
+import { Upload, Palette, X } from "lucide-react";
 
 const FONTS = [
-  { value: "Inter, system-ui, sans-serif", label: "Inter" },
-  { value: "Arial, sans-serif", label: "Arial" },
-  { value: "Georgia, serif", label: "Georgia" },
+  { value: "Inter, system-ui, sans-serif", label: "Inter", weight: "600" },
+  { value: "Arial, sans-serif", label: "Arial", weight: "700" },
+  { value: "Georgia, serif", label: "Georgia", weight: "700" },
+  { value: "'Oswald', sans-serif", label: "Oswald", weight: "700" },
+  { value: "'Bebas Neue', sans-serif", label: "Bebas Neue", weight: "400" },
+  { value: "'Poppins', sans-serif", label: "Poppins", weight: "700" },
+  { value: "'Montserrat', sans-serif", label: "Montserrat", weight: "800" },
+  { value: "'Roboto Condensed', sans-serif", label: "Roboto Condensed", weight: "700" },
+  { value: "'Playfair Display', serif", label: "Playfair Display", weight: "700" },
+  { value: "'Space Grotesk', sans-serif", label: "Space Grotesk", weight: "700" },
+  { value: "'DM Sans', sans-serif", label: "DM Sans", weight: "700" },
+  { value: "'Source Code Pro', monospace", label: "Source Code", weight: "600" },
 ];
 
 const SIZES = [
@@ -30,36 +42,80 @@ const SIZES = [
   { value: "4", label: "L" },
 ];
 
-const BACKGROUNDS = [
-  { value: "rgba(0,0,0,0.8)", label: "Dark" },
-  { value: "rgba(0,0,0,0.5)", label: "Semi" },
-  { value: "transparent", label: "None" },
-];
-
-const HIGHLIGHT_COLORS = [
-  { value: "#fbbf24", label: "Yellow" },
-  { value: "#60a5fa", label: "Blue" },
-  { value: "none", label: "No Animation" },
-];
-
 export function CaptionEditor() {
   const dispatch = useDispatch();
+  const [brandColors, setBrandColors] = useState<string[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { enabled, style } = useSelector(
-    (state: RootState) => state.editor.captionSettings
+    (state: RootState) => state.editor.captionSettings,
   );
   const captionCount = useSelector(
-    (state: RootState) => state.editor.captions.length
+    (state: RootState) => state.editor.captions.length,
   );
 
+  const textColor = style.color || "#ffffff";
   const highlightColor = style.highlightColor || "#fbbf24";
+  const backgroundColor = style.backgroundColor || "rgba(0,0,0,0.5)";
+
+  // Extract dominant colors from an uploaded image using canvas
+  const handleBrandImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const size = 64; // downscale for speed
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      ctx.drawImage(img, 0, 0, size, size);
+      const imageData = ctx.getImageData(0, 0, size, size).data;
+
+      // Simple color quantization: bucket pixels into 16-step bins
+      const buckets = new Map<string, number>();
+      for (let i = 0; i < imageData.length; i += 4) {
+        const r = Math.round(imageData[i] / 32) * 32;
+        const g = Math.round(imageData[i + 1] / 32) * 32;
+        const b = Math.round(imageData[i + 2] / 32) * 32;
+        const a = imageData[i + 3];
+        if (a < 128) continue; // skip transparent
+        // Skip near-white and near-black
+        const brightness = (r + g + b) / 3;
+        if (brightness > 240 || brightness < 15) continue;
+        const key = `${r},${g},${b}`;
+        buckets.set(key, (buckets.get(key) || 0) + 1);
+      }
+
+      // Sort by frequency, take top 5
+      const sorted = [...buckets.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([key]) => {
+          const [r, g, b] = key.split(",").map(Number);
+          return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+        });
+
+      setBrandColors(sorted);
+      URL.revokeObjectURL(img.src);
+    };
+    img.src = URL.createObjectURL(file);
+
+    // Reset input so same file can be re-uploaded
+    e.target.value = "";
+  };
 
   return (
     <div className="p-5 space-y-5">
       {/* Toggle */}
       <div className="flex items-center justify-between p-4 bg-muted/40 rounded-xl border-2 border-border">
         <div className="space-y-1">
-          <Label htmlFor="captions-toggle" className="font-bold">Show Captions</Label>
+          <Label htmlFor="captions-toggle" className="font-bold">
+            Show Captions
+          </Label>
           {captionCount > 0 && (
             <p className="text-xs text-muted-foreground font-medium">
               {captionCount} lines from transcript
@@ -77,7 +133,9 @@ export function CaptionEditor() {
         <>
           {/* Position */}
           <div className="space-y-3">
-            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Position</Label>
+            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              Position
+            </Label>
             <div className="grid grid-cols-3 gap-2">
               {SNAP_POSITIONS.map((pos) => {
                 const active =
@@ -106,12 +164,20 @@ export function CaptionEditor() {
           {/* Font & Size */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Font</Label>
+              <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                Font
+              </Label>
               <Select
                 value={style.fontFamily}
-                onValueChange={(v) =>
-                  dispatch(updateCaptionStyle({ fontFamily: v }))
-                }
+                onValueChange={(v) => {
+                  const font = FONTS.find((f) => f.value === v);
+                  dispatch(
+                    updateCaptionStyle({
+                      fontFamily: v,
+                      fontWeight: font?.weight || "600",
+                    }),
+                  );
+                }}
               >
                 <SelectTrigger className="h-10 text-sm font-semibold border-2 border-border">
                   <SelectValue />
@@ -123,14 +189,16 @@ export function CaptionEditor() {
                       value={f.value}
                       className="text-sm font-medium"
                     >
-                      {f.label}
+                      <span style={{ fontFamily: f.value }}>{f.label}</span>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
-              <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Size</Label>
+              <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                Size
+              </Label>
               <Select
                 value={String(Math.round(style.fontSize))}
                 onValueChange={(v) =>
@@ -155,50 +223,189 @@ export function CaptionEditor() {
             </div>
           </div>
 
-          {/* Background */}
+          {/* Text Color */}
           <div className="space-y-3">
-            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Background</Label>
-            <div className="flex gap-2">
-              {BACKGROUNDS.map((bg) => (
-                <Button
-                  key={bg.value}
-                  variant={
-                    style.backgroundColor === bg.value ? "default" : "outline"
+            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              Text Color
+            </Label>
+            <div className="flex items-center gap-3">
+              <label className="relative cursor-pointer">
+                <div
+                  className="w-10 h-10 rounded-lg border-2 border-border shadow-sm"
+                  style={{ backgroundColor: textColor }}
+                />
+                <input
+                  type="color"
+                  value={textColor}
+                  onChange={(e) =>
+                    dispatch(updateCaptionStyle({ color: e.target.value }))
                   }
-                  size="sm"
-                  className="flex-1 h-9 text-xs font-semibold"
-                  onClick={() =>
-                    dispatch(updateCaptionStyle({ backgroundColor: bg.value }))
-                  }
-                >
-                  {bg.label}
-                </Button>
-              ))}
+                  className="absolute inset-0 opacity-0 cursor-pointer"
+                />
+              </label>
+              <span className="text-xs font-mono text-muted-foreground">
+                {textColor}
+              </span>
             </div>
           </div>
 
           {/* Highlight Color */}
           <div className="space-y-3">
-            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Word Highlight</Label>
-            <div className="flex gap-2">
-              {HIGHLIGHT_COLORS.map((color) => (
-                <Button
-                  key={color.value}
-                  variant={
-                    highlightColor === color.value ? "default" : "outline"
-                  }
-                  size="sm"
-                  className="flex-1 h-9 text-xs font-semibold"
-                  onClick={() =>
-                    dispatch(
-                      updateCaptionStyle({ highlightColor: color.value })
-                    )
+            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              Word Highlight
+            </Label>
+            <div className="flex items-center gap-3">
+              <label className="relative cursor-pointer">
+                <div
+                  className={cn(
+                    "w-10 h-10 rounded-lg border-2 border-border shadow-sm",
+                    highlightColor === "none" &&
+                      "bg-muted flex items-center justify-center",
+                  )}
+                  style={
+                    highlightColor !== "none"
+                      ? { backgroundColor: highlightColor }
+                      : {}
                   }
                 >
-                  {color.label}
-                </Button>
-              ))}
+                  {highlightColor === "none" && (
+                    <X className="h-4 w-4 text-muted-foreground" />
+                  )}
+                </div>
+                {highlightColor !== "none" && (
+                  <input
+                    type="color"
+                    value={highlightColor}
+                    onChange={(e) =>
+                      dispatch(
+                        updateCaptionStyle({ highlightColor: e.target.value }),
+                      )
+                    }
+                    className="absolute inset-0 opacity-0 cursor-pointer"
+                  />
+                )}
+              </label>
+              <Button
+                variant={highlightColor === "none" ? "default" : "outline"}
+                size="sm"
+                className="text-xs h-8"
+                onClick={() =>
+                  dispatch(
+                    updateCaptionStyle({
+                      highlightColor:
+                        highlightColor === "none" ? "#fbbf24" : "none",
+                    }),
+                  )
+                }
+              >
+                {highlightColor === "none" ? "Disabled" : "Disable"}
+              </Button>
             </div>
+          </div>
+
+          {/* Background */}
+          <div className="space-y-3">
+            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              Background
+            </Label>
+            <div className="flex items-center gap-3">
+              <label className="relative cursor-pointer">
+                <div
+                  className="w-10 h-10 rounded-lg border-2 border-border shadow-sm"
+                  style={{ backgroundColor }}
+                />
+                <input
+                  type="color"
+                  value={
+                    backgroundColor === "transparent"
+                      ? "#000000"
+                      : backgroundColor.startsWith("rgba")
+                        ? "#000000"
+                        : backgroundColor
+                  }
+                  onChange={(e) =>
+                    dispatch(
+                      updateCaptionStyle({ backgroundColor: e.target.value }),
+                    )
+                  }
+                  className="absolute inset-0 opacity-0 cursor-pointer"
+                />
+              </label>
+              <div className="flex gap-1.5">
+                {[
+                  { value: "rgba(0,0,0,0.8)", label: "Dark" },
+                  { value: "rgba(0,0,0,0.5)", label: "Semi" },
+                  { value: "transparent", label: "None" },
+                ].map((bg) => (
+                  <Button
+                    key={bg.value}
+                    variant={backgroundColor === bg.value ? "default" : "outline"}
+                    size="sm"
+                    className="text-xs h-8 px-2"
+                    onClick={() =>
+                      dispatch(updateCaptionStyle({ backgroundColor: bg.value }))
+                    }
+                  >
+                    {bg.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Brand Color Extraction */}
+          <div className="space-y-3">
+            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              <Palette className="h-3.5 w-3.5 inline mr-1.5" />
+              Brand Colors
+            </Label>
+
+            {brandColors.length > 0 ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  {brandColors.map((color, i) => (
+                    <button
+                      key={i}
+                      className="w-9 h-9 rounded-lg border-2 border-border shadow-sm hover:scale-110 transition-transform"
+                      style={{ backgroundColor: color }}
+                      title={`Apply ${color} as text color`}
+                      onClick={() =>
+                        dispatch(updateCaptionStyle({ color }))
+                      }
+                    />
+                  ))}
+                  <button
+                    className="w-9 h-9 rounded-lg border-2 border-dashed border-border flex items-center justify-center text-muted-foreground hover:border-blue-400 transition-colors"
+                    onClick={() => setBrandColors([])}
+                    title="Clear brand colors"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Click a swatch to apply as text color
+                </p>
+              </div>
+            ) : (
+              <div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleBrandImageUpload}
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-9 gap-2"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  Upload logo to extract colors
+                </Button>
+              </div>
+            )}
           </div>
         </>
       )}
