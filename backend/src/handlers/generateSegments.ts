@@ -45,7 +45,8 @@ interface GenerationJob {
 interface AsyncJobPayload {
   isAsyncJob: true;
   projectId: string;
-  metadata: any;
+  userPrompt?: string;
+  videoDuration?: number;
   jobId: string;
   autoFrame?: boolean;
   targetAspectRatio?: string;
@@ -121,7 +122,7 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
     }
 
     const body = JSON.parse(event.body || "{}");
-    const { metadata, autoFrame, targetAspectRatio } = body;
+    const { userPrompt, videoDuration, autoFrame, targetAspectRatio } = body;
 
     // Generate a job ID
     const jobId = randomUUID();
@@ -147,7 +148,8 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
     const payload: AsyncJobPayload = {
       isAsyncJob: true,
       projectId,
-      metadata,
+      userPrompt: userPrompt || undefined,
+      videoDuration: typeof videoDuration === "number" ? videoDuration : undefined,
       jobId,
       autoFrame: !!autoFrame,
       targetAspectRatio: targetAspectRatio || "9:16",
@@ -191,7 +193,7 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
 const ANALYZE_FRAMING_FUNCTION_NAME = process.env.ANALYZE_FRAMING_FUNCTION_NAME;
 
 async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
-  const { projectId, metadata, jobId, autoFrame, targetAspectRatio } = payload;
+  const { projectId, userPrompt, videoDuration: payloadVideoDuration, jobId, autoFrame, targetAspectRatio } = payload;
 
   console.log(
     `[generateSegments] Executing job ${jobId} for project ${projectId}`
@@ -268,10 +270,8 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
     // =========================================================================
 
     console.log("[generateSegments] Starting StoryIQ generation...");
-    console.log("[generateSegments] Metadata:", JSON.stringify(metadata));
 
-    // Map frontend metadata to StoryIQ goals
-    const goals = mapMetadataToGoals(metadata || {});
+    const goals = mapMetadataToGoals({ userPrompt });
     console.log("[generateSegments] Goals:", JSON.stringify(goals));
 
     let generatedSegments: Segment[] = [];
@@ -292,8 +292,7 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
           assetId,
           goals,
           transcriptS3Uri: asset.transcriptionUrl,
-          // Pass videoDuration from frontend if available (more reliable than 12Labs for chunked videos)
-          videoDuration: metadata?.videoDuration || asset.duration || 0,
+          videoDuration: payloadVideoDuration || asset.duration || 0,
         },
         onStatusChange
       );
@@ -330,10 +329,10 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
         "[generateSegments] StoryIQ failed. Attempting heuristic fallback."
       );
 
-      // Get video duration
+      // Get video duration for fallback segments
       let videoDuration = 0;
-      if (metadata?.duration && typeof metadata.duration === "number") {
-        videoDuration = metadata.duration;
+      if (payloadVideoDuration && payloadVideoDuration > 0) {
+        videoDuration = payloadVideoDuration;
       } else if (asset.duration && typeof asset.duration === "number") {
         videoDuration = asset.duration;
       } else {
@@ -414,7 +413,7 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
         ExpressionAttributeNames: { "#seg": "segments", "#meta": "metadata" },
         ExpressionAttributeValues: {
           ":s": generatedSegments,
-          ":m": metadata || {},
+          ":m": { userPrompt: userPrompt || null },
           ":u": new Date().toISOString(),
         },
       })

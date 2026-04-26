@@ -223,12 +223,8 @@ export async function generateWithStoryIQ(
     });
   }
 
-  // Phase 3+4: Tool-based segment generation
-  // Replaces the old generate-then-verify pipeline with Anthropic tool-use.
-  // Claude calls add_segment/remove_segment/update_segment/finish_segments
-  // with inline validation, then a quality reviewer checks, then the enforcer
-  // guarantees hard constraints.
-  console.log("[StoryIQ] Phase 3: Tool-based segment generation...");
+  // Phase 3: Gemini-based segment generation + deterministic constraint enforcement
+  console.log("[StoryIQ] Phase 3: Segment generation...");
 
   const finalResult = await generateSegmentsWithTools({
     metadata,
@@ -264,114 +260,24 @@ export async function generateWithStoryIQ(
 }
 
 // ============================================================================
-// Utility: Parse Duration String
+// Utility: Map Frontend Request to StoryIQ Goals
 // ============================================================================
 
-/**
- * Parse duration from frontend. Handles:
- * - String formats: "3 min", "30s", "Auto"
- * - Number (already in seconds, but this is video duration - ignore for target)
- * - undefined/null
- *
- * Returns duration in seconds, or undefined for "Auto" or invalid input
- */
-export function parseDurationString(
-  duration: string | number | undefined | null,
-): number | undefined {
-  // Handle null/undefined
-  if (duration === null || duration === undefined) {
-    return undefined;
-  }
-
-  // If it's a number, it's likely the video duration passed from frontend
-  // This is NOT the target duration selection - ignore it
-  if (typeof duration === "number") {
-    // Numbers are ignored - they're video duration, not target duration
-    return undefined;
-  }
-
-  // Handle string
-  if (typeof duration !== "string") {
-    return undefined;
-  }
-
-  if (!duration || duration.toLowerCase() === "auto") {
-    return undefined;
-  }
-
-  const trimmed = duration.trim().toLowerCase();
-
-  // Match patterns like "30s", "30 s", "30sec", "30 sec"
-  const secondsMatch = trimmed.match(/^(\d+)\s*s(ec(ond)?s?)?$/);
-  if (secondsMatch) {
-    return parseInt(secondsMatch[1], 10);
-  }
-
-  // Match patterns like "3min", "3 min", "3m", "3 minutes"
-  const minutesMatch = trimmed.match(/^(\d+\.?\d*)\s*m(in(ute)?s?)?$/);
-  if (minutesMatch) {
-    return Math.round(parseFloat(minutesMatch[1]) * 60);
-  }
-
-  // Try parsing as raw number string (assume seconds)
-  const num = parseFloat(trimmed);
-  if (!isNaN(num)) {
-    return Math.round(num);
-  }
-
-  return undefined;
-}
-
-// ============================================================================
-// Utility: Map Frontend Metadata to StoryIQ Goals
-// ============================================================================
-
-export interface FrontendMetadata {
-  type?: string; // "tv" | "movie" | "ugc"
-  platform?: string; // "mobile" | "tiktok" | etc.
-  purpose?: string; // "full_video" | "compact_video" | "highlights" | etc.
-  duration?: string; // "3 min" | "30s" | "Auto" - for non-compact purposes
-  targetPercent?: number | string; // For compact_video: 25, 50, 75, or custom
-  videoDuration?: number; // Actual video duration in seconds (for reference)
-  userPrompt?: string; // Custom instructions from user
+export interface GenerateMetadata {
+  userPrompt?: string;
+  videoDuration?: number;
 }
 
 const MAX_USER_INSTRUCTIONS_LENGTH = 500;
+const DEFAULT_TARGET_PERCENT = 50;
 
-export function mapMetadataToGoals(metadata: FrontendMetadata): StoryIQGoals {
-  // Truncate user instructions to prevent overly long prompts
+export function mapMetadataToGoals(metadata: GenerateMetadata): StoryIQGoals {
   const userInstructions =
     metadata.userPrompt?.slice(0, MAX_USER_INSTRUCTIONS_LENGTH) || undefined;
 
-  // Parse target percent for compact video
-  let targetPercent: number | undefined;
-  if (metadata.targetPercent !== undefined) {
-    const parsed =
-      typeof metadata.targetPercent === "number"
-        ? metadata.targetPercent
-        : parseInt(String(metadata.targetPercent), 10);
-    if (!isNaN(parsed) && parsed > 0 && parsed <= 100) {
-      targetPercent = parsed;
-    }
-  }
-
-  // Calculate target duration for compact video based on percentage
-  let targetDuration = parseDurationString(metadata.duration);
-  if (
-    (metadata.purpose === "compact_video" ||
-      metadata.purpose === "highlights") &&
-    targetPercent &&
-    metadata.videoDuration
-  ) {
-    targetDuration = Math.round((metadata.videoDuration * targetPercent) / 100);
-  }
-
   return {
-    purpose: (metadata.purpose as Purpose) || Purpose.COMPACT_VIDEO,
-    contentType: (metadata.type as "tv" | "movie" | "ugc") || "tv",
-    platform: (metadata.platform as any) || "mobile",
-    targetDuration,
-    targetPercent,
+    purpose: Purpose.COMPACT_VIDEO,
+    targetPercent: DEFAULT_TARGET_PERCENT,
     userInstructions,
   };
 }

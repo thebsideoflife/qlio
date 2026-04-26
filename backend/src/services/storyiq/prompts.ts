@@ -113,6 +113,34 @@ export function getToolBasedPrompt(
 }
 
 // ============================================================================
+// Video Context (used by Gemini pipeline)
+// ============================================================================
+
+/**
+ * Build the video context section: transcript + scenes, with user instructions.
+ * Used by the Gemini generation pipeline — contains only data, no tool instructions.
+ */
+export function getVideoContext(
+  metadata: VideoMetadata,
+  transcript: TranscriptSegment[],
+  sceneBreaks: SceneBreak[] | null,
+  userInstructions?: string,
+): string {
+  const groupedScenes = sceneBreaks
+    ? groupDialogueByScene(sceneBreaks, transcript, metadata.duration)
+    : null;
+  let context = groupedScenes
+    ? formatScenesForPlanning(metadata, groupedScenes)
+    : formatContextForPlanning(metadata, transcript, sceneBreaks);
+
+  if (userInstructions?.trim()) {
+    context += `\n\n---\nUSER INSTRUCTIONS: ${userInstructions.trim()}\n---`;
+  }
+
+  return context;
+}
+
+// ============================================================================
 // Helper: Format Context for Planning
 // ============================================================================
 

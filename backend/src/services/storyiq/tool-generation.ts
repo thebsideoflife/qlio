@@ -12,7 +12,6 @@
 
 import {
   Purpose,
-  getPurposeConstraints,
   parseJSONFromLLM,
   type ProposedSegment,
   type TranscriptSegment,
@@ -20,7 +19,7 @@ import {
   type FinalSegments,
 } from "./types";
 import { type SceneBreak } from "../twelvelabs";
-import { getToolBasedPrompt } from "./prompts";
+import { getVideoContext } from "./prompts";
 import { enforceConstraints } from "./verify";
 import { callGemini } from "./gemini-client";
 
@@ -57,22 +56,19 @@ export async function generateSegmentsWithTools(
     `[StoryIQ Gemini] Purpose: ${purpose}, Target: ${targetDuration || "auto"}s, Video: ${metadata.duration}s`,
   );
 
-  // Build the context from the existing prompt builder (transcript + scenes)
-  const contextPrompt = getToolBasedPrompt(
-    purpose,
+  // Build video context (transcript + scenes) — no tool instructions
+  const videoContext = getVideoContext(
     metadata,
     transcript,
     sceneBreaks,
-    targetDuration,
     options.userInstructions,
-    options.targetPercent,
   );
 
-  // Build the Gemini-specific system prompt with social-media strategist persona
+  // Build the Gemini prompt with social-media strategist persona
   const geminiPrompt = buildGeminiSegmentPrompt(
     purpose,
     metadata,
-    contextPrompt,
+    videoContext,
     targetDuration,
     options.targetPercent,
   );
@@ -99,8 +95,8 @@ export async function generateSegmentsWithTools(
       // Parse JSON from response
       const parsed = parseJSONFromLLM<
         Array<{
-          startTime: number;
-          endTime: number;
+          startTime: number | string;
+          endTime: number | string;
           title: string;
           reasoning?: string;
           expectedContent?: string;
@@ -114,8 +110,8 @@ export async function generateSegmentsWithTools(
       }
 
       rawSegments = parsed.map((seg) => ({
-        startTime: seg.startTime,
-        endTime: seg.endTime,
+        startTime: coerceTimestamp(seg.startTime, metadata.duration),
+        endTime: coerceTimestamp(seg.endTime, metadata.duration),
         title: seg.title,
         reasoning: seg.reasoning || "",
         expectedContent: seg.expectedContent || "",
@@ -192,6 +188,43 @@ export async function generateSegmentsWithTools(
 }
 
 // ============================================================================
+// Timestamp Coercion
+// ============================================================================
+
+/**
+ * Coerce a Gemini-returned timestamp to a valid decimal-seconds number.
+ * Handles: numbers, numeric strings, "MM:SS" / "HH:MM:SS" strings.
+ * Clamps result to [0, videoDuration].
+ */
+function coerceTimestamp(value: number | string, videoDuration: number): number {
+  let seconds: number;
+
+  if (typeof value === "number") {
+    seconds = value;
+  } else if (typeof value === "string") {
+    const trimmed = value.trim();
+    // Handle "MM:SS" or "HH:MM:SS"
+    if (trimmed.includes(":")) {
+      const parts = trimmed.split(":").map(Number);
+      if (parts.length === 3) {
+        seconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+      } else if (parts.length === 2) {
+        seconds = parts[0] * 60 + parts[1];
+      } else {
+        seconds = parseFloat(trimmed) || 0;
+      }
+    } else {
+      seconds = parseFloat(trimmed) || 0;
+    }
+  } else {
+    seconds = 0;
+  }
+
+  // Clamp to valid range
+  return Math.max(0, Math.min(seconds, videoDuration));
+}
+
+// ============================================================================
 // Gemini Prompt Builder — Social Media Content Strategist
 // ============================================================================
 
@@ -239,11 +272,13 @@ function buildGeminiSegmentPrompt(
     `You are a social media content strategist who specializes in creating high-retention short-form video edits.\n\n` +
     `${purposeInstructions}\n\n` +
     `RULES:\n` +
-    `- Use PRECISE timestamps from the transcript (e.g., 305.28, not 300).\n` +
+    `- Timestamps MUST be decimal seconds (e.g., 305.28, 90.0). NEVER use MM:SS or HH:MM:SS format.\n` +
+    `- Use PRECISE timestamps from the transcript — match to the nearest tenth of a second.\n` +
+    `- All timestamps must be between 0 and ${Math.round(metadata.duration)}.\n` +
     `- Segments must NOT overlap.\n` +
     `- Segments must be chronological.\n` +
     `- Title each segment based on what is ACTUALLY SAID in the transcript at those timestamps.\n\n` +
-    `OUTPUT FORMAT: Return a JSON array of segments. No other text, no markdown fences.\n` +
+    `OUTPUT FORMAT: Return ONLY a JSON array. No prose, no markdown fences, no code blocks.\n` +
     `[\n` +
     `  {\n` +
     `    "startTime": 12.5,\n` +

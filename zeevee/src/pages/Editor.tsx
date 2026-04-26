@@ -2,7 +2,7 @@ import React, { useCallback } from "react";
 import { Timeline } from "@/components/editor/Timeline";
 import {
   MicrodramaGenerator,
-  type Selections,
+  type GenerateRequest,
 } from "@/components/editor/MicrodramaGenerator";
 import { CaptionOverlay } from "@/components/editor/CaptionOverlay";
 import { CaptionEditor } from "@/components/editor/CaptionEditor";
@@ -494,7 +494,7 @@ export default function Editor() {
     }
   };
 
-  const handleGenerateSegments = async (selections: Selections) => {
+  const handleGenerateSegments = async (request: GenerateRequest) => {
     if (!projectId) return;
 
     // Capture projectId at start to check against later
@@ -503,15 +503,15 @@ export default function Editor() {
     setIsGenerating(true);
     setGenerationStatus(null);
 
-    // Pass current video duration as separate field (don't overwrite duration selection)
     const videoDuration = videoRef.current
       ? videoRef.current.duration
       : duration;
-    const metadata = { ...selections, videoDuration };
 
     try {
       // Start async generation job — backend handles auto-framing if requested
-      const { jobId } = await generateSegments(projectId, metadata, {
+      const { jobId } = await generateSegments(projectId, {
+        userPrompt: request.userPrompt || undefined,
+        videoDuration: videoDuration || undefined,
         autoFrame: autoFrameEnabled,
         targetAspectRatio: globalFraming.aspectRatio,
       });
@@ -863,7 +863,7 @@ export default function Editor() {
                     onAspectRatioChange={(ratio) =>
                       dispatch(setGlobalAspectRatio(ratio))
                     }
-                    initialSelections={generationMetadata}
+                    initialUserPrompt={generationMetadata?.userPrompt}
                     autoFrameEnabled={autoFrameEnabled}
                     onAutoFrameChange={setAutoFrameEnabled}
                   />

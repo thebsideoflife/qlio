@@ -18,10 +18,6 @@ import type { CaptionWord } from "@/remotion/types";
 
 // Generation input metadata stored with project
 export interface GenerationMetadata {
-  type?: string;
-  platform?: string;
-  purpose?: string;
-  duration?: string;
   userPrompt?: string;
 }
 

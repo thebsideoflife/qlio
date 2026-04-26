@@ -14,21 +14,16 @@ import { cn } from "@/lib/utils";
 import type { AspectRatio } from "@/remotion/types";
 import type { GenerationJob } from "@/services/api";
 
-interface InitialSelections {
-  type?: string;
-  platform?: string;
-  purpose?: string;
-  duration?: string;
-  targetPercent?: string;
-  userPrompt?: string;
+export interface GenerateRequest {
+  userPrompt: string;
 }
 
 interface MicrodramaGeneratorProps {
-  onGenerate: (selections: Selections) => Promise<void>;
+  onGenerate: (request: GenerateRequest) => Promise<void>;
   isGenerating: boolean;
   generationStatus?: GenerationJob | null;
   onAspectRatioChange?: (ratio: AspectRatio) => void;
-  initialSelections?: InitialSelections | null;
+  initialUserPrompt?: string;
   autoFrameEnabled: boolean;
   onAutoFrameChange: (enabled: boolean) => void;
 }
@@ -39,28 +34,17 @@ const ASPECT_RATIOS: { value: AspectRatio; label: string; icon: typeof Square }[
   { value: "1:1", label: "1:1", icon: Square },
 ];
 
-export type Selections = {
-  type: string;
-  platform: string;
-  purpose: string;
-  duration: string;
-  targetPercent: string;
-  userPrompt: string;
-};
-
 export function MicrodramaGenerator({
   onGenerate,
   isGenerating,
   generationStatus,
   onAspectRatioChange,
-  initialSelections,
+  initialUserPrompt,
   autoFrameEnabled,
   onAutoFrameChange,
 }: MicrodramaGeneratorProps) {
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("9:16");
-  const [userPrompt, setUserPrompt] = useState(
-    initialSelections?.userPrompt || "",
-  );
+  const [userPrompt, setUserPrompt] = useState(initialUserPrompt || "");
 
   const maxLength = 500;
   const remaining = maxLength - userPrompt.length;
@@ -71,16 +55,7 @@ export function MicrodramaGenerator({
   };
 
   const handleGenerate = () => {
-    // Build selections with sensible defaults for the simplified flow
-    const selections: Selections = {
-      type: "tv",
-      platform: aspectRatio === "16:9" ? "youtube" : "mobile",
-      purpose: "compact_video",
-      duration: "",
-      targetPercent: "50",
-      userPrompt,
-    };
-    onGenerate(selections);
+    onGenerate({ userPrompt });
   };
 
   return (
