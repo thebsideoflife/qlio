@@ -62,10 +62,6 @@ export default function Editor() {
   const selectedKeyframeId = useSelector(
     (state: RootState) => state.editor.selectedKeyframeId,
   );
-  const showKeyframes = useSelector(
-    (state: RootState) => state.editor.showKeyframes,
-  );
-
   // Local State
   const videoRef = useRef<HTMLVideoElement>(null);
   const [activeTab, setActiveTab] = useState<"transcript" | "ai" | "captions">(
