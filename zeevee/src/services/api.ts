@@ -241,17 +241,24 @@ export interface GenerateSegmentsResponse {
   status: "pending";
 }
 
+export interface GenerateSegmentsRequest {
+  userPrompt?: string;
+  videoDuration?: number;
+  autoFrame?: boolean;
+  targetAspectRatio?: string;
+}
+
 export const generateSegments = async (
   projectId: string,
-  metadata: Record<string, unknown>,
-  options?: { autoFrame?: boolean; targetAspectRatio?: string },
+  request: GenerateSegmentsRequest = {},
 ): Promise<GenerateSegmentsResponse> => {
   const response = await axios.post(
     `${API_URL}/projects/${projectId}/generate`,
     {
-      metadata,
-      autoFrame: options?.autoFrame ?? false,
-      targetAspectRatio: options?.targetAspectRatio ?? "9:16",
+      userPrompt: request.userPrompt,
+      videoDuration: request.videoDuration,
+      autoFrame: request.autoFrame ?? false,
+      targetAspectRatio: request.targetAspectRatio ?? "9:16",
     },
     {
       headers: getAuthHeaders(),

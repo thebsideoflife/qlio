@@ -506,6 +506,7 @@ resource "aws_lambda_function" "generate_segments" {
       BUCKET_NAME             = aws_s3_bucket.media.bucket
       DETECT_SCENES_FUNCTION        = aws_lambda_function.detect_scenes.function_name
       ANALYZE_FRAMING_FUNCTION_NAME = aws_lambda_function.analyze_framing.function_name
+      GEMINI_SECRET_ARN       = aws_secretsmanager_secret.gemini_api_key.arn
     }
   }
 }

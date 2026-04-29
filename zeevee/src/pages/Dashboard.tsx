@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import {
   AssetCard,
   getRecentAssets,
@@ -26,9 +26,24 @@ export default function Dashboard() {
     error,
   } = useSelector((state: RootState) => state.assets);
 
+  const TERMINAL_STATUSES = new Set(["completed", "READY", "failed"]);
+  const hasNonTerminalAssets = useCallback(
+    () => assets.some((a) => !TERMINAL_STATUSES.has(a.status)),
+    [assets],
+  );
+
   useEffect(() => {
     dispatch(fetchAssets());
   }, [dispatch]);
+
+  // Auto-poll while any asset is still processing/uploading/indexing
+  useEffect(() => {
+    if (!hasNonTerminalAssets()) return;
+    const interval = setInterval(() => {
+      dispatch(fetchAssets());
+    }, 15_000);
+    return () => clearInterval(interval);
+  }, [dispatch, hasNonTerminalAssets]);
 
   // Helper: touch recency + trigger re-sort
   const touchAndReorder = (assetId: string) => {

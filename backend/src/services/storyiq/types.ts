@@ -106,22 +106,8 @@ export function getPurposeConstraints(purpose: Purpose): {
   return { needsSegmentDuration, needsTotalDuration };
 }
 
-export type ContentType = "tv" | "movie" | "ugc";
-
-export type Platform =
-  | "mobile"
-  | "tv"
-  | "auto"
-  | "tiktok"
-  | "ig"
-  | "shorts"
-  | "facebook"
-  | "youtube";
-
 export interface StoryIQGoals {
   purpose: Purpose;
-  contentType: ContentType;
-  platform: Platform;
   targetDuration?: number; // Calculated target duration in seconds
   targetPercent?: number; // For compact_video: percentage of original (25, 50, 75, etc.)
   userInstructions?: string; // Custom instructions from user

@@ -2,7 +2,7 @@ import React, { useCallback } from "react";
 import { Timeline } from "@/components/editor/Timeline";
 import {
   MicrodramaGenerator,
-  type Selections,
+  type GenerateRequest,
 } from "@/components/editor/MicrodramaGenerator";
 import { CaptionOverlay } from "@/components/editor/CaptionOverlay";
 import { CaptionEditor } from "@/components/editor/CaptionEditor";
@@ -62,10 +62,6 @@ export default function Editor() {
   const selectedKeyframeId = useSelector(
     (state: RootState) => state.editor.selectedKeyframeId,
   );
-  const showKeyframes = useSelector(
-    (state: RootState) => state.editor.showKeyframes,
-  );
-
   // Local State
   const videoRef = useRef<HTMLVideoElement>(null);
   const [activeTab, setActiveTab] = useState<"transcript" | "ai" | "captions">(
@@ -494,7 +490,7 @@ export default function Editor() {
     }
   };
 
-  const handleGenerateSegments = async (selections: Selections) => {
+  const handleGenerateSegments = async (request: GenerateRequest) => {
     if (!projectId) return;
 
     // Capture projectId at start to check against later
@@ -503,15 +499,15 @@ export default function Editor() {
     setIsGenerating(true);
     setGenerationStatus(null);
 
-    // Pass current video duration as separate field (don't overwrite duration selection)
     const videoDuration = videoRef.current
       ? videoRef.current.duration
       : duration;
-    const metadata = { ...selections, videoDuration };
 
     try {
       // Start async generation job — backend handles auto-framing if requested
-      const { jobId } = await generateSegments(projectId, metadata, {
+      const { jobId } = await generateSegments(projectId, {
+        userPrompt: request.userPrompt || undefined,
+        videoDuration: videoDuration || undefined,
         autoFrame: autoFrameEnabled,
         targetAspectRatio: globalFraming.aspectRatio,
       });
@@ -537,6 +533,9 @@ export default function Editor() {
 
       if (result.segments.length > 0) {
         dispatch(setSegments(result.segments));
+        // Auto-select first segment and switch to transcript tab
+        dispatch(selectSegment(result.segments[0].id));
+        setActiveTab("transcript");
         console.log(
           `[Editor] Generation complete: ${result.segments.length} segments`,
         );
@@ -631,7 +630,7 @@ export default function Editor() {
                 "relative overflow-hidden bg-black rounded-2xl select-none shadow-2xl shadow-black/50",
                 isDragging
                   ? "cursor-grabbing ring-4 ring-blue-500 ring-offset-4 ring-offset-zinc-950"
-                  : showKeyframes && displayZoom > 0
+                  : displayZoom > 0
                     ? "cursor-grab ring-2 ring-zinc-600 hover:ring-zinc-500"
                     : "cursor-pointer ring-2 ring-zinc-700",
               )}
@@ -641,12 +640,12 @@ export default function Editor() {
                 maxWidth: aspectRatioValue >= 1 ? "100%" : "90%",
               }}
               onMouseDown={
-                showKeyframes && displayZoom > 0
+                displayZoom > 0
                   ? handleFramingMouseDown
                   : undefined
               }
               onClick={
-                showKeyframes && displayZoom > 0
+                displayZoom > 0
                   ? handleFramingClick
                   : handleVideoClick
               }
@@ -694,8 +693,8 @@ export default function Editor() {
                 }
               />
 
-              {/* Overlay Controls - Top Right (only when keyframe toggle is on) */}
-              {showKeyframes && (
+              {/* Overlay Controls - Top Right (when cropping is active) */}
+              {displayZoom > 0 && (
                 <div className="absolute top-3 right-3 flex items-center gap-2">
                   {/* Zoom slider */}
                   <div
@@ -723,17 +722,17 @@ export default function Editor() {
                 </div>
               )}
 
-              {/* Drag hint overlay */}
-              {showKeyframes && displayZoom > 0 && !isDragging && (
+              {/* Drag hint overlay — always visible when cropping is active */}
+              {displayZoom > 0 && !isDragging && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
                   <span className="text-white text-sm font-medium px-3 py-1.5 bg-black/70 rounded-full backdrop-blur-sm">
-                    Drag to reposition • Double-click sliders to center
+                    Drag to reposition
                   </span>
                 </div>
               )}
 
-              {/* Position sliders - visible when keyframe toggle + zoom > 0 */}
-              {showKeyframes && displayZoom > 0 && (
+              {/* Position sliders - visible whenever zoom > 0 */}
+              {displayZoom > 0 && (
                 <>
                   {/* Vertical slider for landscape */}
                   {globalFraming.aspectRatio === "16:9" && (
@@ -860,7 +859,7 @@ export default function Editor() {
                     onAspectRatioChange={(ratio) =>
                       dispatch(setGlobalAspectRatio(ratio))
                     }
-                    initialSelections={generationMetadata}
+                    initialUserPrompt={generationMetadata?.userPrompt}
                     autoFrameEnabled={autoFrameEnabled}
                     onAutoFrameChange={setAutoFrameEnabled}
                   />
