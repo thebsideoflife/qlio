@@ -13,6 +13,8 @@ import { deleteAsset } from "@/services/api";
 import type { RootState, AppDispatch } from "@/store/store";
 import { Plus } from "lucide-react";
 
+const TERMINAL_STATUSES = new Set(["completed", "READY", "failed"]);
+
 export default function Dashboard() {
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
@@ -26,7 +28,6 @@ export default function Dashboard() {
     error,
   } = useSelector((state: RootState) => state.assets);
 
-  const TERMINAL_STATUSES = new Set(["completed", "READY", "failed"]);
   const hasNonTerminalAssets = useCallback(
     () => assets.some((a) => !TERMINAL_STATUSES.has(a.status)),
     [assets],

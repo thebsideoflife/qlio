@@ -17,7 +17,7 @@ import {
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
 import Anthropic from "@anthropic-ai/sdk";
-import { MODEL_SONNET, MODEL_HAIKU, extractLLMContent } from "./types";
+import { extractLLMContent } from "./types";
 
 // ============================================================================
 // Configuration - Toggle this to switch APIs
@@ -32,6 +32,10 @@ export const USE_ANTHROPIC_API = true;
 // Anthropic API model IDs (different from Bedrock model IDs)
 const ANTHROPIC_MODEL_SONNET = "claude-sonnet-4-5-20250929";
 const ANTHROPIC_MODEL_HAIKU = "claude-haiku-4-5-20251001";
+
+// Bedrock model IDs
+const BEDROCK_MODEL_SONNET = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
+const BEDROCK_MODEL_HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 
 // ============================================================================
 // Clients (lazy initialized)
@@ -303,7 +307,7 @@ async function callClaudeViaBedrock(
   messages: ClaudeMessage[],
 ): Promise<string> {
   const client = getBedrockClient();
-  const modelId = model === "sonnet" ? MODEL_SONNET : MODEL_HAIKU;
+  const modelId = model === "sonnet" ? BEDROCK_MODEL_SONNET : BEDROCK_MODEL_HAIKU;
 
   console.log(`[Claude] Using AWS Bedrock with model: ${modelId}`);
 
@@ -338,7 +342,7 @@ async function callClaudeWithToolsViaBedrock(
   messages: ToolMessage[],
 ): Promise<ClaudeToolResponse> {
   const client = getBedrockClient();
-  const modelId = model === "sonnet" ? MODEL_SONNET : MODEL_HAIKU;
+  const modelId = model === "sonnet" ? BEDROCK_MODEL_SONNET : BEDROCK_MODEL_HAIKU;
 
   console.log(
     `[Claude Tools] Using AWS Bedrock with model: ${modelId}, ${tools.length} tools`,

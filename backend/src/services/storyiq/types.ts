@@ -6,16 +6,6 @@
  */
 
 // ============================================================================
-// Model Configuration (single source of truth)
-// ============================================================================
-
-/** Claude Sonnet 4.5 - for complex reasoning tasks (planning, review, synthesis) */
-export const MODEL_SONNET = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
-
-/** Claude Haiku 4.5 - for fast/cheap tasks (JSON cleaning, extraction) */
-export const MODEL_HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
-
-// ============================================================================
 // Video Metadata (Simple - replaces VideoUnderstanding)
 // ============================================================================
 

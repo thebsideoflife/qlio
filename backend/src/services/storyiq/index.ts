@@ -269,7 +269,7 @@ export interface GenerateMetadata {
 }
 
 const MAX_USER_INSTRUCTIONS_LENGTH = 500;
-const DEFAULT_TARGET_PERCENT = 50;
+const DEFAULT_TARGET_PERCENT = 75;
 
 export function mapMetadataToGoals(metadata: GenerateMetadata): StoryIQGoals {
   const userInstructions =

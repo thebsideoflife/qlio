@@ -114,10 +114,35 @@ export const uploadToS3 = async (
   await upload.done();
 };
 
+// ETag cache for listAssets polling
+let assetsEtag: string | null = null;
+let assetsCachedData: Record<string, unknown>[] | null = null;
+
 export const listAssets = async () => {
+  const headers: Record<string, string> = {};
+  const auth = getAuthHeaders();
+  if (auth["x-api-password"]) {
+    headers["x-api-password"] = auth["x-api-password"];
+  }
+  if (assetsEtag) {
+    headers["If-None-Match"] = assetsEtag;
+  }
+
   const response = await axios.get(`${API_URL}/assets`, {
-    headers: getAuthHeaders(),
+    headers,
+    validateStatus: (status) => status === 200 || status === 304,
   });
+
+  if (response.status === 304) {
+    return assetsCachedData;
+  }
+
+  // Cache the ETag and data for next poll
+  const etag = response.headers["etag"];
+  if (etag) {
+    assetsEtag = etag;
+  }
+  assetsCachedData = response.data;
   return response.data;
 };
 

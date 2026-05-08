@@ -17,7 +17,6 @@ import {
   setSegments,
   setProjectId,
   resetEditor,
-  setGlobalAspectRatio,
   updateFramingKeyframe,
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
@@ -62,6 +61,7 @@ export default function Editor() {
   const selectedKeyframeId = useSelector(
     (state: RootState) => state.editor.selectedKeyframeId,
   );
+
   // Local State
   const videoRef = useRef<HTMLVideoElement>(null);
   const [activeTab, setActiveTab] = useState<"transcript" | "ai" | "captions">(
@@ -856,9 +856,6 @@ export default function Editor() {
                     onGenerate={handleGenerateSegments}
                     isGenerating={isGenerating}
                     generationStatus={generationStatus}
-                    onAspectRatioChange={(ratio) =>
-                      dispatch(setGlobalAspectRatio(ratio))
-                    }
                     initialUserPrompt={generationMetadata?.userPrompt}
                     autoFrameEnabled={autoFrameEnabled}
                     onAutoFrameChange={setAutoFrameEnabled}

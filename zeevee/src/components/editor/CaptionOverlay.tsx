@@ -1,5 +1,5 @@
 import { useSelector, useDispatch } from "react-redux";
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useCallback, useRef, useEffect, useState } from "react";
 import type { RootState } from "@/store/store";
 import { updateCaptionPosition, updateCaptionStyle } from "@/store/editorSlice";
 import { SNAP_POSITIONS } from "@/remotion/types";
@@ -10,6 +10,9 @@ interface CaptionOverlayProps {
 }
 
 const SNAP_THRESHOLD = 8;
+// Reference height for font sizing - matches Remotion's 1080p base
+// This ensures consistent font sizes regardless of preview container size
+const REFERENCE_HEIGHT = 1080;
 
 export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
   const dispatch = useDispatch();
@@ -19,7 +22,6 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
   );
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const [containerHeight, setContainerHeight] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
@@ -129,11 +131,6 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
     dispatch,
   ]);
 
-  useEffect(() => {
-    if (containerRef.current)
-      setContainerHeight(containerRef.current.offsetHeight);
-  }, []);
-
   if (!enabled) return null;
 
   return (
@@ -149,7 +146,7 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
         captions={captions}
         settings={{ enabled, style }}
         currentTime={currentTime}
-        containerHeight={containerHeight}
+        containerHeight={REFERENCE_HEIGHT}
       >
         {/* Drag ring + resize handles */}
         {(isHovered || isDragging) && (
