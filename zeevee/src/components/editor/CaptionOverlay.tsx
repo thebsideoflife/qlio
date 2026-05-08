@@ -1,9 +1,12 @@
 import { useSelector, useDispatch } from "react-redux";
 import { useCallback, useRef, useEffect, useState } from "react";
 import type { RootState } from "@/store/store";
-import { updateCaptionPosition, updateCaptionStyle } from "@/store/editorSlice";
+import {
+  updateCaptionPosition,
+  updateCaptionStyle,
+  updateCaptionWord,
+} from "@/store/editorSlice";
 import { SNAP_POSITIONS } from "@/remotion/types";
-import { CaptionDisplay } from "./CaptionDisplay";
 
 interface CaptionOverlayProps {
   currentTime: number;
@@ -131,7 +134,66 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
     dispatch,
   ]);
 
+  // Find the active caption for the current time
+  const activeCaption = captions.find(
+    (c) => currentTime >= c.startTime && currentTime < c.endTime,
+  );
+
+  // Track which word is being edited
+  const [editingWord, setEditingWord] = useState<{
+    captionId: string;
+    wordIndex: number;
+  } | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const editInputRef = useRef<HTMLInputElement>(null);
+
+  // Focus input when editing starts
+  useEffect(() => {
+    if (editingWord && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editingWord]);
+
+  const handleWordClick = useCallback(
+    (e: React.MouseEvent, captionId: string, wordIndex: number, value: string) => {
+      e.stopPropagation();
+      setEditingWord({ captionId, wordIndex });
+      setEditValue(value);
+    },
+    [],
+  );
+
+  const handleEditSave = useCallback(() => {
+    if (editingWord && editValue.trim()) {
+      dispatch(
+        updateCaptionWord({
+          captionId: editingWord.captionId,
+          wordIndex: editingWord.wordIndex,
+          newValue: editValue.trim(),
+        }),
+      );
+    }
+    setEditingWord(null);
+    setEditValue("");
+  }, [dispatch, editingWord, editValue]);
+
+  const handleEditKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Enter") {
+        handleEditSave();
+      } else if (e.key === "Escape") {
+        setEditingWord(null);
+        setEditValue("");
+      }
+    },
+    [handleEditSave],
+  );
+
   if (!enabled) return null;
+
+  const highlightColor = style.highlightColor || "#fbbf24";
+  const showAnimation = highlightColor !== "none";
 
   return (
     <div
@@ -142,37 +204,120 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      <CaptionDisplay
-        captions={captions}
-        settings={{ enabled, style }}
-        currentTime={currentTime}
-        containerHeight={REFERENCE_HEIGHT}
-      >
-        {/* Drag ring + resize handles */}
-        {(isHovered || isDragging) && (
-          <div className="absolute inset-0 ring-2 ring-green-500 rounded pointer-events-none" />
-        )}
-        {(isHovered || isResizing) && (
-          <>
+      {activeCaption && (
+        <div
+          style={{
+            position: "absolute",
+            left: `${style.position.x}%`,
+            top: `${style.position.y}%`,
+            transform: "translate(-50%, -50%)",
+            width: `${style.maxWidth}%`,
+            display: "flex",
+            justifyContent: "center",
+          }}
+        >
+          <div style={{ position: "relative" }}>
             <div
-              className="absolute -bottom-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nwse-resize pointer-events-auto"
-              onMouseDown={(e) => onResizeStart(e, "bottom-right")}
-            />
-            <div
-              className="absolute -bottom-1 -left-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nesw-resize pointer-events-auto"
-              onMouseDown={(e) => onResizeStart(e, "bottom-left")}
-            />
-            <div
-              className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nesw-resize pointer-events-auto"
-              onMouseDown={(e) => onResizeStart(e, "top-right")}
-            />
-            <div
-              className="absolute -top-1 -left-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nwse-resize pointer-events-auto"
-              onMouseDown={(e) => onResizeStart(e, "top-left")}
-            />
-          </>
-        )}
-      </CaptionDisplay>
+              style={{
+                display: "inline-block",
+                padding: "0.3em 0.6em",
+                backgroundColor: style.backgroundColor,
+                borderRadius: 6,
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: style.fontFamily,
+                  fontSize: `${(style.fontSize / 100) * REFERENCE_HEIGHT}px`,
+                  fontWeight: style.fontWeight ?? "600",
+                  lineHeight: 1.25,
+                  color: style.color,
+                  textShadow: "0 1px 2px rgba(0,0,0,0.8)",
+                  display: "block",
+                  textAlign: "center",
+                }}
+              >
+                {activeCaption.words.map((word, idx) => {
+                  const isActive =
+                    currentTime >= word.start && currentTime < word.end;
+                  const isEditing =
+                    editingWord?.captionId === activeCaption.id &&
+                    editingWord?.wordIndex === idx;
+
+                  if (isEditing) {
+                    return (
+                      <span key={idx}>
+                        <input
+                          ref={editInputRef}
+                          type="text"
+                          value={editValue}
+                          onChange={(e) => setEditValue(e.target.value)}
+                          onBlur={handleEditSave}
+                          onKeyDown={handleEditKeyDown}
+                          className="pointer-events-auto bg-blue-600/80 border-none outline-none rounded px-1"
+                          style={{
+                            fontFamily: "inherit",
+                            fontSize: "inherit",
+                            fontWeight: "inherit",
+                            color: "#ffffff",
+                            width: `${Math.max(editValue.length, 1) + 1}ch`,
+                            minWidth: "2ch",
+                          }}
+                        />
+                        {idx < activeCaption.words.length - 1 ? " " : ""}
+                      </span>
+                    );
+                  }
+
+                  return (
+                    <span
+                      key={idx}
+                      onClick={(e) =>
+                        handleWordClick(e, activeCaption.id, idx, word.value)
+                      }
+                      className="pointer-events-auto cursor-text hover:bg-white/20 rounded px-0.5 -mx-0.5 transition-colors"
+                      style={{
+                        color:
+                          showAnimation && isActive
+                            ? highlightColor
+                            : style.color,
+                      }}
+                    >
+                      {word.value}
+                      {idx < activeCaption.words.length - 1 ? " " : ""}
+                    </span>
+                  );
+                })}
+              </span>
+            </div>
+
+            {/* Drag ring + resize handles */}
+            {(isHovered || isDragging) && (
+              <div className="absolute inset-0 ring-2 ring-green-500 rounded pointer-events-none" />
+            )}
+            {(isHovered || isResizing) && (
+              <>
+                <div
+                  className="absolute -bottom-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nwse-resize pointer-events-auto"
+                  onMouseDown={(e) => onResizeStart(e, "bottom-right")}
+                />
+                <div
+                  className="absolute -bottom-1 -left-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nesw-resize pointer-events-auto"
+                  onMouseDown={(e) => onResizeStart(e, "bottom-left")}
+                />
+                <div
+                  className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nesw-resize pointer-events-auto"
+                  onMouseDown={(e) => onResizeStart(e, "top-right")}
+                />
+                <div
+                  className="absolute -top-1 -left-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nwse-resize pointer-events-auto"
+                  onMouseDown={(e) => onResizeStart(e, "top-left")}
+                />
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
