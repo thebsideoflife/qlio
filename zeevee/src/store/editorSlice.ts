@@ -480,9 +480,18 @@ export const editorSlice = createSlice({
 
     // Caption actions
     setTranscriptWords: (state, action: PayloadAction<CaptionWord[]>) => {
+      // Dedupe words by timestamp (can happen from chunk overlap in long videos)
+      const seen = new Set<string>();
+      const dedupedWords = action.payload.filter((word) => {
+        const key = `${word.start}-${word.end}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
       // Apply any existing word edits to the transcript
       const wordEdits = state.captionSettings.wordEdits || {};
-      const transcriptWithEdits = action.payload.map((word) => {
+      const transcriptWithEdits = dedupedWords.map((word) => {
         const key = `${word.start}-${word.end}`;
         // Check if key exists (not just truthy) to handle empty string deletions
         if (key in wordEdits) {

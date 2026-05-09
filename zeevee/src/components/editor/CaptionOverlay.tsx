@@ -193,7 +193,7 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
 
                     return (
                       <span
-                        key={word.start}
+                        key={`${word.start}-${idx}`}
                         style={{
                           color:
                             showAnimation && isActive

@@ -1165,7 +1165,7 @@ function TranscriptPanel({
 
                 {/* Words */}
                 <p className="leading-relaxed font-medium">
-                  {chunk.words.map((word) => {
+                  {chunk.words.map((word, wordIdx) => {
                     const isActive =
                       currentTime >= word.start && currentTime <= word.end;
                     const isEmpty = word.value === "";
@@ -1177,7 +1177,7 @@ function TranscriptPanel({
 
                     return (
                       <span
-                        key={`${word.start}-${word.end}`}
+                        key={`${word.start}-${word.end}-${wordIdx}`}
                         onClick={() => !editMode && handleWordClick(word)}
                         onBlur={(e) => {
                           if (!editMode) return;
