@@ -55,7 +55,7 @@ export function CaptionText({
       >
         {visibleWords.map((word, idx) => (
           <span
-            key={idx}
+            key={word.start}
             style={{
               color:
                 showAnimation && idx === activeWordIndex
