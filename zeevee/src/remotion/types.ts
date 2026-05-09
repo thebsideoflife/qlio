@@ -26,6 +26,7 @@ export interface CaptionStyle {
 export interface CaptionSettings {
   enabled: boolean;
   style: CaptionStyle;
+  wordEdits?: Record<string, string>; // key: "start-end" (timestamps), value: edited text (empty string = deleted)
 }
 
 // Aspect ratio options for autoframing
