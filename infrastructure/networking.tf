@@ -2,9 +2,10 @@ resource "aws_apigatewayv2_api" "main" {
   name          = "${var.project_name}-api"
   protocol_type = "HTTP"
   cors_configuration {
-    allow_origins = ["*"]
-    allow_methods = ["GET", "POST", "OPTIONS", "PATCH", "DELETE"]
-    allow_headers = ["*"]
+    allow_origins  = ["*"]
+    allow_methods  = ["GET", "POST", "OPTIONS", "PATCH", "DELETE"]
+    allow_headers  = ["*"]
+    expose_headers = ["ETag"]
   }
 }
 

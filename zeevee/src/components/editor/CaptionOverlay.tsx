@@ -1,15 +1,20 @@
 import { useSelector, useDispatch } from "react-redux";
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useCallback, useRef, useEffect, useState } from "react";
 import type { RootState } from "@/store/store";
-import { updateCaptionPosition, updateCaptionStyle } from "@/store/editorSlice";
+import {
+  updateCaptionPosition,
+  updateCaptionStyle,
+} from "@/store/editorSlice";
 import { SNAP_POSITIONS } from "@/remotion/types";
-import { CaptionDisplay } from "./CaptionDisplay";
 
 interface CaptionOverlayProps {
   currentTime: number;
 }
 
 const SNAP_THRESHOLD = 8;
+// Reference height for font sizing - matches Remotion's 1080p base
+// This ensures consistent font sizes regardless of preview container size
+const REFERENCE_HEIGHT = 1080;
 
 export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
   const dispatch = useDispatch();
@@ -19,7 +24,6 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
   );
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const [containerHeight, setContainerHeight] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
@@ -129,12 +133,15 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
     dispatch,
   ]);
 
-  useEffect(() => {
-    if (containerRef.current)
-      setContainerHeight(containerRef.current.offsetHeight);
-  }, []);
+  // Find the active caption for the current time
+  const activeCaption = captions.find(
+    (c) => currentTime >= c.startTime && currentTime < c.endTime,
+  );
 
   if (!enabled) return null;
+
+  const highlightColor = style.highlightColor || "#fbbf24";
+  const showAnimation = highlightColor !== "none";
 
   return (
     <div
@@ -145,37 +152,88 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      <CaptionDisplay
-        captions={captions}
-        settings={{ enabled, style }}
-        currentTime={currentTime}
-        containerHeight={containerHeight}
-      >
-        {/* Drag ring + resize handles */}
-        {(isHovered || isDragging) && (
-          <div className="absolute inset-0 ring-2 ring-green-500 rounded pointer-events-none" />
-        )}
-        {(isHovered || isResizing) && (
-          <>
+      {activeCaption && (
+        <div
+          style={{
+            position: "absolute",
+            left: `${style.position.x}%`,
+            top: `${style.position.y}%`,
+            transform: "translate(-50%, -50%)",
+            width: `${style.maxWidth}%`,
+            display: "flex",
+            justifyContent: "center",
+          }}
+        >
+          <div style={{ position: "relative" }}>
             <div
-              className="absolute -bottom-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nwse-resize pointer-events-auto"
-              onMouseDown={(e) => onResizeStart(e, "bottom-right")}
-            />
-            <div
-              className="absolute -bottom-1 -left-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nesw-resize pointer-events-auto"
-              onMouseDown={(e) => onResizeStart(e, "bottom-left")}
-            />
-            <div
-              className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nesw-resize pointer-events-auto"
-              onMouseDown={(e) => onResizeStart(e, "top-right")}
-            />
-            <div
-              className="absolute -top-1 -left-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nwse-resize pointer-events-auto"
-              onMouseDown={(e) => onResizeStart(e, "top-left")}
-            />
-          </>
-        )}
-      </CaptionDisplay>
+              style={{
+                display: "inline-block",
+                padding: "0.3em 0.6em",
+                backgroundColor: style.backgroundColor,
+                borderRadius: 6,
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: style.fontFamily,
+                  fontSize: `${(style.fontSize / 100) * REFERENCE_HEIGHT}px`,
+                  fontWeight: style.fontWeight ?? "600",
+                  lineHeight: 1.25,
+                  color: style.color,
+                  textShadow: "0 1px 2px rgba(0,0,0,0.8)",
+                  display: "block",
+                  textAlign: "center",
+                }}
+              >
+                {activeCaption.words.map((word, idx) => {
+                  const isActive =
+                    currentTime >= word.start && currentTime < word.end;
+
+                  return (
+                    <span
+                      key={idx}
+                      style={{
+                        color:
+                          showAnimation && isActive
+                            ? highlightColor
+                            : style.color,
+                      }}
+                    >
+                      {word.value}
+                      {idx < activeCaption.words.length - 1 ? " " : ""}
+                    </span>
+                  );
+                })}
+              </span>
+            </div>
+
+            {/* Drag ring + resize handles */}
+            {(isHovered || isDragging) && (
+              <div className="absolute inset-0 ring-2 ring-green-500 rounded pointer-events-none" />
+            )}
+            {(isHovered || isResizing) && (
+              <>
+                <div
+                  className="absolute -bottom-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nwse-resize pointer-events-auto"
+                  onMouseDown={(e) => onResizeStart(e, "bottom-right")}
+                />
+                <div
+                  className="absolute -bottom-1 -left-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nesw-resize pointer-events-auto"
+                  onMouseDown={(e) => onResizeStart(e, "bottom-left")}
+                />
+                <div
+                  className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nesw-resize pointer-events-auto"
+                  onMouseDown={(e) => onResizeStart(e, "top-right")}
+                />
+                <div
+                  className="absolute -top-1 -left-1 w-2.5 h-2.5 bg-green-500 rounded-full cursor-nwse-resize pointer-events-auto"
+                  onMouseDown={(e) => onResizeStart(e, "top-left")}
+                />
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

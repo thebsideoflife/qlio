@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,11 +32,11 @@ import {
   listProjects,
   deleteProject,
   createProject,
-  getProject,
   updateProject,
   updateAsset,
 } from "@/services/api";
 import { EditableTitle } from "@/components/ui/editable-title";
+import { touchRecentAsset } from "./recentAssets";
 
 interface AssetCardProps {
   asset: Asset;
@@ -47,19 +47,12 @@ interface AssetCardProps {
   onSelect?: () => void;
 }
 
-interface ProjectSegment {
-  id: string;
-  startTime: number;
-  endTime: number;
-  title: string;
-}
-
 interface Project {
   projectId: string;
   title: string;
   createdAt: string;
-  status: string;
-  segments?: ProjectSegment[];
+  segmentCount: number;
+  firstSegmentStartTime: number | null;
 }
 
 const stageLabels: Record<string, string> = {
@@ -70,24 +63,6 @@ const stageLabels: Record<string, string> = {
   captions: "Captions",
   delivery: "Delivery",
 };
-
-// Recent assets localStorage helpers
-const RECENT_ASSETS_KEY = "qlio-recent-assets";
-
-export function getRecentAssets(): Record<string, number> {
-  try {
-    const stored = localStorage.getItem(RECENT_ASSETS_KEY);
-    return stored ? JSON.parse(stored) : {};
-  } catch {
-    return {};
-  }
-}
-
-export function touchRecentAsset(assetId: string) {
-  const recent = getRecentAssets();
-  recent[assetId] = Date.now();
-  localStorage.setItem(RECENT_ASSETS_KEY, JSON.stringify(recent));
-}
 
 // Favorites localStorage helpers
 const FAVORITES_KEY = "qlio-favorites";
@@ -261,12 +236,15 @@ export function AssetCard({
   const [showAllProjects, setShowAllProjects] = useState(false);
 
   // Get display title - use originalName as fallback if title is empty/untitled
-  const getDisplayTitle = (title: string) => {
-    if (!title || title.toLowerCase() === "untitled") {
-      return asset.originalName || title || "Untitled";
-    }
-    return title;
-  };
+  const getDisplayTitle = useCallback(
+    (title: string) => {
+      if (!title || title.toLowerCase() === "untitled") {
+        return asset.originalName || title || "Untitled";
+      }
+      return title;
+    },
+    [asset.originalName],
+  );
 
   const [localAssetTitle, setLocalAssetTitle] = useState(
     getDisplayTitle(asset.title),
@@ -281,13 +259,25 @@ export function AssetCard({
   // Sync local title with prop
   useEffect(() => {
     setLocalAssetTitle(getDisplayTitle(asset.title));
-  }, [asset.title, asset.originalName]);
+  }, [asset.title, getDisplayTitle]);
+
+  const loadProjects = useCallback(async () => {
+    setLoadingProjects(true);
+    try {
+      const projectList = await listProjects(asset.id);
+      setProjects(projectList);
+    } catch (error) {
+      console.error("Failed to load projects:", error);
+    } finally {
+      setLoadingProjects(false);
+    }
+  }, [asset.id]);
 
   useEffect(() => {
     if (isReady && variant === "spotlight") {
       loadProjects();
     }
-  }, [asset.id, isReady, variant]);
+  }, [isReady, variant, loadProjects]);
 
   const handleUpdateAssetTitle = async (newTitle: string) => {
     const oldTitle = localAssetTitle;
@@ -302,32 +292,6 @@ export function AssetCard({
     } catch (e) {
       console.error("Failed to update asset title:", e);
       setLocalAssetTitle(oldTitle); // Revert on failure
-    }
-  };
-
-  const loadProjects = async () => {
-    setLoadingProjects(true);
-    try {
-      const projectList = await listProjects(asset.id);
-      // Fetch segment data for each project to get first segment start time
-      const projectsWithSegments = await Promise.all(
-        projectList.map(async (project: Project) => {
-          try {
-            const fullProject = await getProject(project.projectId);
-            return {
-              ...project,
-              segments: fullProject.segments || [],
-            };
-          } catch {
-            return project;
-          }
-        }),
-      );
-      setProjects(projectsWithSegments);
-    } catch (error) {
-      console.error("Failed to load projects:", error);
-    } finally {
-      setLoadingProjects(false);
     }
   };
 
@@ -410,10 +374,7 @@ export function AssetCard({
 
   // Get first segment start time for a project
   const getFirstSegmentTime = (project: Project): number | null => {
-    if (project.segments && project.segments.length > 0) {
-      return project.segments[0].startTime;
-    }
-    return null;
+    return project.firstSegmentStartTime;
   };
 
   // Collapsed variant - small thumbnail card for 2x2 grid
@@ -680,9 +641,9 @@ export function AssetCard({
                             )}
                           </div>
                           <p className="text-xs text-muted-foreground font-medium">
-                            {project.segments && project.segments.length > 0
-                              ? `${project.segments.length} segment${
-                                  project.segments.length !== 1 ? "s" : ""
+                            {project.segmentCount > 0
+                              ? `${project.segmentCount} segment${
+                                  project.segmentCount !== 1 ? "s" : ""
                                 }`
                               : new Date(project.createdAt).toLocaleDateString()}
                           </p>

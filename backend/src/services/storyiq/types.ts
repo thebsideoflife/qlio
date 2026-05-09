@@ -6,16 +6,6 @@
  */
 
 // ============================================================================
-// Model Configuration (single source of truth)
-// ============================================================================
-
-/** Claude Sonnet 4.5 - for complex reasoning tasks (planning, review, synthesis) */
-export const MODEL_SONNET = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
-
-/** Claude Haiku 4.5 - for fast/cheap tasks (JSON cleaning, extraction) */
-export const MODEL_HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
-
-// ============================================================================
 // Video Metadata (Simple - replaces VideoUnderstanding)
 // ============================================================================
 
@@ -247,58 +237,4 @@ export function extractLLMContent(responseBody: any): string {
     );
   }
   return responseBody.content[0].text;
-}
-
-/**
- * Parse JSON from LLM response, handling common extraction patterns.
- * Tries to find JSON object or array in the response text.
- */
-export function parseJSONFromLLM<T>(content: string): T {
-  // Try to extract JSON object
-  const objectMatch = content.match(/\{[\s\S]*\}/);
-  if (objectMatch) {
-    try {
-      return JSON.parse(objectMatch[0]);
-    } catch (error) {
-      // Log the problematic JSON for debugging
-      const errorPos =
-        error instanceof SyntaxError
-          ? parseInt(error.message.match(/position (\d+)/)?.[1] || "0")
-          : 0;
-      const context = objectMatch[0].substring(
-        Math.max(0, errorPos - 100),
-        Math.min(objectMatch[0].length, errorPos + 100),
-      );
-      console.error(
-        `[parseJSONFromLLM] JSON parse error near position ${errorPos}:`,
-      );
-      console.error(`[parseJSONFromLLM] Context: ...${context}...`);
-      throw error;
-    }
-  }
-
-  // Try to extract JSON array
-  const arrayMatch = content.match(/\[[\s\S]*\]/);
-  if (arrayMatch) {
-    try {
-      return JSON.parse(arrayMatch[0]);
-    } catch (error) {
-      const errorPos =
-        error instanceof SyntaxError
-          ? parseInt(error.message.match(/position (\d+)/)?.[1] || "0")
-          : 0;
-      const context = arrayMatch[0].substring(
-        Math.max(0, errorPos - 100),
-        Math.min(arrayMatch[0].length, errorPos + 100),
-      );
-      console.error(
-        `[parseJSONFromLLM] JSON parse error near position ${errorPos}:`,
-      );
-      console.error(`[parseJSONFromLLM] Context: ...${context}...`);
-      throw error;
-    }
-  }
-
-  // Try parsing as-is
-  return JSON.parse(content);
 }

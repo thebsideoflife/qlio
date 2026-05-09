@@ -12,7 +12,6 @@
 
 import {
   Purpose,
-  parseJSONFromLLM,
   type ProposedSegment,
   type TranscriptSegment,
   type VideoMetadata,
@@ -22,6 +21,35 @@ import { type SceneBreak } from "../twelvelabs";
 import { getVideoContext } from "./prompts";
 import { enforceConstraints } from "./verify";
 import { callGemini } from "./gemini-client";
+import { SchemaType, type Schema } from "@google/generative-ai";
+
+// Schema for structured JSON output from Gemini
+const SEGMENTS_RESPONSE_SCHEMA: Schema = {
+  type: SchemaType.ARRAY,
+  items: {
+    type: SchemaType.OBJECT,
+    properties: {
+      startTime: {
+        type: SchemaType.NUMBER,
+        description: "Start time in seconds (decimal, e.g. 123.45)",
+      },
+      endTime: {
+        type: SchemaType.NUMBER,
+        description: "End time in seconds (decimal, e.g. 234.56)",
+      },
+      title: {
+        type: SchemaType.STRING,
+        description:
+          "Short descriptive title for the segment based on dialogue",
+      },
+      reasoning: {
+        type: SchemaType.STRING,
+        description: "Brief explanation of why this segment was selected",
+      },
+    },
+    required: ["startTime", "endTime", "title"],
+  },
+};
 
 // ============================================================================
 // Main Orchestration
@@ -49,9 +77,7 @@ export async function generateSegmentsWithTools(
     options;
   const startTime = Date.now();
 
-  console.log(
-    `[StoryIQ Gemini] Starting generation for ${metadata.assetId}`,
-  );
+  console.log(`[StoryIQ Gemini] Starting generation for ${metadata.assetId}`);
   console.log(
     `[StoryIQ Gemini] Purpose: ${purpose}, Target: ${targetDuration || "auto"}s, Video: ${metadata.duration}s`,
   );
@@ -84,29 +110,18 @@ export async function generateSegmentsWithTools(
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const response = await callGemini({
-        maxTokens: 8000,
+        maxTokens: 65536, // Large videos need substantial output space
         messages: [{ role: "user", text: geminiPrompt }],
+        responseSchema: SEGMENTS_RESPONSE_SCHEMA,
       });
 
-      console.log(
-        `[StoryIQ Gemini] Response length: ${response.length} chars`,
-      );
+      console.log(`[StoryIQ Gemini] Response length: ${response.length} chars`);
 
-      // Parse JSON from response
-      const parsed = parseJSONFromLLM<
-        Array<{
-          startTime: number | string;
-          endTime: number | string;
-          title: string;
-          reasoning?: string;
-          expectedContent?: string;
-        }>
-      >(response);
+      // Structured output (responseSchema) → single JSON value; parse directly
+      const parsed = JSON.parse(response.trim()) as unknown;
 
       if (!Array.isArray(parsed) || parsed.length === 0) {
-        throw new Error(
-          `Expected array of segments, got: ${typeof parsed}`,
-        );
+        throw new Error(`Expected array of segments, got: ${typeof parsed}`);
       }
 
       rawSegments = parsed.map((seg) => ({
@@ -151,14 +166,10 @@ export async function generateSegmentsWithTools(
   );
 
   if (changes.length > 0) {
-    console.warn(
-      `[StoryIQ Gemini] Enforcer made ${changes.length} change(s):`,
-    );
+    console.warn(`[StoryIQ Gemini] Enforcer made ${changes.length} change(s):`);
     changes.forEach((c) => console.warn(`  - ${c.detail}`));
   } else {
-    console.log(
-      `[StoryIQ Gemini] Enforcer: no changes needed (clean output)`,
-    );
+    console.log(`[StoryIQ Gemini] Enforcer: no changes needed (clean output)`);
   }
 
   // ── Return ─────────────────────────────────────────────────────────
@@ -181,7 +192,9 @@ export async function generateSegmentsWithTools(
     confidence,
     notes:
       changes.length > 0
-        ? [`Enforcer applied ${changes.length} fix(es) after Gemini generation.`]
+        ? [
+            `Enforcer applied ${changes.length} fix(es) after Gemini generation.`,
+          ]
         : ["All constraints met by Gemini generation."],
     attempts: 1,
   };
@@ -196,7 +209,10 @@ export async function generateSegmentsWithTools(
  * Handles: numbers, numeric strings, "MM:SS" / "HH:MM:SS" strings.
  * Clamps result to [0, videoDuration].
  */
-function coerceTimestamp(value: number | string, videoDuration: number): number {
+function coerceTimestamp(
+  value: number | string,
+  videoDuration: number,
+): number {
   let seconds: number;
 
   if (typeof value === "number") {

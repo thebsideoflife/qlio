@@ -31,6 +31,9 @@ export function useProjectData(projectId: string | undefined) {
     null,
   );
   const [framingJob, setFramingJob] = useState<FramingJob | null>(null);
+  const [activeRenderJobId, setActiveRenderJobId] = useState<string | null>(
+    null,
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -90,6 +93,11 @@ export function useProjectData(projectId: string | undefined) {
         setFramingJob(project.framingJob);
       }
 
+      // Load active render job ID (for resuming render polling after page refresh)
+      if (project.activeRenderJobId) {
+        setActiveRenderJobId(project.activeRenderJobId);
+      }
+
       dispatch(
         setProjectMetadata({
           title: project.title || "Untitled Project",
@@ -135,6 +143,7 @@ export function useProjectData(projectId: string | undefined) {
     generationMetadata,
     generationJob,
     framingJob,
+    activeRenderJobId,
     loading,
     error,
   };

@@ -299,8 +299,19 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
       // Persist to project only when job completes (not on every segment)
       // This reduces DB writes from N to 1
-      if (newStatus === "completed" && job.projectId) {
-        await persistRendersToProject(job.projectId, segmentRenders);
+      if ((newStatus === "completed" || newStatus === "failed") && job.projectId) {
+        if (newStatus === "completed") {
+          await persistRendersToProject(job.projectId, segmentRenders);
+        }
+        // Clear activeRenderJobId since render is done
+        await docClient.send(
+          new UpdateCommand({
+            TableName: PROJECTS_TABLE,
+            Key: { projectId: job.projectId },
+            UpdateExpression: "REMOVE activeRenderJobId SET updatedAt = :now",
+            ExpressionAttributeValues: { ":now": new Date().toISOString() },
+          }),
+        );
       }
     }
   } else if (job.status === "completed" || job.status === "failed") {

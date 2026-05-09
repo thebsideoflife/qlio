@@ -114,6 +114,66 @@ export const uploadToS3 = async (
   await upload.done();
 };
 
+// ============================================================================
+// SLIM POLLING ENDPOINTS - Use these for efficient polling
+// ============================================================================
+
+/**
+ * Slim asset status list for polling. Returns only id, status, title, createdAt.
+ * NO presigned URLs - use getAsset() when you need full asset with video URL.
+ */
+export interface SlimAssetStatus {
+  id: string;
+  status: string;
+  title: string;
+  format: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export const listAssetStatuses = async (): Promise<SlimAssetStatus[]> => {
+  const response = await axios.get(`${API_URL}/assets/status`, {
+    headers: getAuthHeaders(),
+  });
+  return response.data;
+};
+
+/**
+ * Slim job status for polling. Returns only job info, no segments/captions/etc.
+ * Use getProject() when you need the full project after jobs complete.
+ */
+export interface JobStatus {
+  status: string;
+  jobId?: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+  segmentCount?: number;
+}
+
+export interface ProjectJobStatus {
+  projectId: string;
+  generationJob: JobStatus | null;
+  framingJob: JobStatus | null;
+  activeRenderJobId: string | null;
+}
+
+export const getProjectJobStatus = async (
+  projectId: string,
+): Promise<ProjectJobStatus> => {
+  const response = await axios.get(`${API_URL}/projects/${projectId}/job`, {
+    headers: getAuthHeaders(),
+  });
+  return response.data;
+};
+
+// ============================================================================
+// FULL ENDPOINTS - Use these for initial load or after job completion
+// ============================================================================
+
+/**
+ * Full asset list with presigned URLs. Use listAssetStatuses() for polling.
+ */
 export const listAssets = async () => {
   const response = await axios.get(`${API_URL}/assets`, {
     headers: getAuthHeaders(),
@@ -268,13 +328,13 @@ export const generateSegments = async (
 };
 
 /**
- * Poll for generation job completion.
- * Returns the project data when job is complete or throws on failure.
+ * Poll for generation job completion using slim job status endpoint.
+ * Only fetches full project when job completes (to get segments).
  *
  * Default timing:
  * - 30s initial delay (generation takes at least 30s)
  * - 10s poll interval thereafter
- * - 5 min max wait
+ * - 10 min max wait
  */
 export const pollGenerationStatus = async (
   projectId: string,
@@ -297,17 +357,30 @@ export const pollGenerationStatus = async (
   await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
 
   while (Date.now() - startTime < maxWaitMs) {
-    const project = await getProject(projectId);
-    const job: GenerationJob | undefined = project.generationJob;
+    // Use slim endpoint for polling - much lighter than full project
+    const jobStatus = await getProjectJobStatus(projectId);
+    const job = jobStatus.generationJob;
 
     if (!job) {
       throw new Error("No generation job found for this project");
     }
 
-    onProgress?.(job);
+    // Convert slim job status to GenerationJob format
+    const generationJob: GenerationJob = {
+      status: job.status as GenerationJob["status"],
+      jobId: job.jobId || "",
+      startedAt: job.startedAt || "",
+      completedAt: job.completedAt,
+      error: job.error,
+      segmentCount: job.segmentCount,
+    };
+
+    onProgress?.(generationJob);
 
     if (job.status === "completed") {
-      return { segments: project.segments || [], job };
+      // Only fetch full project when complete - need the segments
+      const project = await getProject(projectId);
+      return { segments: project.segments || [], job: generationJob };
     }
 
     if (job.status === "failed") {

@@ -509,6 +509,23 @@ export const editorSlice = createSlice({
       state.captionSettings.style.position = action.payload;
       markEdited(state);
     },
+    updateCaptionWord: (
+      state,
+      action: PayloadAction<{
+        captionId: string;
+        wordIndex: number;
+        newValue: string;
+      }>,
+    ) => {
+      const { captionId, wordIndex, newValue } = action.payload;
+      const caption = state.captions.find((c) => c.id === captionId);
+      if (caption && caption.words[wordIndex]) {
+        caption.words[wordIndex].value = newValue;
+        // Also update the full text field for consistency
+        caption.text = caption.words.map((w) => w.value).join(" ");
+        markEdited(state);
+      }
+    },
 
     // Framing actions
     setGlobalFraming: (state, action: PayloadAction<GlobalFramingSettings>) => {
@@ -749,6 +766,7 @@ export const {
   updateCaptionStyle,
   setCaptionsEnabled,
   updateCaptionPosition,
+  updateCaptionWord,
   // Framing actions
   setGlobalFraming,
   setGlobalAspectRatio,

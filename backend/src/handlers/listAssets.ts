@@ -31,8 +31,6 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     items.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
 
     // Generate presigned URLs for all items
-    // Note: In a production app with many items, this might be slow and should be paginated or URLs generated on demand (like getAsset).
-    // For this MVP, we'll map over them.
     const itemsWithUrls = await Promise.all(
       items.map(async (item) => {
         const result: any = { ...item, id: item.assetId };
