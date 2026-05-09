@@ -98,7 +98,6 @@ export default function Editor() {
   // Custom Hooks
   const {
     videoUrl,
-    transcription,
     generationMetadata,
     generationJob,
     framingJob,
@@ -894,7 +893,6 @@ export default function Editor() {
                 {activeTab === "captions" && <CaptionEditor />}
                 {activeTab === "transcript" && (
                   <TranscriptPanel
-                    transcription={transcription}
                     segments={segments}
                     currentTime={currentTime}
                     duration={duration}
@@ -970,7 +968,6 @@ function groupWordsIntoChunks(
 }
 
 interface TranscriptPanelProps {
-  transcription: Array<{ start: number; end: number; value: string }>;
   segments: Array<{ id: string; startTime: number; endTime: number }>;
   currentTime: number;
   duration: number;
@@ -980,7 +977,6 @@ interface TranscriptPanelProps {
 }
 
 function TranscriptPanel({
-  transcription,
   segments,
   currentTime,
   duration,
@@ -990,23 +986,11 @@ function TranscriptPanel({
 }: TranscriptPanelProps) {
   const dispatch = useDispatch();
   const captions = useSelector((state: RootState) => state.editor.captions);
-  
+  // Use transcriptWords from Redux (includes edits) instead of prop
+  const transcription = useSelector((state: RootState) => state.editor.transcriptWords);
+
   // Edit mode state
   const [editMode, setEditMode] = React.useState(false);
-  const [editingWord, setEditingWord] = React.useState<{
-    start: number;
-    end: number;
-  } | null>(null);
-  const [editValue, setEditValue] = React.useState("");
-  const editInputRef = React.useRef<HTMLInputElement>(null);
-
-  // Focus input when editing starts
-  React.useEffect(() => {
-    if (editingWord && editInputRef.current) {
-      editInputRef.current.focus();
-      editInputRef.current.select();
-    }
-  }, [editingWord]);
 
   // Find caption and word index by time
   const findCaptionWord = React.useCallback(
@@ -1024,11 +1008,11 @@ function TranscriptPanel({
     [captions]
   );
 
-  const handleWordEdit = React.useCallback(
+  // Handle word click - either seek or edit
+  const handleWordClick = React.useCallback(
     (word: { start: number; end: number; value: string }) => {
       if (editMode) {
-        setEditingWord({ start: word.start, end: word.end });
-        setEditValue(word.value);
+        // Edit mode - do nothing on click, contentEditable handles it
       } else {
         onWordClick(word.start);
       }
@@ -1036,33 +1020,41 @@ function TranscriptPanel({
     [editMode, onWordClick]
   );
 
-  const handleEditSave = React.useCallback(() => {
-    if (editingWord && editValue.trim()) {
-      const match = findCaptionWord(editingWord.start, editingWord.end);
+  // Save edited word on blur
+  const handleWordBlur = React.useCallback(
+    (word: { start: number; end: number }, newValue: string) => {
+      const match = findCaptionWord(word.start, word.end);
       if (match) {
         dispatch(
           updateCaptionWord({
             captionId: match.captionId,
             wordIndex: match.wordIndex,
-            newValue: editValue.trim(),
+            newValue: newValue.trim(),
           })
         );
       }
-    }
-    setEditingWord(null);
-    setEditValue("");
-  }, [dispatch, editingWord, editValue, findCaptionWord]);
-
-  const handleEditKeyDown = React.useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter") {
-        handleEditSave();
-      } else if (e.key === "Escape") {
-        setEditingWord(null);
-        setEditValue("");
-      }
     },
-    [handleEditSave]
+    [dispatch, findCaptionWord]
+  );
+
+  // Handle keydown in contentEditable
+  const handleWordKeyDown = React.useCallback(
+    (e: React.KeyboardEvent<HTMLSpanElement>, word: { start: number; end: number; value: string }) => {
+      // Stop propagation for all keys to prevent timeline shortcuts from interfering
+      e.stopPropagation();
+      
+      if (e.key === "Enter") {
+        e.preventDefault();
+        (e.target as HTMLElement).blur();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        // Restore original value
+        (e.target as HTMLElement).textContent = word.value || "";
+        (e.target as HTMLElement).blur();
+      }
+      // Arrow keys, backspace, delete, etc. will work normally since we stopped propagation
+    },
+    []
   );
 
   // Memoize filtered transcription - only recompute when transcription, segments, or previewMode changes
@@ -1092,35 +1084,39 @@ function TranscriptPanel({
   );
 
   return (
-    <div className="p-5 space-y-4 text-sm h-full overflow-y-auto">
-      {/* Header */}
-      <div className="flex justify-between items-center text-xs text-muted-foreground pb-3 border-b-2 border-border">
-        <span className="font-bold uppercase tracking-wider">
-          {previewMode ? "Preview Transcript" : "Full Transcript"}
-        </span>
-        <div className="flex items-center gap-3">
-          {transcription.length > 0 && (
-            <button
-              onClick={() => setEditMode(!editMode)}
-              className={cn(
-                "flex items-center gap-1.5 px-2 py-1 rounded-md font-semibold transition-colors",
-                editMode
-                  ? "bg-blue-600 text-white"
-                  : "hover:bg-muted"
-              )}
-            >
-              <Pencil className="h-3 w-3" />
-              {editMode ? "Done" : "Edit"}
-            </button>
-          )}
-          <span className="flex items-center gap-1.5 font-semibold">
-            <Clock className="h-3.5 w-3.5" />
-            {formatTime(shownDuration)}
+    <div className="text-sm h-full flex flex-col">
+      {/* Sticky Header */}
+      <div className="sticky top-0 z-10 bg-background px-5 pt-5 pb-3 border-b-2 border-border">
+        <div className="flex justify-between items-center text-xs text-muted-foreground">
+          <span className="font-bold uppercase tracking-wider">
+            {previewMode ? "Preview Transcript" : "Full Transcript"}
           </span>
+          <div className="flex items-center gap-3">
+            {transcription.length > 0 && (
+              <button
+                onClick={() => setEditMode(!editMode)}
+                className={cn(
+                  "flex items-center gap-1.5 px-2 py-1 rounded-md font-semibold transition-colors",
+                  editMode
+                    ? "bg-blue-600 text-white"
+                    : "hover:bg-muted"
+                )}
+              >
+                <Pencil className="h-3 w-3" />
+                {editMode ? "Done" : "Edit"}
+              </button>
+            )}
+            <span className="flex items-center gap-1.5 font-semibold">
+              <Clock className="h-3.5 w-3.5" />
+              {formatTime(shownDuration)}
+            </span>
+          </div>
         </div>
       </div>
 
-      {previewMode && segments.length === 0 && (
+      {/* Scrollable content */}
+      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        {previewMode && segments.length === 0 && (
         <div className="text-muted-foreground text-center py-10 text-sm font-medium">
           No segments selected. Add segments to see preview transcript.
         </div>
@@ -1169,48 +1165,48 @@ function TranscriptPanel({
 
                 {/* Words */}
                 <p className="leading-relaxed font-medium">
-                  {chunk.words.map((word, idx) => {
+                  {chunk.words.map((word, wordIdx) => {
                     const isActive =
                       currentTime >= word.start && currentTime <= word.end;
-                    const isEditing =
-                      editingWord &&
-                      Math.abs(editingWord.start - word.start) < 0.01 &&
-                      Math.abs(editingWord.end - word.end) < 0.01;
+                    const isEmpty = word.value === "";
 
-                    if (isEditing) {
-                      return (
-                        <span key={idx}>
-                          <input
-                            ref={editInputRef}
-                            type="text"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={handleEditSave}
-                            onKeyDown={handleEditKeyDown}
-                            className="bg-blue-600 text-white border-none outline-none rounded px-1 font-medium"
-                            style={{
-                              width: `${Math.max(editValue.length, 1) + 1}ch`,
-                              minWidth: "2ch",
-                            }}
-                          />{" "}
-                        </span>
-                      );
+                    // Skip rendering empty words entirely (they were deleted)
+                    if (isEmpty && !editMode) {
+                      return null;
                     }
 
                     return (
                       <span
-                        key={idx}
-                        onClick={() => handleWordEdit(word)}
+                        key={`${word.start}-${word.end}-${wordIdx}`}
+                        onClick={() => !editMode && handleWordClick(word)}
+                        onBlur={(e) => {
+                          if (!editMode) return;
+                          const newVal = (e.target as HTMLElement).textContent || "";
+                          // Always save, even if empty (deletion) or same value
+                          handleWordBlur(word, newVal);
+                        }}
+                        onKeyDown={editMode ? (e) => handleWordKeyDown(e, word) : undefined}
+                        contentEditable={editMode}
+                        suppressContentEditableWarning
                         className={cn(
-                          "cursor-pointer hover:bg-blue-500/20 rounded px-0.5 transition-all",
-                          isActive && "bg-blue-600 text-white",
-                          editMode && "hover:bg-yellow-500/30",
+                          "rounded px-0.5 outline-none",
+                          !editMode && "cursor-pointer hover:bg-blue-500/20",
+                          !editMode && isActive && "bg-blue-600 text-white",
+                          editMode && "cursor-text border-b border-dashed border-blue-400 focus:border-solid focus:border-blue-500 focus:bg-blue-500/10",
+                          isEmpty && "text-muted-foreground opacity-50",
                         )}
                       >
-                        {word.value}{" "}
+                        {isEmpty ? "[deleted]" : word.value}
                       </span>
                     );
-                  })}
+                  }).reduce<React.ReactNode[]>((acc, node) => {
+                    // Add space between words
+                    if (node) {
+                      if (acc.length > 0) acc.push(" ");
+                      acc.push(node);
+                    }
+                    return acc;
+                  }, [])}
                 </p>
               </div>
             );
@@ -1221,6 +1217,7 @@ function TranscriptPanel({
           {loading ? "Loading transcript..." : "No transcript available."}
         </div>
       )}
+      </div>
     </div>
   );
 }

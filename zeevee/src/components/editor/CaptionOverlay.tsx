@@ -185,25 +185,27 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
                   textAlign: "center",
                 }}
               >
-                {activeCaption.words.map((word, idx) => {
-                  const isActive =
-                    currentTime >= word.start && currentTime < word.end;
+                {activeCaption.words
+                  .filter((word) => word.value !== "")
+                  .map((word, idx, filteredWords) => {
+                    const isActive =
+                      currentTime >= word.start && currentTime < word.end;
 
-                  return (
-                    <span
-                      key={idx}
-                      style={{
-                        color:
-                          showAnimation && isActive
-                            ? highlightColor
-                            : style.color,
-                      }}
-                    >
-                      {word.value}
-                      {idx < activeCaption.words.length - 1 ? " " : ""}
-                    </span>
-                  );
-                })}
+                    return (
+                      <span
+                        key={`${word.start}-${idx}`}
+                        style={{
+                          color:
+                            showAnimation && isActive
+                              ? highlightColor
+                              : style.color,
+                        }}
+                      >
+                        {word.value}
+                        {idx < filteredWords.length - 1 ? " " : ""}
+                      </span>
+                    );
+                  })}
               </span>
             </div>
 

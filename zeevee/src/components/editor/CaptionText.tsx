@@ -19,12 +19,18 @@ export function CaptionText({
   currentTime,
   containerHeight,
 }: CaptionTextProps) {
-  const activeWordIndex = caption.words.findIndex(
+  // Filter out empty (deleted) words
+  const visibleWords = caption.words.filter((word) => word.value !== "");
+
+  const activeWordIndex = visibleWords.findIndex(
     (w) => currentTime >= w.start && currentTime < w.end,
   );
 
   const highlightColor = style.highlightColor || "#fbbf24";
   const showAnimation = highlightColor !== "none";
+
+  // Don't render anything if all words are deleted
+  if (visibleWords.length === 0) return null;
 
   return (
     <div
@@ -47,9 +53,9 @@ export function CaptionText({
           textAlign: "center",
         }}
       >
-        {caption.words.map((word, idx) => (
+        {visibleWords.map((word, idx) => (
           <span
-            key={idx}
+            key={`${word.start}-${idx}`}
             style={{
               color:
                 showAnimation && idx === activeWordIndex
@@ -58,7 +64,7 @@ export function CaptionText({
             }}
           >
             {word.value}
-            {idx < caption.words.length - 1 ? " " : ""}
+            {idx < visibleWords.length - 1 ? " " : ""}
           </span>
         ))}
       </span>

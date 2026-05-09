@@ -480,9 +480,28 @@ export const editorSlice = createSlice({
 
     // Caption actions
     setTranscriptWords: (state, action: PayloadAction<CaptionWord[]>) => {
-      state.transcriptWords = action.payload;
+      // Dedupe words by timestamp (can happen from chunk overlap in long videos)
+      const seen = new Set<string>();
+      const dedupedWords = action.payload.filter((word) => {
+        const key = `${word.start}-${word.end}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      // Apply any existing word edits to the transcript
+      const wordEdits = state.captionSettings.wordEdits || {};
+      const transcriptWithEdits = dedupedWords.map((word) => {
+        const key = `${word.start}-${word.end}`;
+        // Check if key exists (not just truthy) to handle empty string deletions
+        if (key in wordEdits) {
+          return { ...word, value: wordEdits[key] };
+        }
+        return word;
+      });
+      state.transcriptWords = transcriptWithEdits;
       // Automatically generate captions when transcript is loaded
-      state.captions = groupWordsIntoCaptions(action.payload);
+      state.captions = groupWordsIntoCaptions(transcriptWithEdits);
     },
     setCaptionSettings: (state, action: PayloadAction<CaptionSettings>) => {
       state.captionSettings = action.payload;
@@ -520,9 +539,23 @@ export const editorSlice = createSlice({
       const { captionId, wordIndex, newValue } = action.payload;
       const caption = state.captions.find((c) => c.id === captionId);
       if (caption && caption.words[wordIndex]) {
-        caption.words[wordIndex].value = newValue;
+        const word = caption.words[wordIndex];
+        word.value = newValue;
         // Also update the full text field for consistency
         caption.text = caption.words.map((w) => w.value).join(" ");
+        // Store in wordEdits for persistence
+        const key = `${word.start}-${word.end}`;
+        if (!state.captionSettings.wordEdits) {
+          state.captionSettings.wordEdits = {};
+        }
+        state.captionSettings.wordEdits[key] = newValue;
+        // Also update transcriptWords to keep them in sync
+        const transcriptWord = state.transcriptWords.find(
+          (w) => Math.abs(w.start - word.start) < 0.01 && Math.abs(w.end - word.end) < 0.01
+        );
+        if (transcriptWord) {
+          transcriptWord.value = newValue;
+        }
         markEdited(state);
       }
     },

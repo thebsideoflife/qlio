@@ -246,6 +246,7 @@ export interface CaptionSettings {
     maxWidth: number;
     highlightColor?: string;
   };
+  wordEdits?: Record<string, string>;
 }
 
 export const updateProject = async (
