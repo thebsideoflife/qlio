@@ -8,6 +8,20 @@ const docClient = DynamoDBDocumentClient.from(client);
 
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 
+interface Segment {
+  startTime: number;
+  endTime: number;
+}
+
+interface ProjectSummary {
+  projectId: string;
+  assetId: string;
+  title: string;
+  createdAt: string;
+  segmentCount: number;
+  firstSegmentStartTime: number | null;
+}
+
 export const handler: APIGatewayProxyHandler = async (event) => {
   // Auth Check
   const authResult = await checkAuth(event);
@@ -29,7 +43,19 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         })
       );
 
-      const projects = result.Items || [];
+      const projects: ProjectSummary[] = (result.Items || []).map((item) => {
+        const segments: Segment[] = item.segments || [];
+        const sortedSegments = [...segments].sort((a, b) => a.startTime - b.startTime);
+        return {
+          projectId: item.projectId,
+          assetId: item.assetId,
+          title: item.title,
+          createdAt: item.createdAt,
+          segmentCount: segments.length,
+          firstSegmentStartTime: sortedSegments.length > 0 ? sortedSegments[0].startTime : null,
+        };
+      });
+
       projects.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
 
       return {

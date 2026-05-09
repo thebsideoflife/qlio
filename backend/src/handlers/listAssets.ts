@@ -1,7 +1,6 @@
 import { APIGatewayProxyHandler } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, ScanCommand } from "@aws-sdk/lib-dynamodb";
-import { createHash } from "crypto";
 import { checkAuth, getAuthenticatedUserId } from "../utils/auth";
 import { presignS3Uri } from "../utils/s3";
 
@@ -31,25 +30,6 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     // Sort by createdAt desc
     items.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
 
-    // Compute ETag from item IDs + statuses + updatedAt (lightweight fingerprint)
-    const fingerprint = items
-      .map((i) => `${i.assetId}:${i.status}:${i.updatedAt || i.createdAt}`)
-      .join("|");
-    const etag = `"${createHash("md5").update(fingerprint).digest("hex")}"`;
-
-    // If client sent If-None-Match and it matches, return 304
-    const clientEtag = event.headers?.["If-None-Match"] || event.headers?.["if-none-match"];
-    if (clientEtag === etag) {
-      return {
-        statusCode: 304,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "ETag": etag,
-        },
-        body: "",
-      };
-    }
-
     // Generate presigned URLs for all items
     const itemsWithUrls = await Promise.all(
       items.map(async (item) => {
@@ -70,7 +50,6 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       headers: {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
-        "ETag": etag,
       },
       body: JSON.stringify(itemsWithUrls),
     };

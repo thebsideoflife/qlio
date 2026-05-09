@@ -4,6 +4,7 @@ import {
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
+  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { checkAuth } from "../utils/auth";
@@ -251,6 +252,19 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
   await docClient.send(
     new PutCommand({ TableName: RENDER_JOBS_TABLE, Item: renderJob }),
+  );
+
+  // Track active render job on project for refresh recovery
+  await docClient.send(
+    new UpdateCommand({
+      TableName: PROJECTS_TABLE,
+      Key: { projectId },
+      UpdateExpression: "SET activeRenderJobId = :jobId, updatedAt = :now",
+      ExpressionAttributeValues: {
+        ":jobId": jobId,
+        ":now": new Date().toISOString(),
+      },
+    }),
   );
 
   // Invoke FFmpeg Lambda to cut clips and start Remotion renders
