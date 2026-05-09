@@ -1,13 +1,18 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
+import { AssetCard } from "@/components/dashboard/AssetCard";
 import {
-  AssetCard,
   getRecentAssets,
   touchRecentAsset,
-} from "@/components/dashboard/AssetCard";
+} from "@/components/dashboard/recentAssets";
 import { AssetCardSkeleton } from "@/components/dashboard/AssetCardSkeleton";
 import { CreateProjectModal } from "@/components/dashboard/CreateProjectModal";
 import { useDispatch, useSelector } from "react-redux";
-import { fetchAssets, removeAsset, updateAsset } from "@/store/assetsSlice";
+import {
+  fetchAssets,
+  pollAssetStatuses,
+  removeAsset,
+  updateAsset,
+} from "@/store/assetsSlice";
 import type { Asset } from "@/store/assetsSlice";
 import { deleteAsset } from "@/services/api";
 import type { RootState, AppDispatch } from "@/store/store";
@@ -26,6 +31,7 @@ export default function Dashboard() {
     items: assets,
     loading,
     error,
+    initialLoadDone,
   } = useSelector((state: RootState) => state.assets);
 
   const hasNonTerminalAssets = useCallback(
@@ -33,18 +39,20 @@ export default function Dashboard() {
     [assets],
   );
 
+  // Initial full fetch (with presigned URLs)
   useEffect(() => {
     dispatch(fetchAssets());
   }, [dispatch]);
 
-  // Auto-poll while any asset is still processing/uploading/indexing
+  // Slim polling while any asset is still processing
+  // Uses lightweight status endpoint - only fetches full asset when it becomes READY
   useEffect(() => {
-    if (!hasNonTerminalAssets()) return;
+    if (!initialLoadDone || !hasNonTerminalAssets()) return;
     const interval = setInterval(() => {
-      dispatch(fetchAssets());
+      dispatch(pollAssetStatuses());
     }, 15_000);
     return () => clearInterval(interval);
-  }, [dispatch, hasNonTerminalAssets]);
+  }, [dispatch, initialLoadDone, hasNonTerminalAssets]);
 
   // Helper: touch recency + trigger re-sort
   const touchAndReorder = (assetId: string) => {
