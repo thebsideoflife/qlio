@@ -54,9 +54,6 @@ export function CaptionEditor() {
   const { enabled, style } = useSelector(
     (state: RootState) => state.editor.captionSettings,
   );
-  const captionCount = useSelector(
-    (state: RootState) => state.editor.captions.length,
-  );
 
   const textColor = style.color || "#ffffff";
   const highlightColor = style.highlightColor || "#fbbf24";
@@ -115,17 +112,10 @@ export function CaptionEditor() {
   return (
     <div className="p-5 space-y-5">
       {/* Toggle */}
-      <div className="flex items-center justify-between p-4 bg-muted/40 rounded-xl border-2 border-border">
-        <div className="space-y-1">
-          <Label htmlFor="captions-toggle" className="font-bold">
-            Show Captions
-          </Label>
-          {captionCount > 0 && (
-            <p className="text-xs text-muted-foreground font-medium">
-              {captionCount} lines from transcript
-            </p>
-          )}
-        </div>
+      <div className="flex items-center justify-between">
+        <Label htmlFor="captions-toggle" className="font-semibold">
+          Show Captions
+        </Label>
         <Switch
           id="captions-toggle"
           checked={enabled}
@@ -411,6 +401,7 @@ export function CaptionEditor() {
               </div>
             )}
           </div>
+
         </>
       )}
     </div>

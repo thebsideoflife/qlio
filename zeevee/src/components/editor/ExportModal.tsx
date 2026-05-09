@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
 import {
@@ -17,6 +17,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   startRender,
   getRenderStatus,
+  getProjectJobStatus,
   type SegmentDownload,
 } from "@/services/api";
 import {
@@ -71,12 +72,36 @@ export function ExportModal({
     return map;
   }, [lastSegmentRenders]);
 
+  // Track whether we've checked for active render job this session
+  const checkedActiveJobRef = useRef(false);
+
   // Initialize with none selected when modal opens
+  // Also check for active render job to resume polling (handles page refresh)
   useEffect(() => {
     if (open) {
       setSelectedSegmentIds(new Set());
+
+      // Check for active render job once per modal open (handles page refresh scenario)
+      if (!checkedActiveJobRef.current) {
+        checkedActiveJobRef.current = true;
+        (async () => {
+          try {
+            const jobStatus = await getProjectJobStatus(projectId);
+            if (jobStatus.activeRenderJobId) {
+              // Resume polling for the active render
+              setJobId(jobStatus.activeRenderJobId);
+              setStatus("rendering");
+            }
+          } catch {
+            // Non-fatal - modal will work normally
+          }
+        })();
+      }
+    } else {
+      // Reset check flag when modal closes
+      checkedActiveJobRef.current = false;
     }
-  }, [open]);
+  }, [open, projectId]);
 
   // Poll for render status
   useEffect(() => {

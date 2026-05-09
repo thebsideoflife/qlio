@@ -4,7 +4,6 @@ import type { RootState } from "@/store/store";
 import {
   updateCaptionPosition,
   updateCaptionStyle,
-  updateCaptionWord,
 } from "@/store/editorSlice";
 import { SNAP_POSITIONS } from "@/remotion/types";
 
@@ -139,57 +138,6 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
     (c) => currentTime >= c.startTime && currentTime < c.endTime,
   );
 
-  // Track which word is being edited
-  const [editingWord, setEditingWord] = useState<{
-    captionId: string;
-    wordIndex: number;
-  } | null>(null);
-  const [editValue, setEditValue] = useState("");
-  const editInputRef = useRef<HTMLInputElement>(null);
-
-  // Focus input when editing starts
-  useEffect(() => {
-    if (editingWord && editInputRef.current) {
-      editInputRef.current.focus();
-      editInputRef.current.select();
-    }
-  }, [editingWord]);
-
-  const handleWordClick = useCallback(
-    (e: React.MouseEvent, captionId: string, wordIndex: number, value: string) => {
-      e.stopPropagation();
-      setEditingWord({ captionId, wordIndex });
-      setEditValue(value);
-    },
-    [],
-  );
-
-  const handleEditSave = useCallback(() => {
-    if (editingWord && editValue.trim()) {
-      dispatch(
-        updateCaptionWord({
-          captionId: editingWord.captionId,
-          wordIndex: editingWord.wordIndex,
-          newValue: editValue.trim(),
-        }),
-      );
-    }
-    setEditingWord(null);
-    setEditValue("");
-  }, [dispatch, editingWord, editValue]);
-
-  const handleEditKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter") {
-        handleEditSave();
-      } else if (e.key === "Escape") {
-        setEditingWord(null);
-        setEditValue("");
-      }
-    },
-    [handleEditSave],
-  );
-
   if (!enabled) return null;
 
   const highlightColor = style.highlightColor || "#fbbf24";
@@ -240,42 +188,10 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
                 {activeCaption.words.map((word, idx) => {
                   const isActive =
                     currentTime >= word.start && currentTime < word.end;
-                  const isEditing =
-                    editingWord?.captionId === activeCaption.id &&
-                    editingWord?.wordIndex === idx;
-
-                  if (isEditing) {
-                    return (
-                      <span key={idx}>
-                        <input
-                          ref={editInputRef}
-                          type="text"
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onBlur={handleEditSave}
-                          onKeyDown={handleEditKeyDown}
-                          className="pointer-events-auto bg-blue-600/80 border-none outline-none rounded px-1"
-                          style={{
-                            fontFamily: "inherit",
-                            fontSize: "inherit",
-                            fontWeight: "inherit",
-                            color: "#ffffff",
-                            width: `${Math.max(editValue.length, 1) + 1}ch`,
-                            minWidth: "2ch",
-                          }}
-                        />
-                        {idx < activeCaption.words.length - 1 ? " " : ""}
-                      </span>
-                    );
-                  }
 
                   return (
                     <span
                       key={idx}
-                      onClick={(e) =>
-                        handleWordClick(e, activeCaption.id, idx, word.value)
-                      }
-                      className="pointer-events-auto cursor-text hover:bg-white/20 rounded px-0.5 -mx-0.5 transition-colors"
                       style={{
                         color:
                           showAnimation && isActive

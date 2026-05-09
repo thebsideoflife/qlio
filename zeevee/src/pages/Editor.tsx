@@ -18,6 +18,7 @@ import {
   setProjectId,
   resetEditor,
   updateFramingKeyframe,
+  updateCaptionWord,
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
 import { useRef, useEffect, useState } from "react";
@@ -28,6 +29,7 @@ import {
   generateSegments,
   pollGenerationStatus,
   getProject,
+  getProjectJobStatus,
   type GenerationJob,
 } from "@/services/api";
 import {
@@ -37,6 +39,7 @@ import {
   Crop,
   Maximize2,
   Clock,
+  Pencil,
 } from "lucide-react";
 import { getEffectiveKeyframes } from "@/remotion/types";
 import type { AspectRatio } from "@/remotion/types";
@@ -320,11 +323,11 @@ export default function Editor() {
           );
         }
 
-        // Await framing check so finally() doesn't run until we know if framing is needed
+        // Check if framing job is running (use slim endpoint)
         if (projectIdRef.current !== startingProjectId) return;
         try {
-          const project = await getProject(startingProjectId);
-          const fJob = project.framingJob;
+          const jobStatus = await getProjectJobStatus(startingProjectId);
+          const fJob = jobStatus.framingJob;
           if (
             fJob &&
             (fJob.status === "pending" || fJob.status === "analyzing") &&
@@ -333,28 +336,35 @@ export default function Editor() {
             framingPollTookOver = true;
             setGenerationStatus({
               status: "framing",
-              jobId: fJob.jobId,
-              startedAt: fJob.startedAt,
+              jobId: fJob.jobId || "",
+              startedAt: fJob.startedAt || "",
             });
             const POLL = 10000;
             const MAX = 600000;
             const start = Date.now();
+            // Poll framing status with slim endpoint
             (async () => {
               while (Date.now() - start < MAX) {
                 if (projectIdRef.current !== startingProjectId) break;
                 await new Promise((r) => setTimeout(r, POLL));
                 if (projectIdRef.current !== startingProjectId) break;
-                let p;
+                let status;
                 try {
-                  p = await getProject(startingProjectId);
+                  status = await getProjectJobStatus(startingProjectId);
                 } catch {
                   break;
                 }
-                if (p.framingJob?.status === "completed") {
-                  if (p.segments?.length) dispatch(setSegments(p.segments));
+                if (status.framingJob?.status === "completed") {
+                  // Fetch full project only on completion
+                  try {
+                    const p = await getProject(startingProjectId);
+                    if (p.segments?.length) dispatch(setSegments(p.segments));
+                  } catch {
+                    // Non-fatal
+                  }
                   break;
                 }
-                if (p.framingJob?.status === "failed") break;
+                if (status.framingJob?.status === "failed") break;
               }
               if (projectIdRef.current === startingProjectId) {
                 setIsGenerating(false);
@@ -380,9 +390,11 @@ export default function Editor() {
           setGenerationStatus(null);
         }
       });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isGenerating intentionally omitted to prevent re-triggering when it changes
   }, [projectId, generationJob, loading, dispatch]);
 
   // Resume framing poll if there's an in-progress framing job (e.g., after page refresh)
+  // Uses slim job status endpoint for polling, fetches full project only on completion
   useEffect(() => {
     if (!projectId || !framingJob || loading) return;
     if (framingJob.status !== "pending" && framingJob.status !== "analyzing")
@@ -399,16 +411,26 @@ export default function Editor() {
       while (!cancelled && Date.now() - start < MAX) {
         await new Promise((r) => setTimeout(r, POLL));
         if (cancelled || projectIdRef.current !== startingProjectId) break;
-        let project;
+
+        // Use slim endpoint for polling
+        let jobStatus;
         try {
-          project = await getProject(startingProjectId);
+          jobStatus = await getProjectJobStatus(startingProjectId);
         } catch {
           break;
         }
-        const job = project.framingJob;
+
+        const job = jobStatus.framingJob;
         if (!job) break;
+
         if (job.status === "completed") {
-          if (project.segments?.length) dispatch(setSegments(project.segments));
+          // Only fetch full project when done - need the updated segments
+          try {
+            const project = await getProject(startingProjectId);
+            if (project.segments?.length) dispatch(setSegments(project.segments));
+          } catch {
+            // Non-fatal
+          }
           break;
         }
         if (job.status === "failed") break;
@@ -418,6 +440,7 @@ export default function Editor() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isGenerating intentionally omitted to prevent re-triggering when it changes
   }, [projectId, framingJob, loading, dispatch]);
 
   // Don't auto-seek when selecting segments - timeline handles seeking now
@@ -540,7 +563,7 @@ export default function Editor() {
           `[Editor] Generation complete: ${result.segments.length} segments`,
         );
 
-        // If auto-frame was requested, poll for framing completion
+        // If auto-frame was requested, poll for framing completion (slim)
         if (autoFrameEnabled) {
           setGenerationStatus({
             status: "framing",
@@ -554,17 +577,24 @@ export default function Editor() {
             if (projectIdRef.current !== startingProjectId) break;
             await new Promise((r) => setTimeout(r, FRAMING_POLL));
             if (projectIdRef.current !== startingProjectId) break;
-            let project;
+            // Use slim endpoint for polling
+            let jobStatus;
             try {
-              project = await getProject(startingProjectId);
+              jobStatus = await getProjectJobStatus(startingProjectId);
             } catch {
               break;
             }
-            const job = project.framingJob;
+            const job = jobStatus.framingJob;
             if (!job) break;
             if (job.status === "completed") {
-              if (project.segments?.length)
-                dispatch(setSegments(project.segments));
+              // Fetch full project only on completion
+              try {
+                const project = await getProject(startingProjectId);
+                if (project.segments?.length)
+                  dispatch(setSegments(project.segments));
+              } catch {
+                // Non-fatal
+              }
               break;
             }
             if (job.status === "failed") break;
@@ -958,6 +988,83 @@ function TranscriptPanel({
   onWordClick,
   loading,
 }: TranscriptPanelProps) {
+  const dispatch = useDispatch();
+  const captions = useSelector((state: RootState) => state.editor.captions);
+  
+  // Edit mode state
+  const [editMode, setEditMode] = React.useState(false);
+  const [editingWord, setEditingWord] = React.useState<{
+    start: number;
+    end: number;
+  } | null>(null);
+  const [editValue, setEditValue] = React.useState("");
+  const editInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Focus input when editing starts
+  React.useEffect(() => {
+    if (editingWord && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editingWord]);
+
+  // Find caption and word index by time
+  const findCaptionWord = React.useCallback(
+    (start: number, end: number) => {
+      for (const caption of captions) {
+        const wordIndex = caption.words.findIndex(
+          (w) => Math.abs(w.start - start) < 0.01 && Math.abs(w.end - end) < 0.01
+        );
+        if (wordIndex !== -1) {
+          return { captionId: caption.id, wordIndex };
+        }
+      }
+      return null;
+    },
+    [captions]
+  );
+
+  const handleWordEdit = React.useCallback(
+    (word: { start: number; end: number; value: string }) => {
+      if (editMode) {
+        setEditingWord({ start: word.start, end: word.end });
+        setEditValue(word.value);
+      } else {
+        onWordClick(word.start);
+      }
+    },
+    [editMode, onWordClick]
+  );
+
+  const handleEditSave = React.useCallback(() => {
+    if (editingWord && editValue.trim()) {
+      const match = findCaptionWord(editingWord.start, editingWord.end);
+      if (match) {
+        dispatch(
+          updateCaptionWord({
+            captionId: match.captionId,
+            wordIndex: match.wordIndex,
+            newValue: editValue.trim(),
+          })
+        );
+      }
+    }
+    setEditingWord(null);
+    setEditValue("");
+  }, [dispatch, editingWord, editValue, findCaptionWord]);
+
+  const handleEditKeyDown = React.useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Enter") {
+        handleEditSave();
+      } else if (e.key === "Escape") {
+        setEditingWord(null);
+        setEditValue("");
+      }
+    },
+    [handleEditSave]
+  );
+
   // Memoize filtered transcription - only recompute when transcription, segments, or previewMode changes
   // NOT on every currentTime change (which happens 60fps)
   const filteredTranscription = React.useMemo(() => {
@@ -991,10 +1098,26 @@ function TranscriptPanel({
         <span className="font-bold uppercase tracking-wider">
           {previewMode ? "Preview Transcript" : "Full Transcript"}
         </span>
-        <span className="flex items-center gap-1.5 font-semibold">
-          <Clock className="h-3.5 w-3.5" />
-          {formatTime(shownDuration)}
-        </span>
+        <div className="flex items-center gap-3">
+          {transcription.length > 0 && (
+            <button
+              onClick={() => setEditMode(!editMode)}
+              className={cn(
+                "flex items-center gap-1.5 px-2 py-1 rounded-md font-semibold transition-colors",
+                editMode
+                  ? "bg-blue-600 text-white"
+                  : "hover:bg-muted"
+              )}
+            >
+              <Pencil className="h-3 w-3" />
+              {editMode ? "Done" : "Edit"}
+            </button>
+          )}
+          <span className="flex items-center gap-1.5 font-semibold">
+            <Clock className="h-3.5 w-3.5" />
+            {formatTime(shownDuration)}
+          </span>
+        </div>
       </div>
 
       {previewMode && segments.length === 0 && (
@@ -1049,13 +1172,39 @@ function TranscriptPanel({
                   {chunk.words.map((word, idx) => {
                     const isActive =
                       currentTime >= word.start && currentTime <= word.end;
+                    const isEditing =
+                      editingWord &&
+                      Math.abs(editingWord.start - word.start) < 0.01 &&
+                      Math.abs(editingWord.end - word.end) < 0.01;
+
+                    if (isEditing) {
+                      return (
+                        <span key={idx}>
+                          <input
+                            ref={editInputRef}
+                            type="text"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onBlur={handleEditSave}
+                            onKeyDown={handleEditKeyDown}
+                            className="bg-blue-600 text-white border-none outline-none rounded px-1 font-medium"
+                            style={{
+                              width: `${Math.max(editValue.length, 1) + 1}ch`,
+                              minWidth: "2ch",
+                            }}
+                          />{" "}
+                        </span>
+                      );
+                    }
+
                     return (
                       <span
                         key={idx}
-                        onClick={() => onWordClick(word.start)}
+                        onClick={() => handleWordEdit(word)}
                         className={cn(
                           "cursor-pointer hover:bg-blue-500/20 rounded px-0.5 transition-all",
                           isActive && "bg-blue-600 text-white",
+                          editMode && "hover:bg-yellow-500/30",
                         )}
                       >
                         {word.value}{" "}
