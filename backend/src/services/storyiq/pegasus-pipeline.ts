@@ -42,13 +42,16 @@ interface PegasusSceneRow {
   metadata: Record<string, unknown>;
 }
 
-function pegasusSegmentDurationBounds(): {
+function pegasusSegmentDurationBounds(options?: {
+  minSegmentDuration?: number;
+  maxSegmentDuration?: number;
+}): {
   minSegmentDuration: number;
   maxSegmentDuration: number;
 } {
   return {
-    minSegmentDuration: QLIO_PEGASUS_SEGMENT_MIN_SEC,
-    maxSegmentDuration: QLIO_PEGASUS_SEGMENT_MAX_SEC,
+    minSegmentDuration: options?.minSegmentDuration ?? QLIO_PEGASUS_SEGMENT_MIN_SEC,
+    maxSegmentDuration: options?.maxSegmentDuration ?? QLIO_PEGASUS_SEGMENT_MAX_SEC,
   };
 }
 
@@ -463,6 +466,16 @@ export interface PegasusPipelineOptions extends GenerationOptions {
   maxPollWaitMs?: number;
   /** Skip classification and assume sports content (faster for known sports videos) */
   assumeSports?: boolean;
+  /** Min per-segment length in seconds (overrides defaults) */
+  minSegmentDuration?: number;
+  /** Max per-segment length in seconds (overrides defaults) */
+  maxSegmentDuration?: number;
+  /** Pass-through metadata: tv | movie | other */
+  assetType?: string;
+  /** Pass-through metadata: mobile | tv | tiktok | ig | shorts | facebook */
+  platform?: string;
+  /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
+  format?: string;
 }
 
 /**
@@ -498,11 +511,15 @@ export async function generateSegmentsWithPegasus(
       : undefined);
 
   // -------------------------------------------------------------------------
-  // Classify video (or skip if assumeSports=true)
+  // Classify video (or skip if assumeSports=true or user provided prompt)
   // -------------------------------------------------------------------------
   let contentType: ContentType;
 
-  if (options.assumeSports) {
+  if (options.userInstructions) {
+    // User prompt overrides classification - use generic pipeline with their instructions
+    console.log("[Pegasus] Skipping classification (user provided instructions)");
+    contentType = "generic";
+  } else if (options.assumeSports) {
     console.log("[Pegasus] Skipping classification (assumeSports=true)");
     contentType = "sports";
   } else {
@@ -530,6 +547,8 @@ export async function generateSegmentsWithPegasus(
       transcript,
       userInstructions,
       maxPollWaitMs,
+      minSegmentDuration: options.minSegmentDuration,
+      maxSegmentDuration: options.maxSegmentDuration,
     });
   }
 
@@ -543,7 +562,10 @@ export async function generateSegmentsWithPegasus(
   });
 
   const { minSegmentDuration, maxSegmentDuration } =
-    pegasusSegmentDurationBounds();
+    pegasusSegmentDurationBounds({
+      minSegmentDuration: options.minSegmentDuration,
+      maxSegmentDuration: options.maxSegmentDuration,
+    });
 
   const safeId = `qlio-seg-${metadata.assetId}`.replace(/[^a-zA-Z0-9_-]/g, "-");
   const pollCap = maxPollWaitMs ?? 3_600_000;

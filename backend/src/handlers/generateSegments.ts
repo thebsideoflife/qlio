@@ -50,6 +50,16 @@ interface AsyncJobPayload {
   purpose?: "compact_video" | "highlights" | "full_video";
   /** Omitted or null = Auto. Otherwise 25 / 50 / 75 (% of source length). */
   targetPercent?: number | null;
+  /** Min per-segment length in seconds */
+  minSegmentDuration?: number;
+  /** Max per-segment length in seconds */
+  maxSegmentDuration?: number;
+  /** Pass-through metadata: tv | movie | other */
+  assetType?: string;
+  /** Pass-through metadata: mobile | tv | tiktok | ig | shorts | facebook */
+  platform?: string;
+  /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
+  format?: string;
 }
 
 interface Segment {
@@ -122,8 +132,19 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
     }
 
     const body = JSON.parse(event.body || "{}");
-    const { userPrompt, videoDuration, autoFrame, targetAspectRatio, purpose, targetPercent } =
-      body;
+    const {
+      userPrompt,
+      videoDuration,
+      autoFrame,
+      targetAspectRatio,
+      purpose,
+      targetPercent,
+      minSegmentDuration,
+      maxSegmentDuration,
+      assetType,
+      platform,
+      format,
+    } = body;
 
     // Generate a job ID
     const jobId = randomUUID();
@@ -156,6 +177,11 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
       targetAspectRatio: targetAspectRatio || "9:16",
       purpose: purpose || "highlights",
       targetPercent: typeof targetPercent === "number" ? targetPercent : undefined,
+      minSegmentDuration: typeof minSegmentDuration === "number" ? minSegmentDuration : undefined,
+      maxSegmentDuration: typeof maxSegmentDuration === "number" ? maxSegmentDuration : undefined,
+      assetType: assetType || undefined,
+      platform: platform || undefined,
+      format: format || undefined,
     };
 
     await lambdaClient.send(
@@ -208,6 +234,11 @@ async function executeGenerationJob(
     targetAspectRatio,
     purpose,
     targetPercent,
+    minSegmentDuration,
+    maxSegmentDuration,
+    assetType,
+    platform,
+    format,
   } = payload;
 
   console.log(
@@ -299,7 +330,16 @@ async function executeGenerationJob(
 
     console.log("[generateSegments] Starting StoryIQ generation...");
 
-    const goals = mapMetadataToGoals({ userPrompt, purpose, targetPercent });
+    const goals = mapMetadataToGoals({
+      userPrompt,
+      purpose,
+      targetPercent,
+      minSegmentDuration,
+      maxSegmentDuration,
+      assetType,
+      platform,
+      format,
+    });
     console.log("[generateSegments] Goals:", JSON.stringify(goals));
 
     let generatedSegments: Segment[] = [];

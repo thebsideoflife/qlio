@@ -151,6 +151,11 @@ export async function generateWithStoryIQ(
     maxPollWaitMs: input.maxAsyncWaitMs,
     geminiApiKey: input.geminiApiKey,
     assumeSports: goals.assumeSports,
+    minSegmentDuration: goals.minSegmentDuration,
+    maxSegmentDuration: goals.maxSegmentDuration,
+    assetType: goals.assetType,
+    platform: goals.platform,
+    format: goals.format,
   });
 
   const processingTime = Date.now() - startTime;
@@ -189,6 +194,16 @@ export interface GenerateMetadata {
   targetPercent?: number | null;
   /** Skip classification and assume sports content (faster for known sports videos) */
   assumeSports?: boolean;
+  /** Min per-segment length in seconds */
+  minSegmentDuration?: number;
+  /** Max per-segment length in seconds */
+  maxSegmentDuration?: number;
+  /** Pass-through metadata: tv | movie | other */
+  assetType?: string;
+  /** Pass-through metadata: mobile | tv | tiktok | ig | shorts | facebook */
+  platform?: string;
+  /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
+  format?: string;
 }
 
 const MAX_USER_INSTRUCTIONS_LENGTH = 500;
@@ -223,6 +238,25 @@ export function mapMetadataToGoals(metadata: GenerateMetadata): StoryIQGoals {
     metadata.targetPercent <= 100
   ) {
     goals.targetPercent = Math.round(metadata.targetPercent);
+  }
+
+  // Pass through duration bounds if provided
+  if (typeof metadata.minSegmentDuration === "number" && metadata.minSegmentDuration >= 2) {
+    goals.minSegmentDuration = metadata.minSegmentDuration;
+  }
+  if (typeof metadata.maxSegmentDuration === "number" && metadata.maxSegmentDuration > 0) {
+    goals.maxSegmentDuration = metadata.maxSegmentDuration;
+  }
+
+  // Pass through metadata fields
+  if (metadata.assetType) {
+    goals.assetType = metadata.assetType;
+  }
+  if (metadata.platform) {
+    goals.platform = metadata.platform;
+  }
+  if (metadata.format) {
+    goals.format = metadata.format;
   }
 
   // Skip classification for highlights (always sports for now)

@@ -2,8 +2,8 @@
  * Content Classifier
  *
  * Multi-tier classification with fallbacks:
- * 1. TwelveLabs Pegasus (first 120s of video) - most accurate
- * 2. Gemini title-based classification - fast fallback
+ * 1. Claude title-based classification (via Bedrock) - fast, cheap
+ * 2. TwelveLabs Pegasus (first 120s of video) - most accurate but slow
  * 3. Default to "sports" - safe fallback for our use case
  *
  * We default to "sports" rather than "generic" because:
@@ -12,14 +12,17 @@
  */
 
 import type { TwelveLabs, TwelvelabsApi } from "twelvelabs-js";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import {
+  BedrockRuntimeClient,
+  InvokeModelCommand,
+} from "@aws-sdk/client-bedrock-runtime";
 import type { ContentType } from "./types";
 
 export interface ClassifyResult {
   contentType: ContentType;
   confidence: number;
   reasoning: string;
-  source: "pegasus" | "gemini_title" | "default";
+  source: "pegasus" | "claude_title" | "default";
 }
 
 /** Analyze only first 2 minutes — genre is obvious from opening content. */
@@ -37,39 +40,39 @@ const RETRY_DELAY_MS = 2000;
  * Classify video content with multi-tier fallback.
  *
  * Priority:
- * 1. TwelveLabs Pegasus (video analysis) - most accurate
- * 2. Gemini title classification - if title is informative
+ * 1. Claude title classification (via Bedrock) - fast, cheap
+ * 2. TwelveLabs Pegasus (video analysis) - most accurate but slow
  * 3. Default to "sports" - safe fallback
  */
 export async function classifyContent(
   client: TwelveLabs,
   video: TwelvelabsApi.VideoContext,
   title?: string,
-  geminiApiKey?: string,
+  _geminiApiKey?: string,
 ): Promise<ClassifyResult> {
-  // Tier 1: Try TwelveLabs Pegasus with retry
+  // Tier 1: Try Claude title-based classification (if we have a real title)
+  if (title && title !== "Untitled Video" && title.length > 3) {
+    try {
+      const result = await classifyWithClaudeTitle(title);
+      if (result.confidence >= 0.6) {
+        return { ...result, source: "claude_title" };
+      }
+      console.log(`[Classifier] Claude title confidence too low (${result.confidence}), trying Pegasus`);
+    } catch (claudeErr) {
+      const errMsg = claudeErr instanceof Error ? claudeErr.message : String(claudeErr);
+      console.warn(`[Classifier] Claude title classification failed: ${errMsg}`);
+    }
+  } else if (!title || title === "Untitled Video") {
+    console.log("[Classifier] No useful title for Claude, trying Pegasus");
+  }
+
+  // Tier 2: Try TwelveLabs Pegasus with retry
   try {
     const result = await classifyWithPegasusRetry(client, video, title);
     return { ...result, source: "pegasus" };
   } catch (pegasusErr) {
     const errMsg = pegasusErr instanceof Error ? pegasusErr.message : String(pegasusErr);
     console.warn(`[Classifier] Pegasus failed after retries: ${errMsg}`);
-  }
-
-  // Tier 2: Try Gemini title-based classification (if we have a real title)
-  if (geminiApiKey && title && title !== "Untitled Video" && title.length > 3) {
-    try {
-      const result = await classifyWithGeminiTitle(geminiApiKey, title);
-      if (result.confidence >= 0.6) {
-        return { ...result, source: "gemini_title" };
-      }
-      console.log(`[Classifier] Gemini title confidence too low (${result.confidence}), using default`);
-    } catch (geminiErr) {
-      const errMsg = geminiErr instanceof Error ? geminiErr.message : String(geminiErr);
-      console.warn(`[Classifier] Gemini title classification failed: ${errMsg}`);
-    }
-  } else if (!title || title === "Untitled Video") {
-    console.log("[Classifier] No useful title for Gemini fallback");
   }
 
   // Tier 3: Default to sports (our primary use case)
@@ -164,17 +167,15 @@ Respond with JSON only:
 }
 
 // ============================================================================
-// Tier 2: Gemini Title-Based Classification
+// Tier 1: Claude Title-Based Classification (via Bedrock)
 // ============================================================================
 
-async function classifyWithGeminiTitle(
-  apiKey: string,
+const bedrockClient = new BedrockRuntimeClient({ region: "us-west-2" });
+
+async function classifyWithClaudeTitle(
   title: string,
 ): Promise<Omit<ClassifyResult, "source">> {
-  console.log(`[Classifier] Gemini title classification: "${title}"`);
-
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  console.log(`[Classifier] Claude title classification: "${title}"`);
 
   const prompt = `Based ONLY on this video title, classify the content type.
 
@@ -190,13 +191,27 @@ Look for keywords like team names, league names (NFL, NBA, NHL, MLB, Premier Lea
 Respond with JSON only:
 {"type": "sports" | "serialized_scifi" | "generic", "confidence": 0.0-1.0, "reasoning": "brief explanation"}`;
 
-  const result = await model.generateContent(prompt);
-  const text = result.response.text();
+  const body = JSON.stringify({
+    anthropic_version: "bedrock-2023-05-31",
+    max_tokens: 256,
+    messages: [{ role: "user", content: prompt }],
+  });
 
-  console.log(`[Classifier] Gemini raw response: ${text.substring(0, 200)}`);
+  const command = new InvokeModelCommand({
+    modelId: "anthropic.claude-3-haiku-20240307-v1:0",
+    contentType: "application/json",
+    accept: "application/json",
+    body,
+  });
+
+  const response = await bedrockClient.send(command);
+  const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+  const text = responseBody.content?.[0]?.text || "";
+
+  console.log(`[Classifier] Claude raw response: ${text.substring(0, 200)}`);
 
   const parsed = parseClassificationResponse(text);
-  console.log(`[Classifier] Gemini title result: ${parsed.contentType} (${parsed.confidence})`);
+  console.log(`[Classifier] Claude title result: ${parsed.contentType} (${parsed.confidence})`);
   return parsed;
 }
 

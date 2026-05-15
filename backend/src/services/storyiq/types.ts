@@ -43,6 +43,16 @@ export interface GenerationOptions {
   userInstructions?: string;
   /** Gemini API key for fallback classification */
   geminiApiKey?: string;
+  /** Min per-segment length in seconds */
+  minSegmentDuration?: number;
+  /** Max per-segment length in seconds */
+  maxSegmentDuration?: number;
+  /** Pass-through metadata: tv | movie | other */
+  assetType?: string;
+  /** Pass-through metadata: mobile | tv | tiktok | ig | shorts | facebook */
+  platform?: string;
+  /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
+  format?: string;
 }
 
 // ============================================================================
@@ -90,6 +100,16 @@ export interface StoryIQGoals {
   userInstructions?: string; // Custom instructions from user
   /** Skip classification and assume sports content (faster for known sports videos) */
   assumeSports?: boolean;
+  /** Min per-segment length in seconds */
+  minSegmentDuration?: number;
+  /** Max per-segment length in seconds */
+  maxSegmentDuration?: number;
+  /** Pass-through metadata: tv | movie | other */
+  assetType?: string;
+  /** Pass-through metadata: mobile | tv | tiktok | ig | shorts | facebook */
+  platform?: string;
+  /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
+  format?: string;
 }
 
 // ============================================================================

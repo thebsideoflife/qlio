@@ -33,6 +33,13 @@ export interface GenerateRequest {
   userPrompt: string;
   /** From Retain: null when "Auto", else 25 / 50 / 75 */
   targetPercent: number | null;
+  /** Segment duration bounds in seconds */
+  minSegmentDuration: number;
+  maxSegmentDuration: number;
+  /** Pass-through metadata */
+  format: string;
+  assetType: string;
+  platform: string;
 }
 
 interface MicrodramaGeneratorProps {
@@ -136,7 +143,17 @@ const RETAIN_OPTIONS = [
   { value: "75", label: "75%" },
 ];
 
-// Default selections (visual only - one prompting path under the hood)
+// Segment duration defaults per format
+const SEGMENT_DURATION_DEFAULTS: Record<string, { min: number; max: number }> = {
+  highlights: { min: 5, max: 30 },
+  compact_video: { min: 60, max: 180 },
+  full_video: { min: 60, max: 180 },
+  trailer: { min: 60, max: 180 },
+  episode_recap: { min: 60, max: 180 },
+  season_recap: { min: 60, max: 180 },
+};
+
+// Default selections
 const DEFAULT_ASSET_TYPE = "tv";
 const DEFAULT_PLATFORM = "mobile";
 const DEFAULT_FORMAT = "compact_video";
@@ -159,11 +176,29 @@ export function MicrodramaGenerator({
 }: MicrodramaGeneratorProps) {
   const [userPrompt, setUserPrompt] = useState(initialUserPrompt || "");
 
-  // Visual-only state - selections don't affect generation (single path under the hood)
   const [assetType, setAssetType] = useState(DEFAULT_ASSET_TYPE);
   const [platform, setPlatform] = useState(DEFAULT_PLATFORM);
   const [format, setFormat] = useState(DEFAULT_FORMAT);
   const [retain, setRetain] = useState(DEFAULT_RETAIN);
+
+  // Duration bounds state - initialized from format defaults
+  const [minDuration, setMinDuration] = useState(
+    SEGMENT_DURATION_DEFAULTS[DEFAULT_FORMAT].min,
+  );
+  const [maxDuration, setMaxDuration] = useState(
+    SEGMENT_DURATION_DEFAULTS[DEFAULT_FORMAT].max,
+  );
+
+  // Update duration bounds when format changes
+  const handleFormatChange = (newFormat: string) => {
+    setFormat(newFormat);
+    const defaults = SEGMENT_DURATION_DEFAULTS[newFormat] || SEGMENT_DURATION_DEFAULTS.compact_video;
+    setMinDuration(defaults.min);
+    setMaxDuration(defaults.max);
+  };
+
+  // Show Retain picker only for compact_video and highlights
+  const showRetainPicker = format === "compact_video" || format === "highlights";
 
   const maxLength = 500;
   const remaining = maxLength - userPrompt.length;
@@ -171,7 +206,12 @@ export function MicrodramaGenerator({
   const handleGenerate = () => {
     onGenerate({
       userPrompt,
-      targetPercent: retainToTargetPercent(retain),
+      targetPercent: showRetainPicker ? retainToTargetPercent(retain) : null,
+      minSegmentDuration: minDuration,
+      maxSegmentDuration: maxDuration,
+      format,
+      assetType,
+      platform,
     });
   };
 
@@ -208,22 +248,36 @@ export function MicrodramaGenerator({
             />
           </DemoSection>
 
-          {/* Format - clickable but visual only */}
+          {/* Format */}
           <DemoSection label="Format">
             <DemoOptionGrid
               options={FORMATS}
               selectedValue={format}
-              onSelect={setFormat}
+              onSelect={handleFormatChange}
               columns={3}
             />
           </DemoSection>
 
-          {/* Retain - clickable but visual only */}
-          <DemoSection label="Retain">
-            <DemoRetainPicker
-              options={RETAIN_OPTIONS}
-              selectedValue={retain}
-              onSelect={setRetain}
+          {/* Retain - only for compact_video and highlights */}
+          {showRetainPicker && (
+            <DemoSection label="Retain">
+              <DemoRetainPicker
+                options={RETAIN_OPTIONS}
+                selectedValue={retain}
+                onSelect={setRetain}
+              />
+            </DemoSection>
+          )}
+
+          {/* Segment Duration */}
+          <DemoSection label="Segment Duration">
+            <DemoDurationPicker
+              minValue={minDuration}
+              maxValue={maxDuration}
+              onMinChange={setMinDuration}
+              onMaxChange={setMaxDuration}
+              minBound={2}
+              maxBound={300}
             />
           </DemoSection>
 
@@ -412,6 +466,67 @@ function DemoRetainPicker({
       })}
       <div className="px-4 py-2 rounded-xl text-sm font-medium bg-card border-2 border-dashed border-border text-muted-foreground">
         Other
+      </div>
+    </div>
+  );
+}
+
+function DemoDurationPicker({
+  minValue,
+  maxValue,
+  onMinChange,
+  onMaxChange,
+  minBound,
+  maxBound,
+}: {
+  minValue: number;
+  maxValue: number;
+  onMinChange: (value: number) => void;
+  onMaxChange: (value: number) => void;
+  minBound: number;
+  maxBound: number;
+}) {
+  const handleMinChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseInt(e.target.value, 10);
+    if (!isNaN(val) && val >= minBound && val < maxValue) {
+      onMinChange(val);
+    }
+  };
+
+  const handleMaxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseInt(e.target.value, 10);
+    if (!isNaN(val) && val > minValue && val <= maxBound) {
+      onMaxChange(val);
+    }
+  };
+
+  return (
+    <div className="flex gap-3">
+      <div className="flex-1">
+        <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1 block">
+          Min (sec)
+        </label>
+        <input
+          type="number"
+          value={minValue}
+          onChange={handleMinChange}
+          min={minBound}
+          max={maxValue - 1}
+          className="w-full px-3 py-2 text-sm rounded-lg bg-card border-2 border-border focus:border-blue-400 focus:outline-none"
+        />
+      </div>
+      <div className="flex-1">
+        <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1 block">
+          Max (sec)
+        </label>
+        <input
+          type="number"
+          value={maxValue}
+          onChange={handleMaxChange}
+          min={minValue + 1}
+          max={maxBound}
+          className="w-full px-3 py-2 text-sm rounded-lg bg-card border-2 border-border focus:border-blue-400 focus:outline-none"
+        />
       </div>
     </div>
   );

@@ -36,11 +36,19 @@ import {
 // Types
 // ============================================================================
 
+// Default sports segment duration bounds
+const SPORTS_DEFAULT_MIN_SEGMENT_SEC = 5;
+const SPORTS_DEFAULT_MAX_SEGMENT_SEC = 30;
+
 export interface SportsHighlightsOptions {
   metadata: VideoMetadata;
   transcript: TranscriptSegment[];
   userInstructions?: string;
   maxPollWaitMs?: number;
+  /** Min per-segment length in seconds (default: 5) */
+  minSegmentDuration?: number;
+  /** Max per-segment length in seconds (default: 30) */
+  maxSegmentDuration?: number;
 }
 
 export interface SportsHighlightsResult extends FinalSegments {
@@ -198,6 +206,8 @@ async function runReplayDetectionOnPhysicalChunks(
   options: {
     customIdPrefix: string;
     maxPollWaitMs: number;
+    minSegmentDuration: number;
+    maxSegmentDuration: number;
   },
 ): Promise<ChunkTaskResult[]> {
   console.log(`[SportsHighlights] Starting ${chunks.length} physical chunk tasks in parallel`);
@@ -214,8 +224,8 @@ async function runReplayDetectionOnPhysicalChunks(
       video: { type: "asset_id", assetId: chunk.videoId },
       customId,
       segmentDefinitions,
-      minSegmentDuration: 5,
-      maxSegmentDuration: 30,
+      minSegmentDuration: options.minSegmentDuration,
+      maxSegmentDuration: options.maxSegmentDuration,
     });
 
     return { chunk, taskId: created.taskId };
@@ -492,6 +502,8 @@ export async function generateSportsHighlights(
     transcript,
     userInstructions,
     maxPollWaitMs,
+    minSegmentDuration = SPORTS_DEFAULT_MIN_SEGMENT_SEC,
+    maxSegmentDuration = SPORTS_DEFAULT_MAX_SEGMENT_SEC,
   } = options;
 
   const client = twelvelabs.getClient();
@@ -532,6 +544,8 @@ export async function generateSportsHighlights(
       {
         customIdPrefix: safeId,
         maxPollWaitMs: pollCap,
+        minSegmentDuration,
+        maxSegmentDuration,
       },
     );
 
@@ -545,8 +559,8 @@ export async function generateSportsHighlights(
       video: videoContext.video,
       customId: safeId.slice(0, 64),
       segmentDefinitions,
-      minSegmentDuration: 5,
-      maxSegmentDuration: 30,
+      minSegmentDuration,
+      maxSegmentDuration,
     });
 
     const task = await pollPegasusAnalyzeTask(client, created.taskId, {

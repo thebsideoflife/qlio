@@ -526,14 +526,28 @@ export default function Editor() {
       : duration;
 
     try {
+      // Map format to purpose for API
+      const format = request.format;
+      const purpose =
+        format === "highlights"
+          ? "highlights"
+          : format === "full_video"
+            ? "full_video"
+            : "compact_video";
+
       // Start async generation job — backend handles auto-framing if requested
       const { jobId } = await generateSegments(projectId, {
         userPrompt: request.userPrompt || undefined,
         videoDuration: videoDuration || undefined,
         autoFrame: autoFrameEnabled,
         targetAspectRatio: globalFraming.aspectRatio,
-        purpose: "highlights",
+        purpose,
         targetPercent: request.targetPercent,
+        minSegmentDuration: request.minSegmentDuration,
+        maxSegmentDuration: request.maxSegmentDuration,
+        assetType: request.assetType,
+        platform: request.platform,
+        format: request.format,
       });
       console.log(`[Editor] Started generation job: ${jobId}`);
 
