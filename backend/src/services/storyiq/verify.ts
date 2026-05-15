@@ -2,10 +2,8 @@
  * StoryIQ Constraint Enforcer
  *
  * Deterministic constraint enforcement for video segments.
- * All creative/quality decisions happen elsewhere (tool conversation, quality review).
- * This module only guarantees hard constraints are met.
- *
- * Used by tool-generation.ts as the final safety net after the tool conversation.
+ * All creative/quality decisions happen in Pegasus segmentation.
+ * This module only guarantees hard constraints are met (duration bounds, no overlaps, etc).
  */
 
 import {

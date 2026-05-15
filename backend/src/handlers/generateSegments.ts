@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandler, Handler } from "aws-lambda";
+import { APIGatewayProxyHandler, Handler, type Context } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
@@ -23,6 +23,7 @@ const lambdaClient = new LambdaClient({});
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
 const SECRET_ARN = process.env.SECRET_ARN!;
+const GEMINI_SECRET_ARN = process.env.GEMINI_SECRET_ARN;
 const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 
 // ============================================================================
@@ -30,12 +31,7 @@ const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 // ============================================================================
 
 interface GenerationJob {
-  status:
-    | "pending"
-    | "detecting_scenes"
-    | "generating"
-    | "completed"
-    | "failed";
+  status: "pending" | "generating" | "completed" | "failed";
   jobId: string;
   startedAt: string;
   completedAt?: string;
@@ -50,6 +46,10 @@ interface AsyncJobPayload {
   jobId: string;
   autoFrame?: boolean;
   targetAspectRatio?: string;
+  /** Generation purpose (IQ flow uses highlights) */
+  purpose?: "compact_video" | "highlights" | "full_video";
+  /** Omitted or null = Auto. Otherwise 25 / 50 / 75 (% of source length). */
+  targetPercent?: number | null;
 }
 
 interface Segment {
@@ -96,7 +96,7 @@ async function updateJobStatus(
 export const handler: Handler = async (event, context, callback) => {
   // Check if this is an async job callback (self-invoked)
   if (event.isAsyncJob) {
-    return executeGenerationJob(event as AsyncJobPayload);
+    return executeGenerationJob(event as AsyncJobPayload, context);
   }
 
   // Otherwise, handle as API Gateway request
@@ -122,7 +122,8 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
     }
 
     const body = JSON.parse(event.body || "{}");
-    const { userPrompt, videoDuration, autoFrame, targetAspectRatio } = body;
+    const { userPrompt, videoDuration, autoFrame, targetAspectRatio, purpose, targetPercent } =
+      body;
 
     // Generate a job ID
     const jobId = randomUUID();
@@ -153,6 +154,8 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
       jobId,
       autoFrame: !!autoFrame,
       targetAspectRatio: targetAspectRatio || "9:16",
+      purpose: purpose || "highlights",
+      targetPercent: typeof targetPercent === "number" ? targetPercent : undefined,
     };
 
     await lambdaClient.send(
@@ -192,8 +195,20 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
  */
 const ANALYZE_FRAMING_FUNCTION_NAME = process.env.ANALYZE_FRAMING_FUNCTION_NAME;
 
-async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
-  const { projectId, userPrompt, videoDuration: payloadVideoDuration, jobId, autoFrame, targetAspectRatio } = payload;
+async function executeGenerationJob(
+  payload: AsyncJobPayload,
+  lambdaContext?: Context
+): Promise<void> {
+  const {
+    projectId,
+    userPrompt,
+    videoDuration: payloadVideoDuration,
+    jobId,
+    autoFrame,
+    targetAspectRatio,
+    purpose,
+    targetPercent,
+  } = payload;
 
   console.log(
     `[generateSegments] Executing job ${jobId} for project ${projectId}`
@@ -256,12 +271,25 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
       throw new Error("Asset chunks are still being indexed. Please wait.");
     }
 
-    // 4. Get 12 Labs API Key and create wrapper
+    // 4. Get API Keys
     const secretVal = await secretsClient.send(
       new GetSecretValueCommand({ SecretId: SECRET_ARN })
     );
     const apiKey = secretVal.SecretString;
     if (!apiKey) throw new Error("12Labs API Key not found");
+
+    // Get Gemini key for fallback classification (optional)
+    let geminiApiKey: string | undefined;
+    if (GEMINI_SECRET_ARN) {
+      try {
+        const geminiSecret = await secretsClient.send(
+          new GetSecretValueCommand({ SecretId: GEMINI_SECRET_ARN })
+        );
+        geminiApiKey = geminiSecret.SecretString;
+      } catch (err) {
+        console.warn("[generateSegments] Could not get Gemini API key, fallback classification disabled");
+      }
+    }
 
     const twelvelabs = createTwelveLabsWrapper(apiKey, ASSETS_TABLE);
 
@@ -271,19 +299,21 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
 
     console.log("[generateSegments] Starting StoryIQ generation...");
 
-    const goals = mapMetadataToGoals({ userPrompt });
+    const goals = mapMetadataToGoals({ userPrompt, purpose, targetPercent });
     console.log("[generateSegments] Goals:", JSON.stringify(goals));
 
     let generatedSegments: Segment[] = [];
 
     try {
-      // Status callback - allows StoryIQ to update job status during scene detection
-      const onStatusChange = async (
-        status: "detecting_scenes" | "generating"
-      ) => {
+      // Status callback for job progress
+      const onStatusChange = async (status: "generating") => {
         console.log(`[generateSegments] Status change: ${status}`);
         await updateJobStatus(projectId, status);
       };
+
+      const maxAsyncWaitMs = lambdaContext?.getRemainingTimeInMillis
+        ? Math.max(120_000, lambdaContext.getRemainingTimeInMillis() - 60_000)
+        : undefined;
 
       // Run StoryIQ (pass transcript S3 URI and duration if available)
       const result = await generateWithStoryIQ(
@@ -293,6 +323,8 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
           goals,
           transcriptS3Uri: asset.transcriptionUrl,
           videoDuration: payloadVideoDuration || asset.duration || 0,
+          maxAsyncWaitMs,
+          geminiApiKey,
         },
         onStatusChange
       );

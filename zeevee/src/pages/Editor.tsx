@@ -270,7 +270,7 @@ export default function Editor() {
   useEffect(() => {
     if (!projectId || !generationJob || loading) return;
 
-    const inProgressStatuses = ["pending", "detecting_scenes", "generating"];
+    const inProgressStatuses = ["pending", "generating"];
     if (!inProgressStatuses.includes(generationJob.status)) return;
 
     // Already generating (user clicked button in this session)
@@ -532,6 +532,8 @@ export default function Editor() {
         videoDuration: videoDuration || undefined,
         autoFrame: autoFrameEnabled,
         targetAspectRatio: globalFraming.aspectRatio,
+        purpose: "highlights",
+        targetPercent: request.targetPercent,
       });
       console.log(`[Editor] Started generation job: ${jobId}`);
 
@@ -847,7 +849,7 @@ export default function Editor() {
                     id: "ai" as const,
                     icon: Wand2,
                     label: "IQ",
-                    tooltip: "IQ Studio - Generate clips with AI",
+                    tooltip: "IQ Studio - Generate segments with AI",
                   },
                   {
                     id: "captions" as const,

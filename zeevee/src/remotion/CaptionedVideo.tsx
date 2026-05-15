@@ -15,7 +15,7 @@ import { DEFAULT_SEGMENT_FRAMING } from "./types";
 import { AutoFramedVideo } from "./AutoFramedVideo";
 import { CaptionDisplay } from "../components/editor/CaptionDisplay";
 
-interface SegmentClipProps {
+interface SegmentVideoProps {
   videoUrl: string;
   startTime: number;
   endTime: number;
@@ -25,7 +25,7 @@ interface SegmentClipProps {
   framingEnabled?: boolean;
 }
 
-function SegmentClip({
+function SegmentVideo({
   videoUrl,
   startTime,
   endTime,
@@ -33,7 +33,7 @@ function SegmentClip({
   captionSettings,
   framing,
   framingEnabled = false,
-}: SegmentClipProps) {
+}: SegmentVideoProps) {
   const frame = useCurrentFrame();
   const { fps, height } = useVideoConfig();
 
@@ -44,7 +44,7 @@ function SegmentClip({
 
   // Validate videoUrl
   if (!videoUrl || videoUrl.trim() === "") {
-    console.error("SegmentClip: videoUrl is empty", {
+    console.error("SegmentVideo: videoUrl is empty", {
       videoUrl,
       startTime,
       endTime,
@@ -211,7 +211,7 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
             from={startFrame}
             durationInFrames={duration}
           >
-            <SegmentClip
+            <SegmentVideo
               videoUrl={videoUrl}
               startTime={segment.startTime}
               endTime={segment.endTime}

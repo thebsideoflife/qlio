@@ -153,7 +153,7 @@ export function createStoryIQTools(
           startTime: seg.start,
           endTime: seg.end,
           transcript: segmentTranscript,
-          sceneDescriptions: [], // Not used - scene info comes from sceneBreaks
+          sceneDescriptions: [],
         };
       });
 

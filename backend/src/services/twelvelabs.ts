@@ -26,8 +26,6 @@ const s3Client = new S3Client({});
 
 // Re-export SDK types we use
 type NonStreamAnalyzeResponse = TwelvelabsApi.NonStreamAnalyzeResponse;
-type SummarizeResponse = TwelvelabsApi.SummarizeResponse;
-type Gist = TwelvelabsApi.Gist;
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -112,6 +110,29 @@ export interface ChunkInfo {
   videoId?: string; // 12labs video ID for this chunk
 }
 
+/** TwelveLabs rejects `time_ranges`/`start_time` that extend past the indexed asset. Prefer splitter `duration` over offset math (`endOffset − actualStart` can overshoot FFmpeg vs TwelveLabs). */
+export function pegasusIndexedVideoDurationSec(chunk: ChunkInfo): number {
+  const minLen = 4.001;
+  if (
+    chunk.duration > 0 &&
+    Number.isFinite(chunk.duration)
+  ) {
+    // Small trim avoids floating-point endpoints past the muxed/indexed duration cap.
+    return Math.max(minLen, chunk.duration - 0.05);
+  }
+  if (
+    chunk.actualDuration != null &&
+    chunk.actualDuration > 0 &&
+    Number.isFinite(chunk.actualDuration)
+  ) {
+    return Math.max(minLen, chunk.actualDuration - 0.05);
+  }
+  return Math.max(
+    minLen,
+    chunk.endOffset - (chunk.actualStartOffset ?? chunk.startOffset),
+  );
+}
+
 export interface AssetInfo {
   assetId: string;
   isChunked: boolean;
@@ -119,6 +140,10 @@ export interface AssetInfo {
   twelveLabsVideoId?: string; // For non-chunked videos
   twelveLabsIndexId?: string;
   duration?: number;
+  /** Raw file location for Pegasus when `asset_id` is not usable (e.g. chunked). */
+  s3VideoUrl?: string;
+  s3Key?: string;
+  status?: string;
 }
 
 export interface AnalyzeOptions {
@@ -134,56 +159,10 @@ export interface AnalyzeResult {
   sourceChunks?: number[];
 }
 
-export interface GistOptions {
-  videoId?: string;
-  types: ("title" | "topic" | "hashtag")[];
-}
-
-export interface GistResult {
-  title?: string;
-  topics?: string[];
-  hashtags?: string[];
-}
-
 export interface TranscriptionSegment {
   start: number; // Adjusted to original video timeline
   end: number; // Adjusted to original video timeline
   text: string;
-}
-
-// ============================================================================
-// Summarize API Types (chapters, highlights, summaries)
-// ============================================================================
-
-export type SummarizeType = "summary" | "chapter" | "highlight";
-
-export interface SummarizeOptions {
-  videoId?: string;
-  type: SummarizeType;
-  prompt?: string; // Optional prompt to customize output
-  temperature?: number; // 0-1, default 0.2
-}
-
-export interface ChapterSegment {
-  chapterNumber: number;
-  start: number; // seconds
-  end: number; // seconds
-  chapterTitle: string;
-  chapterSummary: string;
-}
-
-export interface HighlightSegment {
-  start: number; // seconds
-  end: number; // seconds
-  highlight: string;
-  highlightSummary?: string;
-}
-
-export interface SummarizeResult {
-  type: SummarizeType;
-  summary?: string;
-  chapters?: ChapterSegment[];
-  highlights?: HighlightSegment[];
 }
 
 export interface VideoMetadata {
@@ -327,6 +306,9 @@ export class TwelveLabsWrapper {
       twelveLabsVideoId: result.Item.twelveLabsVideoId,
       twelveLabsIndexId: result.Item.twelveLabsIndexId,
       duration: result.Item.duration,
+      s3VideoUrl: result.Item.s3VideoUrl,
+      s3Key: result.Item.key,
+      status: result.Item.status,
     };
   }
 
@@ -507,103 +489,6 @@ export class TwelveLabsWrapper {
   }
 
   /**
-   * Get video gist (title, topics, hashtags)
-   * For chunked videos, aggregates from all chunks IN PARALLEL
-   */
-  async gist(assetId: string, options: GistOptions): Promise<GistResult> {
-    const asset = await this.getAssetInfo(assetId);
-
-    if (!asset.isChunked) {
-      const videoId = options.videoId || asset.twelveLabsVideoId;
-      if (!videoId) {
-        throw new Error("No videoId available for asset");
-      }
-
-      const response = (await withRetry(
-        () =>
-          withTimeout(
-            this.client.gist({ videoId, types: options.types }),
-            TWELVE_LABS_TIMEOUT_MS,
-            "gist"
-          ),
-        `gist(${videoId})`
-      )) as Gist;
-
-      return {
-        title: response.title,
-        topics: response.topics,
-        hashtags: response.hashtags,
-      };
-    }
-
-    // For chunked videos, query all chunks IN PARALLEL
-    const chunks = asset.chunks || [];
-    const firstChunk = chunks.find((c) => c.chunkIndex === 0);
-
-    if (!firstChunk?.videoId) {
-      throw new Error("First chunk has no videoId");
-    }
-
-    console.log(
-      `[12Labs] Getting gist from ${chunks.length} chunks in parallel...`
-    );
-
-    const gistPromises = chunks.map(async (chunk) => {
-      if (!chunk.videoId) return null;
-
-      try {
-        const response = (await withRetry(
-          () =>
-            withTimeout(
-              this.client.gist({
-                videoId: chunk.videoId!,
-                types: options.types,
-              }),
-              TWELVE_LABS_TIMEOUT_MS,
-              `gist-chunk-${chunk.chunkIndex}`
-            ),
-          `gist(chunk ${chunk.chunkIndex})`
-        )) as Gist;
-
-        return {
-          chunkIndex: chunk.chunkIndex,
-          title: response.title,
-          topics: response.topics || [],
-          hashtags: response.hashtags || [],
-        };
-      } catch (err) {
-        console.error(`Failed to get gist for chunk ${chunk.chunkIndex}:`, err);
-        return null;
-      }
-    });
-
-    const results = await Promise.all(gistPromises);
-
-    // Aggregate results
-    let title: string | undefined;
-    const allTopics: Set<string> = new Set();
-    const allHashtags: Set<string> = new Set();
-
-    for (const result of results) {
-      if (!result) continue;
-
-      // Use title from first chunk only
-      if (result.chunkIndex === 0 && result.title) {
-        title = result.title;
-      }
-
-      result.topics.forEach((t: string) => allTopics.add(t));
-      result.hashtags.forEach((h: string) => allHashtags.add(h));
-    }
-
-    return {
-      title,
-      topics: Array.from(allTopics),
-      hashtags: Array.from(allHashtags),
-    };
-  }
-
-  /**
    * Get video transcription with timestamps adjusted to original video timeline
    * For chunked videos, fetches all chunks IN PARALLEL
    */
@@ -713,237 +598,6 @@ export class TwelveLabsWrapper {
       console.error(`Failed to fetch transcription for video ${videoId}:`, err);
       return [];
     }
-  }
-
-  /**
-   * Get video summaries, chapters, or highlights using 12Labs Summarize API
-   *
-   * This is a powerful endpoint that returns:
-   * - summary: A brief text summary of the video
-   * - chapter: Timestamped chapters with titles and summaries (GREAT for scene breakdown!)
-   * - highlight: Timestamped key moments (GREAT for peak moment detection!)
-   *
-   * For chunked videos, merges results and adjusts timestamps.
-   */
-  async summarize(
-    assetId: string,
-    options: SummarizeOptions
-  ): Promise<SummarizeResult> {
-    const asset = await this.getAssetInfo(assetId);
-    const { type, prompt, temperature = 0.2 } = options;
-
-    console.log(`[12Labs] Getting ${type} for asset ${assetId}...`);
-
-    if (!asset.isChunked) {
-      // Simple case: non-chunked video
-      const videoId = options.videoId || asset.twelveLabsVideoId;
-      if (!videoId) {
-        throw new Error("No videoId available for asset");
-      }
-
-      return this.fetchSummarize(videoId, type, prompt, temperature);
-    }
-
-    // Chunked video: get chapters/highlights from each chunk and merge
-    const chunks = asset.chunks || [];
-    if (chunks.length === 0) {
-      throw new Error("Chunked asset has no chunks");
-    }
-
-    console.log(
-      `[12Labs] Getting ${type} from ${chunks.length} chunks in parallel...`
-    );
-
-    const chunkPromises = chunks.map(async (chunk) => {
-      if (!chunk.videoId) return null;
-
-      try {
-        const result = await this.fetchSummarize(
-          chunk.videoId,
-          type,
-          prompt,
-          temperature
-        );
-
-        // Adjust timestamps to original video timeline
-        return {
-          chunkIndex: chunk.chunkIndex,
-          startOffset: chunk.startOffset,
-          result: this.adjustSummarizeTimestamps(result, chunk.startOffset),
-        };
-      } catch (err) {
-        console.error(
-          `Failed to get ${type} for chunk ${chunk.chunkIndex}:`,
-          err
-        );
-        return null;
-      }
-    });
-
-    const results = await Promise.all(chunkPromises);
-    const successfulResults = results
-      .filter((r): r is NonNullable<typeof r> => r !== null)
-      .sort((a, b) => a.chunkIndex - b.chunkIndex);
-
-    if (successfulResults.length === 0) {
-      throw new Error(`Failed to get ${type} from any chunks`);
-    }
-
-    // Merge results
-    return this.mergeSummarizeResults(
-      successfulResults.map((r) => r.result),
-      type
-    );
-  }
-
-  /**
-   * Fetch summarize from 12Labs API for a single video
-   */
-  private async fetchSummarize(
-    videoId: string,
-    type: SummarizeType,
-    prompt?: string,
-    temperature: number = 0.2
-  ): Promise<SummarizeResult> {
-    // SDK uses camelCase for parameters
-    const requestBody: any = {
-      videoId, // camelCase, not snake_case
-      type,
-      temperature,
-    };
-
-    if (prompt) {
-      requestBody.prompt = prompt;
-    }
-
-    const response = (await withRetry(
-      () =>
-        withTimeout(
-          this.client.summarize(requestBody),
-          TWELVE_LABS_TIMEOUT_MS,
-          `summarize(${videoId})`
-        ),
-      `summarize(${videoId})`
-    )) as SummarizeResponse;
-
-    // Parse response based on type
-    if (type === "summary" && "summary" in response) {
-      return {
-        type: "summary",
-        summary: response.summary || String(response),
-      };
-    }
-
-    if (type === "chapter" && "chapters" in response) {
-      const chapters: ChapterSegment[] = (response.chapters || []).map(
-        (c, i) => ({
-          chapterNumber: c.chapterNumber || i + 1,
-          start: c.start || 0,
-          end: c.end || 0,
-          chapterTitle: c.chapterTitle || "",
-          chapterSummary: c.chapterSummary || "",
-        })
-      );
-
-      return { type: "chapter", chapters };
-    }
-
-    if (type === "highlight" && "highlights" in response) {
-      const highlights: HighlightSegment[] = (response.highlights || []).map(
-        (h) => ({
-          start: h.start || 0,
-          end: h.end || 0,
-          highlight: h.highlight || "",
-          highlightSummary: h.highlightSummary || "",
-        })
-      );
-
-      return { type: "highlight", highlights };
-    }
-
-    return { type };
-  }
-
-  /**
-   * Adjust timestamps in a SummarizeResult by an offset
-   */
-  private adjustSummarizeTimestamps(
-    result: SummarizeResult,
-    offset: number
-  ): SummarizeResult {
-    if (result.chapters) {
-      return {
-        ...result,
-        chapters: result.chapters.map((c) => ({
-          ...c,
-          start: c.start + offset,
-          end: c.end + offset,
-        })),
-      };
-    }
-
-    if (result.highlights) {
-      return {
-        ...result,
-        highlights: result.highlights.map((h) => ({
-          ...h,
-          start: h.start + offset,
-          end: h.end + offset,
-        })),
-      };
-    }
-
-    return result;
-  }
-
-  /**
-   * Merge multiple SummarizeResults into one
-   */
-  private mergeSummarizeResults(
-    results: SummarizeResult[],
-    type: SummarizeType
-  ): SummarizeResult {
-    if (type === "summary") {
-      // Concatenate summaries
-      const summaries = results.map((r) => r.summary).filter(Boolean);
-      return {
-        type: "summary",
-        summary: summaries.join(" "),
-      };
-    }
-
-    if (type === "chapter") {
-      // Merge and renumber chapters
-      const allChapters: ChapterSegment[] = [];
-      for (const result of results) {
-        if (result.chapters) {
-          allChapters.push(...result.chapters);
-        }
-      }
-
-      // Sort by start time and renumber
-      allChapters.sort((a, b) => a.start - b.start);
-      allChapters.forEach((c, i) => (c.chapterNumber = i + 1));
-
-      return { type: "chapter", chapters: allChapters };
-    }
-
-    if (type === "highlight") {
-      // Merge highlights
-      const allHighlights: HighlightSegment[] = [];
-      for (const result of results) {
-        if (result.highlights) {
-          allHighlights.push(...result.highlights);
-        }
-      }
-
-      // Sort by start time
-      allHighlights.sort((a, b) => a.start - b.start);
-
-      return { type: "highlight", highlights: allHighlights };
-    }
-
-    return { type };
   }
 
   /**

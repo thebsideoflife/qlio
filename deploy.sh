@@ -26,6 +26,12 @@ echo ""
 AWS_PROFILE="${AWS_PROFILE:-zeevee}"
 AWS_REGION="${AWS_REGION:-us-west-2}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Optional OpenTofu variables file (override path with INFRA_TFVARS)
+INFRA_TFVARS="${INFRA_TFVARS:-$SCRIPT_DIR/infrastructure/terraform.tfvars}"
+TOFU_VAR_ARGS=()
+if [ -f "$INFRA_TFVARS" ]; then
+  TOFU_VAR_ARGS=(-var-file="$INFRA_TFVARS")
+fi
 
 cd "$SCRIPT_DIR"
 
@@ -50,7 +56,7 @@ ECR_EXISTS=$(aws ecr describe-repositories --profile "$AWS_PROFILE" --region "$A
 
 if [ "$ECR_EXISTS" = "no" ]; then
   echo "  ECR repository doesn't exist, creating it first..."
-  tofu apply -target=aws_ecr_repository.ffmpeg_lambda -target=aws_ecr_lifecycle_policy.ffmpeg_lambda -auto-approve
+  tofu apply "${TOFU_VAR_ARGS[@]}" -target=aws_ecr_repository.ffmpeg_lambda -target=aws_ecr_lifecycle_policy.ffmpeg_lambda -auto-approve
   echo "  ✓ ECR repository created"
 fi
 cd ..
@@ -92,7 +98,7 @@ echo ""
 # Step 4: Apply all infrastructure
 echo "[4/4] Applying infrastructure..."
 cd infrastructure
-tofu apply -auto-approve
+tofu apply "${TOFU_VAR_ARGS[@]}" -auto-approve
 cd ..
 echo "✓ Infrastructure deployed"
 echo ""
