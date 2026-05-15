@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandler, Handler } from "aws-lambda";
+import { APIGatewayProxyHandler, Handler, type Context } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
@@ -23,6 +23,7 @@ const lambdaClient = new LambdaClient({});
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
 const SECRET_ARN = process.env.SECRET_ARN!;
+const GEMINI_SECRET_ARN = process.env.GEMINI_SECRET_ARN;
 const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 
 // ============================================================================
@@ -30,12 +31,7 @@ const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 // ============================================================================
 
 interface GenerationJob {
-  status:
-    | "pending"
-    | "detecting_scenes"
-    | "generating"
-    | "completed"
-    | "failed";
+  status: "pending" | "generating" | "completed" | "failed";
   jobId: string;
   startedAt: string;
   completedAt?: string;
@@ -50,6 +46,20 @@ interface AsyncJobPayload {
   jobId: string;
   autoFrame?: boolean;
   targetAspectRatio?: string;
+  /** Generation purpose (IQ flow uses highlights) */
+  purpose?: "compact_video" | "highlights" | "full_video";
+  /** Omitted or null = Auto. Otherwise 25 / 50 / 75 (% of source length). */
+  targetPercent?: number | null;
+  /** Min per-segment length in seconds */
+  minSegmentDuration?: number;
+  /** Max per-segment length in seconds */
+  maxSegmentDuration?: number;
+  /** Pass-through metadata: tv | movie | other */
+  assetType?: string;
+  /** Pass-through metadata: mobile | tv | tiktok | ig | shorts | facebook */
+  platform?: string;
+  /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
+  format?: string;
 }
 
 interface Segment {
@@ -74,7 +84,7 @@ const CORS_HEADERS = {
  */
 async function updateJobStatus(
   projectId: string,
-  status: GenerationJob["status"]
+  status: GenerationJob["status"],
 ): Promise<void> {
   await docClient.send(
     new UpdateCommand({
@@ -86,7 +96,7 @@ async function updateJobStatus(
         ":s": status,
         ":u": new Date().toISOString(),
       },
-    })
+    }),
   );
 }
 
@@ -96,7 +106,7 @@ async function updateJobStatus(
 export const handler: Handler = async (event, context, callback) => {
   // Check if this is an async job callback (self-invoked)
   if (event.isAsyncJob) {
-    return executeGenerationJob(event as AsyncJobPayload);
+    return executeGenerationJob(event as AsyncJobPayload, context);
   }
 
   // Otherwise, handle as API Gateway request
@@ -122,7 +132,19 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
     }
 
     const body = JSON.parse(event.body || "{}");
-    const { userPrompt, videoDuration, autoFrame, targetAspectRatio } = body;
+    const {
+      userPrompt,
+      videoDuration,
+      autoFrame,
+      targetAspectRatio,
+      purpose,
+      targetPercent,
+      minSegmentDuration,
+      maxSegmentDuration,
+      assetType,
+      platform,
+      format,
+    } = body;
 
     // Generate a job ID
     const jobId = randomUUID();
@@ -141,7 +163,7 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
           } as GenerationJob,
           ":u": new Date().toISOString(),
         },
-      })
+      }),
     );
 
     // Invoke self asynchronously to do the actual work
@@ -149,10 +171,21 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
       isAsyncJob: true,
       projectId,
       userPrompt: userPrompt || undefined,
-      videoDuration: typeof videoDuration === "number" ? videoDuration : undefined,
+      videoDuration:
+        typeof videoDuration === "number" ? videoDuration : undefined,
       jobId,
       autoFrame: !!autoFrame,
       targetAspectRatio: targetAspectRatio || "9:16",
+      purpose: purpose || "highlights",
+      targetPercent:
+        typeof targetPercent === "number" ? targetPercent : undefined,
+      minSegmentDuration:
+        typeof minSegmentDuration === "number" ? minSegmentDuration : undefined,
+      maxSegmentDuration:
+        typeof maxSegmentDuration === "number" ? maxSegmentDuration : undefined,
+      assetType: assetType || undefined,
+      platform: platform || undefined,
+      format: format || undefined,
     };
 
     await lambdaClient.send(
@@ -160,11 +193,11 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
         FunctionName: SELF_FUNCTION_NAME,
         InvocationType: "Event", // Async - fire and forget
         Payload: JSON.stringify(payload),
-      })
+      }),
     );
 
     console.log(
-      `[generateSegments] Started async job ${jobId} for project ${projectId}`
+      `[generateSegments] Started async job ${jobId} for project ${projectId}`,
     );
 
     // Return immediately with job info
@@ -192,11 +225,28 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
  */
 const ANALYZE_FRAMING_FUNCTION_NAME = process.env.ANALYZE_FRAMING_FUNCTION_NAME;
 
-async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
-  const { projectId, userPrompt, videoDuration: payloadVideoDuration, jobId, autoFrame, targetAspectRatio } = payload;
+async function executeGenerationJob(
+  payload: AsyncJobPayload,
+  lambdaContext?: Context,
+): Promise<void> {
+  const {
+    projectId,
+    userPrompt,
+    videoDuration: payloadVideoDuration,
+    jobId,
+    autoFrame,
+    targetAspectRatio,
+    purpose,
+    targetPercent,
+    minSegmentDuration,
+    maxSegmentDuration,
+    assetType,
+    platform,
+    format,
+  } = payload;
 
   console.log(
-    `[generateSegments] Executing job ${jobId} for project ${projectId}`
+    `[generateSegments] Executing job ${jobId} for project ${projectId}`,
   );
 
   // Update status to "generating"
@@ -210,7 +260,7 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
         ":s": "generating",
         ":u": new Date().toISOString(),
       },
-    })
+    }),
   );
 
   try {
@@ -219,7 +269,7 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
       new GetCommand({
         TableName: PROJECTS_TABLE,
         Key: { projectId },
-      })
+      }),
     );
 
     if (!projectRes.Item) {
@@ -234,7 +284,7 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
       new GetCommand({
         TableName: ASSETS_TABLE,
         Key: { assetId },
-      })
+      }),
     );
 
     if (!assetRes.Item) {
@@ -256,12 +306,27 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
       throw new Error("Asset chunks are still being indexed. Please wait.");
     }
 
-    // 4. Get 12 Labs API Key and create wrapper
+    // 4. Get API Keys
     const secretVal = await secretsClient.send(
-      new GetSecretValueCommand({ SecretId: SECRET_ARN })
+      new GetSecretValueCommand({ SecretId: SECRET_ARN }),
     );
     const apiKey = secretVal.SecretString;
     if (!apiKey) throw new Error("12Labs API Key not found");
+
+    // Get Gemini key for fallback classification (optional)
+    let geminiApiKey: string | undefined;
+    if (GEMINI_SECRET_ARN) {
+      try {
+        const geminiSecret = await secretsClient.send(
+          new GetSecretValueCommand({ SecretId: GEMINI_SECRET_ARN }),
+        );
+        geminiApiKey = geminiSecret.SecretString;
+      } catch (err) {
+        console.warn(
+          "[generateSegments] Could not get Gemini API key, fallback classification disabled",
+        );
+      }
+    }
 
     const twelvelabs = createTwelveLabsWrapper(apiKey, ASSETS_TABLE);
 
@@ -271,21 +336,43 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
 
     console.log("[generateSegments] Starting StoryIQ generation...");
 
-    const goals = mapMetadataToGoals({ userPrompt });
+    const goals = mapMetadataToGoals({
+      userPrompt,
+      purpose,
+      targetPercent,
+      minSegmentDuration,
+      maxSegmentDuration,
+      assetType,
+      platform,
+      format,
+    });
     console.log("[generateSegments] Goals:", JSON.stringify(goals));
 
     let generatedSegments: Segment[] = [];
 
     try {
-      // Status callback - allows StoryIQ to update job status during scene detection
-      const onStatusChange = async (
-        status: "detecting_scenes" | "generating"
-      ) => {
+      // Status callback for job progress
+      const onStatusChange = async (status: "generating") => {
         console.log(`[generateSegments] Status change: ${status}`);
         await updateJobStatus(projectId, status);
       };
 
+      const maxAsyncWaitMs = lambdaContext?.getRemainingTimeInMillis
+        ? Math.max(120_000, lambdaContext.getRemainingTimeInMillis() - 60_000)
+        : undefined;
+
       // Run StoryIQ (pass transcript S3 URI and duration if available)
+      const videoTitle =
+        (typeof asset.title === "string" && asset.title.trim()
+          ? asset.title.trim()
+          : null) ??
+        (typeof asset.originalName === "string" && asset.originalName.trim()
+          ? asset.originalName.trim()
+          : null) ??
+        (typeof project.title === "string" && project.title.trim()
+          ? project.title.trim()
+          : undefined);
+
       const result = await generateWithStoryIQ(
         twelvelabs,
         {
@@ -293,13 +380,16 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
           goals,
           transcriptS3Uri: asset.transcriptionUrl,
           videoDuration: payloadVideoDuration || asset.duration || 0,
+          maxAsyncWaitMs,
+          geminiApiKey,
+          title: videoTitle,
         },
-        onStatusChange
+        onStatusChange,
       );
 
       console.log(
         `[generateSegments] StoryIQ complete: ${result.segments.segments.length} segments, ` +
-          `confidence=${result.segments.confidence}, attempts=${result.metadata.attempts}`
+          `confidence=${result.segments.confidence}, attempts=${result.metadata.attempts}`,
       );
 
       // Transform StoryIQ output to handler format
@@ -326,7 +416,7 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
 
     if (generatedSegments.length === 0) {
       console.warn(
-        "[generateSegments] StoryIQ failed. Attempting heuristic fallback."
+        "[generateSegments] StoryIQ failed. Attempting heuristic fallback.",
       );
 
       // Get video duration for fallback segments
@@ -391,13 +481,13 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
 
       if (generatedSegments.length === 0) {
         throw new Error(
-          "AI could not find suitable clips, and fallback generation failed."
+          "AI could not find suitable clips, and fallback generation failed.",
         );
       }
 
       console.log(
         "[generateSegments] Generated fallback segments:",
-        generatedSegments.length
+        generatedSegments.length,
       );
     }
 
@@ -416,19 +506,25 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
           ":m": { userPrompt: userPrompt || null },
           ":u": new Date().toISOString(),
         },
-      })
+      }),
     );
 
     // If auto-framing requested, start the framing job BEFORE marking generation
     // as completed — this guarantees framingJob exists in DynamoDB when the
     // frontend polls and sees generationJob.status = "completed".
-    if (autoFrame && ANALYZE_FRAMING_FUNCTION_NAME && generatedSegments.length > 0) {
+    if (
+      autoFrame &&
+      ANALYZE_FRAMING_FUNCTION_NAME &&
+      generatedSegments.length > 0
+    ) {
       const batchSegments = generatedSegments.map((seg) => ({
         id: seg.id,
         startTime: seg.startTime,
         endTime: seg.endTime,
       }));
-      console.log(`[generateSegments] Starting auto-framing for ${batchSegments.length} segments`);
+      console.log(
+        `[generateSegments] Starting auto-framing for ${batchSegments.length} segments`,
+      );
       try {
         const framingResponse = await lambdaClient.send(
           new InvokeCommand({
@@ -440,23 +536,30 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
               segments: batchSegments,
               targetAspectRatio: targetAspectRatio || "9:16",
             }),
-          })
+          }),
         );
         // Check if handleStartBatch returned an error (409 conflict, 400 bad input, etc.)
         if (framingResponse.FunctionError) {
-          console.error(`[generateSegments] Auto-framing Lambda error: ${framingResponse.FunctionError}`);
+          console.error(
+            `[generateSegments] Auto-framing Lambda error: ${framingResponse.FunctionError}`,
+          );
         } else {
           const payload = framingResponse.Payload
             ? JSON.parse(Buffer.from(framingResponse.Payload).toString())
             : null;
           if (payload?.statusCode >= 400) {
-            console.error(`[generateSegments] Auto-framing rejected (${payload.statusCode}): ${payload.body}`);
+            console.error(
+              `[generateSegments] Auto-framing rejected (${payload.statusCode}): ${payload.body}`,
+            );
           } else {
             console.log(`[generateSegments] Auto-framing job started`);
           }
         }
       } catch (framingErr) {
-        console.error(`[generateSegments] Failed to start auto-framing (non-fatal):`, framingErr);
+        console.error(
+          `[generateSegments] Failed to start auto-framing (non-fatal):`,
+          framingErr,
+        );
       }
     }
 
@@ -478,11 +581,11 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
           ":segmentCount": generatedSegments.length,
           ":u": new Date().toISOString(),
         },
-      })
+      }),
     );
 
     console.log(
-      `[generateSegments] Job ${jobId} completed successfully with ${generatedSegments.length} segments`
+      `[generateSegments] Job ${jobId} completed successfully with ${generatedSegments.length} segments`,
     );
   } catch (error) {
     const errorMessage =
@@ -510,7 +613,7 @@ async function executeGenerationJob(payload: AsyncJobPayload): Promise<void> {
           ":error": errorMessage,
           ":u": new Date().toISOString(),
         },
-      })
+      }),
     );
   }
 }

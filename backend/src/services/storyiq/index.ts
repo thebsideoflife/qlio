@@ -1,26 +1,15 @@
 /**
  * StoryIQ - Intelligent Video Segment Generation
  *
- * Main orchestration module for the StoryIQ agent.
- *
- * Tool-Based Pipeline:
- * 1. Read transcript (from S3 cache)
- * 2. Get scene breaks (optional, from cache)
- * 3. Tool conversation - Claude creates segments via add/remove/update/finish tools
- *    with inline validation and actual transcript content returned per segment
- * 4. Quality review - separate reviewer checks titles vs content
- * 5. Deterministic fallback - enforcer guarantees hard constraints
- *
- * Design Principles:
- * - Give Claude actual content via tool results (not just prompts)
- * - Inline constraint validation (tools reject bad segments immediately)
- * - Budget tracking per tool call (Claude always knows remaining time)
- * - Scenes are optional, transcript is required
+ * Pipeline:
+ * 1. Read transcript (S3) — for enforcer word boundaries and editor dialogue snippets
+ * 2. Segment generation — Pegasus 1.5 video analysis (chunked videos run in parallel)
+ * 3. Deterministic constraint enforcement (duration bounds, no overlaps)
  */
 
-import { TwelveLabsWrapper, type SceneBreak } from "../twelvelabs";
+import { TwelveLabsWrapper } from "../twelvelabs";
 import { createStoryIQTools } from "./tools";
-import { generateSegmentsWithTools } from "./tool-generation";
+import { generateSegmentsWithPegasus } from "./pegasus-pipeline";
 import {
   Purpose,
   type StoryIQInput,
@@ -29,6 +18,7 @@ import {
   type ProposedSegment,
   type VideoMetadata,
   type TranscriptSegment,
+  type FinalSegments,
 } from "./types";
 
 // ============================================================================
@@ -37,10 +27,9 @@ import {
 
 /**
  * Callback for status updates during generation.
- * Allows the caller to update DynamoDB job status.
  */
 export type GenerationStatusCallback = (
-  status: "detecting_scenes" | "generating",
+  status: "generating",
 ) => Promise<void>;
 
 /**
@@ -53,7 +42,7 @@ export type GenerationStatusCallback = (
  *
  * @param twelvelabs - The TwelveLabsWrapper instance
  * @param input - Generation input (assetId, goals, etc.)
- * @param onStatusChange - Optional callback to report status changes (for detecting_scenes)
+ * @param onStatusChange - Optional callback to report status changes
  */
 export async function generateWithStoryIQ(
   twelvelabs: TwelveLabsWrapper,
@@ -149,91 +138,24 @@ export async function generateWithStoryIQ(
     );
   }
 
-  // Phase 2: Get scene breaks (optional)
-  let sceneBreaks: SceneBreak[] = [];
-  const needsSceneDetection =
-    goals.purpose === Purpose.FULL_VIDEO ||
-    goals.purpose === Purpose.COMPACT_VIDEO ||
-    goals.purpose === Purpose.HIGHLIGHTS;
+  // Phase 2: Segment generation with Pegasus
+  console.log("[StoryIQ] Phase 2: Segment generation...");
 
-  if (needsSceneDetection) {
-    console.log("[StoryIQ] Checking scene cache...");
-
-    // Check cache status - scenes are optional, we never auto-trigger detection
-    const cacheCheck = await twelvelabs.getSceneCacheFromS3(assetId);
-
-    if (cacheCheck.result) {
-      // Cache hit - use cached scenes
-      sceneBreaks = cacheCheck.result.brief;
-      console.log(`[StoryIQ] Scene cache hit: ${sceneBreaks.length} scenes`);
-
-      // Log scene cache metadata for debugging
-      const meta = cacheCheck.result.meta;
-      if (meta) {
-        console.log(
-          `[StoryIQ] Scene cache meta: ${meta.windowsSucceeded}/${meta.windowsTotal} windows, complete=${meta.isComplete}, rateLimit=${meta.hitRateLimit}`,
-        );
-      }
-      console.log(
-        `[StoryIQ] Scene cache detectedAt: ${cacheCheck.result.detectedAt}`,
-      );
-    } else {
-      // No cache available - proceed without scenes
-      // Scene detection must be triggered manually via the detect-scenes Lambda
-      if (cacheCheck.failed) {
-        console.warn(
-          `[StoryIQ] Scene detection previously failed: ${cacheCheck.failedReason}. ` +
-            `Proceeding without scene data.`,
-        );
-      } else if (cacheCheck.inProgress) {
-        console.log(
-          "[StoryIQ] Scene detection in progress but not waiting. Proceeding without scenes.",
-        );
-      } else {
-        console.log(
-          "[StoryIQ] No scene cache found. Run detect-scenes Lambda manually to populate. Proceeding without scenes.",
-        );
-      }
-      sceneBreaks = [];
-    }
-  }
-
-  // Log input data stats
-  console.log(
-    `[StoryIQ] Input: ${sceneBreaks.length} scenes, ${transcript.length} transcript segments`,
-  );
-  if (sceneBreaks.length > 0) {
-    console.log(`[StoryIQ] Sample scene breaks (first 3):`);
-    sceneBreaks.slice(0, 3).forEach((s, i) => {
-      console.log(
-        `  ${i + 1}. ${Math.floor(s.time / 60)}:${String(
-          Math.floor(s.time % 60),
-        ).padStart(2, "0")} | ${s.who} | ${s.action} | ${s.mood}`,
-      );
-    });
-  }
-  if (transcript.length > 0) {
-    console.log(`[StoryIQ] Sample transcript (first 3 segments):`);
-    transcript.slice(0, 3).forEach((t, i) => {
-      console.log(
-        `  ${i + 1}. ${Math.floor(t.startTime / 60)}:${String(
-          Math.floor(t.startTime % 60),
-        ).padStart(2, "0")} "${t.text.substring(0, 80)}..."`,
-      );
-    });
-  }
-
-  // Phase 3: Gemini-based segment generation + deterministic constraint enforcement
-  console.log("[StoryIQ] Phase 3: Segment generation...");
-
-  const finalResult = await generateSegmentsWithTools({
+  const finalResult = await generateSegmentsWithPegasus(twelvelabs, {
     metadata,
     transcript,
-    sceneBreaks,
     purpose: goals.purpose,
     targetDuration: goals.targetDuration,
     targetPercent: goals.targetPercent,
     userInstructions: goals.userInstructions,
+    maxPollWaitMs: input.maxAsyncWaitMs,
+    geminiApiKey: input.geminiApiKey,
+    assumeSports: goals.assumeSports,
+    minSegmentDuration: goals.minSegmentDuration,
+    maxSegmentDuration: goals.maxSegmentDuration,
+    assetType: goals.assetType,
+    platform: goals.platform,
+    format: goals.format,
   });
 
   const processingTime = Date.now() - startTime;
@@ -266,20 +188,86 @@ export async function generateWithStoryIQ(
 export interface GenerateMetadata {
   userPrompt?: string;
   videoDuration?: number;
+  /** IQ panel: highlights-only flow for now */
+  purpose?: "compact_video" | "highlights" | "full_video";
+  /** Omitted or null = Auto (no fixed %). 25 / 50 / 75 when set. */
+  targetPercent?: number | null;
+  /** Skip classification and assume sports content (faster for known sports videos) */
+  assumeSports?: boolean;
+  /** Min per-segment length in seconds */
+  minSegmentDuration?: number;
+  /** Max per-segment length in seconds */
+  maxSegmentDuration?: number;
+  /** Pass-through metadata: tv | movie | other */
+  assetType?: string;
+  /** Pass-through metadata: mobile | tv | tiktok | ig | shorts | facebook */
+  platform?: string;
+  /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
+  format?: string;
 }
 
 const MAX_USER_INSTRUCTIONS_LENGTH = 500;
-const DEFAULT_TARGET_PERCENT = 75;
 
+/**
+ * Map frontend request to StoryIQ goals.
+ */
 export function mapMetadataToGoals(metadata: GenerateMetadata): StoryIQGoals {
   const userInstructions =
     metadata.userPrompt?.slice(0, MAX_USER_INSTRUCTIONS_LENGTH) || undefined;
 
-  return {
-    purpose: Purpose.COMPACT_VIDEO,
-    targetPercent: DEFAULT_TARGET_PERCENT,
-    userInstructions,
-  };
+  let purpose: Purpose;
+  switch (metadata.purpose) {
+    case "highlights":
+      purpose = Purpose.HIGHLIGHTS;
+      break;
+    case "full_video":
+      purpose = Purpose.FULL_VIDEO;
+      break;
+    case "compact_video":
+    default:
+      purpose = Purpose.COMPACT_VIDEO;
+      break;
+  }
+
+  const goals: StoryIQGoals = { purpose, userInstructions };
+
+  if (
+    metadata.targetPercent != null &&
+    typeof metadata.targetPercent === "number" &&
+    metadata.targetPercent > 0 &&
+    metadata.targetPercent <= 100
+  ) {
+    goals.targetPercent = Math.round(metadata.targetPercent);
+  }
+
+  // Pass through duration bounds if provided
+  if (typeof metadata.minSegmentDuration === "number" && metadata.minSegmentDuration >= 2) {
+    goals.minSegmentDuration = metadata.minSegmentDuration;
+  }
+  if (typeof metadata.maxSegmentDuration === "number" && metadata.maxSegmentDuration > 0) {
+    goals.maxSegmentDuration = metadata.maxSegmentDuration;
+  }
+
+  // Pass through metadata fields
+  if (metadata.assetType) {
+    goals.assetType = metadata.assetType;
+  }
+  if (metadata.platform) {
+    goals.platform = metadata.platform;
+  }
+  if (metadata.format) {
+    goals.format = metadata.format;
+  }
+
+  // Skip classification for highlights (always sports for now)
+  // Can be overridden by explicit assumeSports=false in metadata
+  if (metadata.assumeSports !== false && purpose === Purpose.HIGHLIGHTS) {
+    goals.assumeSports = true;
+  } else if (metadata.assumeSports === true) {
+    goals.assumeSports = true;
+  }
+
+  return goals;
 }
 
 // ============================================================================

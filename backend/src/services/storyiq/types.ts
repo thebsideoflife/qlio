@@ -30,23 +30,29 @@ export interface TranscriptSegment {
   text: string;
 }
 
-/**
- * Scene with grouped dialogue - combines visual scene info with audio transcript.
- * This structure helps Claude see what's happening visually AND audibly together.
- */
-export interface SceneWithDialogue {
-  sceneIndex: number;
-  startTime: number; // When scene starts
-  endTime: number; // When scene ends (next scene starts or video ends)
-  // Visual info from SceneBreak
-  who: string;
-  action: string;
-  mood: string;
-  audio: string;
-  // ALL dialogue in this scene (no truncation)
-  dialogue: TranscriptSegment[];
-  // Summary stats
-  wordCount: number;
+// ============================================================================
+// Generation Options
+// ============================================================================
+
+export interface GenerationOptions {
+  metadata: VideoMetadata;
+  transcript: TranscriptSegment[];
+  purpose: Purpose;
+  targetDuration?: number;
+  targetPercent?: number;
+  userInstructions?: string;
+  /** Gemini API key for fallback classification */
+  geminiApiKey?: string;
+  /** Min per-segment length in seconds */
+  minSegmentDuration?: number;
+  /** Max per-segment length in seconds */
+  maxSegmentDuration?: number;
+  /** Pass-through metadata: tv | movie | other */
+  assetType?: string;
+  /** Pass-through metadata: mobile | tv | tiktok | ig | shorts | facebook */
+  platform?: string;
+  /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
+  format?: string;
 }
 
 // ============================================================================
@@ -55,52 +61,55 @@ export interface SceneWithDialogue {
 
 /**
  * Content generation purposes.
- * Each maps to a specific prompt template and output format.
+ * All use Pegasus 1.5 video segmentation.
  */
 export enum Purpose {
-  /** Full video split into chapters (target 90s, max 3 min) */
+  /** Full video split into chapters */
   FULL_VIDEO = "full_video",
-  /** Compact video - condense to target percentage (target 90s, max 3 min) */
+  /** Compact video - condense to target percentage */
   COMPACT_VIDEO = "compact_video",
-  /** Legacy: kept for backwards compatibility, treated as compact_video */
+  /** Highlights - key moments (treated same as compact_video) */
   HIGHLIGHTS = "highlights",
-  /** Movie-style trailer (2-2.5 min) */
-  TRAILER = "trailer",
-  /** Short tune-in promotional spot (15-30s) */
-  TUNEIN = "tunein",
-  /** Recap & tease bridge content */
-  BRIDGE = "bridge",
-  /** "Previously on..." episode recap */
-  EPISODE_RECAP = "episode_recap",
-  /** Full season recap */
-  SEASON_RECAP = "season_recap",
-  /** Social media optimized clip */
-  SOCIAL_SEGMENT = "social_segment",
 }
 
 /**
  * Derive constraint rules from a Purpose.
- * Single source of truth — used by enforcer, tool builder, and tool-generation.
  */
 export function getPurposeConstraints(purpose: Purpose): {
   needsSegmentDuration: boolean;
   needsTotalDuration: boolean;
 } {
-  const needsSegmentDuration =
-    purpose === Purpose.FULL_VIDEO ||
-    purpose === Purpose.COMPACT_VIDEO ||
-    purpose === Purpose.HIGHLIGHTS;
+  const needsSegmentDuration = true; // All purposes need segment duration bounds
   const needsTotalDuration =
-    purpose !== Purpose.FULL_VIDEO &&
-    (purpose === Purpose.COMPACT_VIDEO || purpose === Purpose.HIGHLIGHTS);
+    purpose === Purpose.COMPACT_VIDEO || purpose === Purpose.HIGHLIGHTS;
   return { needsSegmentDuration, needsTotalDuration };
 }
+
+/**
+ * The three content types we support.
+ * - sports: Uses replay detection pipeline (what did the broadcast replay?)
+ * - serialized_scifi: Trek-style A/B/C plot threading
+ * - generic: Standard microdrama segmentation
+ */
+export type ContentType = "sports" | "serialized_scifi" | "generic";
 
 export interface StoryIQGoals {
   purpose: Purpose;
   targetDuration?: number; // Calculated target duration in seconds
-  targetPercent?: number; // For compact_video: percentage of original (25, 50, 75, etc.)
+  targetPercent?: number; // Percentage of original duration (25, 50, 75, etc.)
   userInstructions?: string; // Custom instructions from user
+  /** Skip classification and assume sports content (faster for known sports videos) */
+  assumeSports?: boolean;
+  /** Min per-segment length in seconds */
+  minSegmentDuration?: number;
+  /** Max per-segment length in seconds */
+  maxSegmentDuration?: number;
+  /** Pass-through metadata: tv | movie | other */
+  assetType?: string;
+  /** Pass-through metadata: mobile | tv | tiktok | ig | shorts | facebook */
+  platform?: string;
+  /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
+  format?: string;
 }
 
 // ============================================================================
@@ -191,6 +200,13 @@ export interface StoryIQInput {
   videoDuration?: number;
   // Optional: video title (for prompts)
   title?: string;
+  /**
+   * Max time to wait on Pegasus async polling (ms). When unset, uses a safe default.
+   * Lambdas should pass `getRemainingTimeInMillis() - buffer`.
+   */
+  maxAsyncWaitMs?: number;
+  /** Gemini API key for fallback content classification */
+  geminiApiKey?: string;
 }
 
 export interface StoryIQOutput {

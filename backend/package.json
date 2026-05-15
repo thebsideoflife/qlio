@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "esbuild src/handlers/*.ts --bundle --platform=node --target=node18 --outdir=dist --external:@remotion/lambda --external:@remotion/renderer",
+    "pegasus:eval": "tsx src/scripts/pegasus15-eval.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -26,7 +27,7 @@
     "@remotion/renderer": "^4.0.387",
     "axios": "^1.6.0",
     "form-data": "^4.0.5",
-    "twelvelabs-js": "^1.1.0",
+    "twelvelabs-js": "^1.2.4",
     "uuid": "^13.0.0",
     "zod": "^3.22.0"
   },
@@ -35,6 +36,7 @@
     "@types/node": "^20.0.0",
     "@types/uuid": "^10.0.0",
     "esbuild": "^0.19.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.0.0"
   }
 }

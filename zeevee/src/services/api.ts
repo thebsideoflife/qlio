@@ -284,7 +284,6 @@ export const listProjects = async (assetId?: string) => {
 export interface GenerationJob {
   status:
     | "pending"
-    | "detecting_scenes"
     | "generating"
     | "framing"
     | "completed"
@@ -302,11 +301,26 @@ export interface GenerateSegmentsResponse {
   status: "pending";
 }
 
+export type GenerationPurpose = "compact_video" | "highlights" | "full_video";
+
 export interface GenerateSegmentsRequest {
   userPrompt?: string;
   videoDuration?: number;
   autoFrame?: boolean;
   targetAspectRatio?: string;
+  purpose?: GenerationPurpose;
+  /** `null` or omit = Auto. Otherwise 25 / 50 / 75 (% of source). Ignored for sports (replays). */
+  targetPercent?: number | null;
+  /** Min per-segment length in seconds (default varies by format) */
+  minSegmentDuration?: number;
+  /** Max per-segment length in seconds (default varies by format) */
+  maxSegmentDuration?: number;
+  /** Pass-through metadata: tv | movie | other */
+  assetType?: string;
+  /** Pass-through metadata: mobile | tv | tiktok | ig | shorts | facebook */
+  platform?: string;
+  /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
+  format?: string;
 }
 
 export const generateSegments = async (
@@ -320,6 +334,13 @@ export const generateSegments = async (
       videoDuration: request.videoDuration,
       autoFrame: request.autoFrame ?? false,
       targetAspectRatio: request.targetAspectRatio ?? "9:16",
+      purpose: request.purpose ?? "highlights",
+      targetPercent: request.targetPercent,
+      minSegmentDuration: request.minSegmentDuration,
+      maxSegmentDuration: request.maxSegmentDuration,
+      assetType: request.assetType,
+      platform: request.platform,
+      format: request.format,
     },
     {
       headers: getAuthHeaders(),
@@ -350,7 +371,7 @@ export const pollGenerationStatus = async (
     onProgress,
     initialDelayMs = 30000, // Wait 30s before first poll
     pollIntervalMs = 10000, // Poll every 10s
-    maxWaitMs = 600000, // 10 min max (matches Lambda timeout)
+    maxWaitMs = 900000, // 15 min max (long videos can take 10+ min)
   } = options;
   const startTime = Date.now();
 

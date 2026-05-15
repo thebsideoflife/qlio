@@ -494,7 +494,7 @@ resource "aws_lambda_function" "generate_segments" {
   handler          = "generateSegments.handler"
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.generate_segments_zip.output_base64sha256
-  timeout          = 600  # 10 minutes - chunked videos take longer
+  timeout          = 900  # 15 minutes — Pegasus async segmentation can exceed 10m on long sources
 
   environment {
     variables = {
@@ -506,7 +506,8 @@ resource "aws_lambda_function" "generate_segments" {
       BUCKET_NAME             = aws_s3_bucket.media.bucket
       DETECT_SCENES_FUNCTION        = aws_lambda_function.detect_scenes.function_name
       ANALYZE_FRAMING_FUNCTION_NAME = aws_lambda_function.analyze_framing.function_name
-      GEMINI_SECRET_ARN       = aws_secretsmanager_secret.gemini_api_key.arn
+      GEMINI_SECRET_ARN           = aws_secretsmanager_secret.gemini_api_key.arn
+      ANTHROPIC_SECRET_ARN        = data.aws_secretsmanager_secret.anthropic_api_key.arn
     }
   }
 }

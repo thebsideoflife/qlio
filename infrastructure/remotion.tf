@@ -144,10 +144,11 @@ data "aws_iam_policy_document" "remotion_lambda_policy" {
     ]
   }
 
-  # DynamoDB access for projects table (to read project data)
+  # DynamoDB access for projects table (read + update segmentRenders; clear activeRenderJobId on render complete)
   statement {
     actions = [
-      "dynamodb:GetItem"
+      "dynamodb:GetItem",
+      "dynamodb:UpdateItem",
     ]
     resources = [
       aws_dynamodb_table.projects.arn
