@@ -50,7 +50,7 @@ export interface IndexChunksResult {
  * This is invoked after splitVideo completes.
  */
 export const handler: Handler<IndexChunksEvent, IndexChunksResult> = async (
-  event
+  event,
 ) => {
   const { assetId } = event;
 
@@ -61,7 +61,7 @@ export const handler: Handler<IndexChunksEvent, IndexChunksResult> = async (
     new GetCommand({
       TableName: TABLE_NAME,
       Key: { assetId },
-    })
+    }),
   );
 
   if (!assetRes.Item) {
@@ -80,7 +80,7 @@ export const handler: Handler<IndexChunksEvent, IndexChunksResult> = async (
 
   // Get 12Labs API Key
   const secretVal = await secretsClient.send(
-    new GetSecretValueCommand({ SecretId: SECRET_ARN })
+    new GetSecretValueCommand({ SecretId: SECRET_ARN }),
   );
   const apiKey = secretVal.SecretString;
   if (!apiKey) throw new Error("12Labs API Key not found");
@@ -100,7 +100,7 @@ export const handler: Handler<IndexChunksEvent, IndexChunksResult> = async (
         Bucket: BUCKET_NAME,
         Key: chunk.s3Key,
       }),
-      { expiresIn: 3600 }
+      { expiresIn: 3600 },
     );
 
     // Create indexing task - same approach as startIndexing
@@ -137,7 +137,7 @@ export const handler: Handler<IndexChunksEvent, IndexChunksResult> = async (
           createdAt: new Date().toISOString(),
           expiresAt,
         },
-      })
+      }),
     );
   }
 
@@ -161,7 +161,7 @@ export const handler: Handler<IndexChunksEvent, IndexChunksResult> = async (
         ":pending": pendingChunks,
         ":updatedAt": new Date().toISOString(),
       },
-    })
+    }),
   );
 
   console.log(`Started indexing ${chunks.length} chunks for asset ${assetId}`);

@@ -11,7 +11,7 @@ const s3Client = new S3Client({});
  */
 export const presignS3Uri = async (
   s3Uri: string,
-  expiresIn: number = 43200 // 12 hours - sufficient for long renders
+  expiresIn: number = 43200, // 12 hours - sufficient for long renders
 ): Promise<string | null> => {
   if (!s3Uri || !s3Uri.startsWith("s3://")) {
     console.error("Invalid S3 URI:", s3Uri);
@@ -44,4 +44,3 @@ export const presignS3Uri = async (
     return null;
   }
 };
-

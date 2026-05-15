@@ -53,7 +53,7 @@ interface SegmentDownload {
  */
 async function persistRendersToProject(
   projectId: string,
-  segmentRenders: SegmentRender[]
+  segmentRenders: SegmentRender[],
 ): Promise<void> {
   try {
     // Get existing renders from project
@@ -62,7 +62,7 @@ async function persistRendersToProject(
         TableName: PROJECTS_TABLE,
         Key: { projectId },
         ProjectionExpression: "segmentRenders",
-      })
+      }),
     );
 
     // Merge: existing renders + new completed renders (new wins)
@@ -95,7 +95,7 @@ async function persistRendersToProject(
           ":renders": Array.from(renderMap.values()),
           ":updatedAt": now,
         },
-      })
+      }),
     );
 
     console.log(`Persisted ${renderMap.size} renders to project ${projectId}`);
@@ -125,7 +125,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     new GetCommand({
       TableName: RENDER_JOBS_TABLE,
       Key: { jobId },
-    })
+    }),
   );
 
   if (!result.Item) {
@@ -165,7 +165,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
             ":error": "Render timeout - exceeded 6 hours",
             ":updatedAt": new Date().toISOString(),
           },
-        })
+        }),
       );
       job.status = "failed";
       job.error = "Render timeout";
@@ -174,7 +174,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
   // Helper to generate presigned URL using stored bucket/key
   async function generatePresignedUrl(
-    segment: SegmentRender
+    segment: SegmentRender,
   ): Promise<string | undefined> {
     try {
       const command = new GetObjectCommand({
@@ -185,7 +185,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     } catch (error) {
       console.error(
         `Error generating URL for segment ${segment.segmentId}:`,
-        error
+        error,
       );
       return undefined;
     }
@@ -250,7 +250,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
           download.downloadUrl = await generatePresignedUrl(segment);
 
           console.log(
-            `Segment ${segment.segmentId} completed! Key: ${segment.outputKey}`
+            `Segment ${segment.segmentId} completed! Key: ${segment.outputKey}`,
           );
         } else {
           download.progress = Math.round(renderProgress.overallProgress * 100);
@@ -258,7 +258,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       } catch (error) {
         console.error(
           `Error checking progress for segment ${segment.segmentId}:`,
-          error
+          error,
         );
         download.progress = 0;
       }
@@ -273,8 +273,8 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       const newStatus = allCompleted
         ? "completed"
         : anyFailed && completedCount + failedCount === segmentRenders.length
-        ? "failed"
-        : "rendering";
+          ? "failed"
+          : "rendering";
 
       await docClient.send(
         new UpdateCommand({
@@ -287,11 +287,11 @@ export const handler: APIGatewayProxyHandler = async (event) => {
             ":status": newStatus,
             ":segmentRenders": segmentRenders,
             ":progress": Math.round(
-              (completedCount / segmentRenders.length) * 100
+              (completedCount / segmentRenders.length) * 100,
             ),
             ":updatedAt": new Date().toISOString(),
           },
-        })
+        }),
       );
 
       job.status = newStatus;
@@ -299,7 +299,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
       // Persist to project only when job completes (not on every segment)
       // This reduces DB writes from N to 1
-      if ((newStatus === "completed" || newStatus === "failed") && job.projectId) {
+      if (
+        (newStatus === "completed" || newStatus === "failed") &&
+        job.projectId
+      ) {
         if (newStatus === "completed") {
           await persistRendersToProject(job.projectId, segmentRenders);
         }

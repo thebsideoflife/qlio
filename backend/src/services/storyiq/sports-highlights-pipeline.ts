@@ -14,7 +14,6 @@ import {
   parsePegasusSegmentationData,
   pollPegasusAnalyzeTask,
 } from "../pegasus-segmentation";
-import { enforceConstraints } from "./verify";
 import {
   Purpose,
   type FinalSegments,
@@ -620,36 +619,15 @@ export async function generateSportsHighlights(
     `[SportsHighlights] Generated ${segments.length} replay-only clips from ${kept.length} key plays`,
   );
 
-  // -------------------------------------------------------------------------
-  // Enforce constraints (no total-duration target for sports)
-  // -------------------------------------------------------------------------
-  console.log(`[SportsHighlights] Enforcing constraints...`);
-
-  const { segments: enforced, changes } = enforceConstraints(
-    segments,
-    metadata,
-    transcript,
-    Purpose.HIGHLIGHTS,
-    undefined,
-  );
-
-  if (changes.length > 0) {
-    console.warn(`[SportsHighlights] Enforcer: ${changes.length} change(s)`);
-    changes.forEach((c) => console.warn(`  - ${c.detail}`));
-  }
-
-  // -------------------------------------------------------------------------
-  // Done
-  // -------------------------------------------------------------------------
   const processingTime = Date.now() - startMs;
-  const totalDuration = enforced.reduce(
+  const totalDuration = segments.reduce(
     (sum, s) => sum + (s.endTime - s.startTime),
     0,
   );
 
   console.log(
     `[SportsHighlights] Done in ${processingTime}ms — ` +
-      `${enforced.length} replay-only clips (~${Math.round(totalDuration)}s replay footage)`,
+      `${segments.length} replay-only clips (~${Math.round(totalDuration)}s replay footage)`,
   );
 
   const taskSummary = taskIds.length === 1
@@ -657,13 +635,12 @@ export async function generateSportsHighlights(
     : `${taskIds.length} parallel tasks`;
 
   return {
-    segments: enforced,
+    segments,
     confidence: kept.length >= 3 ? 0.9 : 0.75,
     notes: [
       `Pegasus 1.5 ${taskSummary}: ${kept.length} key replay clip(s) (replay footage only).`,
       ...replayData.detection_notes.slice(0, 3),
-      changes.length > 0 ? `Enforcer applied ${changes.length} fix(es).` : "",
-    ].filter(Boolean),
+    ],
     attempts: 1,
     replayData,
     selectedPlays: kept,

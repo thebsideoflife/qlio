@@ -39,7 +39,10 @@ export function qlioMicrodramaSegmentDefinitions(): TwelvelabsApi.SegmentDefinit
           name: "summary",
           type: "string",
           description:
-            "2-4 sentences: what happens in this segment and why it matters for the overall story.",
+            "One pithy sentence (10-20 words) describing what happens in this segment. " +
+            "Write as a third-person scene headline: WHO does WHAT. " +
+            "Example: 'Kirk and Spock discover the time portal and realize McCoy has altered history.' " +
+            "Do NOT use dialogue quotes, character speech, or transcript text — describe the action.",
         },
         {
           name: "primary_storyline",
@@ -140,7 +143,10 @@ export function trekSerializedSegmentDefinitions(): TwelvelabsApi.SegmentDefinit
           name: "summary",
           type: "string",
           description:
-            "2-4 sentences: what happens in this segment and how it advances the episode's story.",
+            "One pithy sentence (10-20 words) describing what happens in this segment. " +
+            "Write as a third-person scene headline: WHO does WHAT. " +
+            "Example: 'Spock builds a mnemonic memory circuit while Kirk falls for Edith Keeler.' " +
+            "Do NOT use dialogue quotes, character speech, or transcript text — describe the action.",
         },
         {
           name: "primary_storyline",

@@ -524,12 +524,9 @@ function splitOversizedSegments(
         );
       }
 
-      // Generate a title from transcript content, or fall back to "(Part N)" suffix
+      // Keep original title for all parts (no transcript text as titles)
       const partTitle =
-        numParts <= 1
-          ? seg.title
-          : getFirstSentenceInRange(transcript, currentStart, partEnd) ||
-            `${seg.title} (Part ${p + 1})`;
+        numParts <= 1 ? seg.title : `${seg.title} (Part ${p + 1})`;
 
       result.push({
         startTime: currentStart,

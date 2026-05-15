@@ -45,14 +45,15 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       };
     }
 
-    const method = (event as any).requestContext?.http?.method || event.httpMethod;
+    const method =
+      (event as any).requestContext?.http?.method || event.httpMethod;
 
     if (method === "DELETE") {
       await docClient.send(
         new DeleteCommand({
           TableName: PROJECTS_TABLE,
           Key: { projectId },
-        })
+        }),
       );
 
       return {
@@ -72,7 +73,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         TableName: PROJECTS_TABLE,
         Key: { projectId },
         ConsistentRead: true,
-      })
+      }),
     );
 
     if (!projectRes.Item) {
@@ -93,7 +94,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       new GetCommand({
         TableName: ASSETS_TABLE,
         Key: { assetId: project.assetId },
-      })
+      }),
     );
 
     const asset = assetRes.Item || null;
@@ -132,7 +133,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
           const url = await getSignedUrl(
             s3Client,
             new GetObjectCommand({ Bucket: render.bucket, Key: render.key }),
-            { expiresIn: 43200 } // 12 hours
+            { expiresIn: 43200 }, // 12 hours
           );
           downloads.push({
             segmentId: render.segmentId,
@@ -142,7 +143,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         } catch (e) {
           console.error(
             `Failed to presign URL for segment ${render.segmentId}:`,
-            e
+            e,
           );
         }
       }
@@ -150,7 +151,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       if (downloads.length > 0) {
         lastRenderDownloads = downloads;
         console.log(
-          `Generated ${downloads.length} presigned URLs from stored renders`
+          `Generated ${downloads.length} presigned URLs from stored renders`,
         );
       }
     }

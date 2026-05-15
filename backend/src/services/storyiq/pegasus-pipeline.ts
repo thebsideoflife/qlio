@@ -21,7 +21,6 @@ import {
   QLIO_PEGASUS_SEGMENT_MAX_SEC,
   QLIO_PEGASUS_SEGMENT_MIN_SEC,
 } from "../pegasus-segmentation";
-import { enforceConstraints } from "./verify";
 import {
   Purpose,
   type ContentType,
@@ -400,19 +399,55 @@ function transcriptSnippetForRange(
     .slice(0, 2500);
 }
 
+/**
+ * Extract title from Pegasus metadata.
+ * Pegasus is now prompted to return a pithy single-sentence summary.
+ * Falls back to other metadata fields if summary is missing or too short.
+ */
 function titleFromPegasusRow(meta: Record<string, unknown>): string {
   const summary = typeof meta.summary === "string" ? meta.summary.trim() : "";
-  if (summary) {
-    const sentence = summary.split(/[.!?]/)[0]?.trim() || summary;
-    return sentence.length > 90 ? `${sentence.slice(0, 87)}…` : sentence;
+  
+  // Pegasus should return a pithy sentence — use it if it looks valid
+  // (at least 5 words, not just a dialogue fragment)
+  const wordCount = summary.split(/\s+/).filter(Boolean).length;
+  if (summary && wordCount >= 5 && summary.length >= 20) {
+    // Truncate if over 100 chars
+    if (summary.length <= 100) return summary;
+    const cut = summary.lastIndexOf(" ", 97);
+    return cut > 50 ? `${summary.slice(0, cut)}…` : `${summary.slice(0, 97)}…`;
   }
+
+  // Fallback: try vertical_hook_potential
   const hook =
     typeof meta.vertical_hook_potential === "string"
       ? meta.vertical_hook_potential.trim()
       : "";
-  if (hook) {
-    return hook.length > 90 ? `${hook.slice(0, 87)}…` : hook;
+  if (hook && hook.split(/\s+/).length >= 4) {
+    return hook.length <= 100 ? hook : `${hook.slice(0, 97)}…`;
   }
+
+  // Fallback: compose from characters + mood
+  const chars = meta.characters;
+  const charLine =
+    Array.isArray(chars) && chars.some((x) => typeof x === "string")
+      ? (chars as unknown[])
+          .filter((x): x is string => typeof x === "string")
+          .map((x) => x.trim())
+          .filter(Boolean)
+          .slice(0, 3)
+          .join(", ")
+      : "";
+
+  const mood =
+    typeof meta.dominant_mood === "string" ? meta.dominant_mood.trim() : "";
+
+  if (charLine && mood) {
+    return `${charLine} — ${mood}`;
+  }
+  if (charLine) {
+    return charLine;
+  }
+
   return "Scene";
 }
 
@@ -674,33 +709,13 @@ export async function generateSegmentsWithPegasus(
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Step 6: Enforce hard constraints
-  // -------------------------------------------------------------------------
-  console.log(
-    `[StoryIQ Pegasus] Enforcing constraints on ${proposed.length} segment(s)`,
-  );
-
-  const { segments: enforced, changes } = enforceConstraints(
-    proposed,
-    metadata,
-    transcript,
-    purpose,
-    targetSeconds,
-  );
-
-  if (changes.length > 0) {
-    console.warn(`[StoryIQ Pegasus] Enforcer: ${changes.length} change(s)`);
-    changes.forEach((c) => console.warn(`  - ${c.detail}`));
-  }
-
   const processingTime = Date.now() - startMs;
-  const totalDuration = enforced.reduce(
+  const totalDuration = proposed.reduce(
     (sum, s) => sum + (s.endTime - s.startTime),
     0,
   );
   console.log(
-    `[StoryIQ Pegasus] Done in ${processingTime}ms — ${enforced.length} segments, ~${Math.round(totalDuration)}s`,
+    `[StoryIQ Pegasus] Done in ${processingTime}ms — ${proposed.length} segments, ~${Math.round(totalDuration)}s`,
   );
 
   const taskSummary = taskIds.length === 1
@@ -708,10 +723,10 @@ export async function generateSegmentsWithPegasus(
     : `${taskIds.length} parallel tasks`;
 
   return {
-    segments: enforced,
-    confidence: changes.length === 0 ? 0.88 : 0.78,
+    segments: proposed,
+    confidence: 0.88,
     notes: [
-      `Pegasus ${taskSummary}; ${contentType}; enforcer ${changes.length} fix(es).`,
+      `Pegasus ${taskSummary}; ${contentType}.`,
       ...selectionNotes,
     ],
     attempts: 1,

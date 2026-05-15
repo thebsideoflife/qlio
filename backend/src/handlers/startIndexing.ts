@@ -49,7 +49,7 @@ async function indexVideo(
   bucket: string,
   key: string,
   assetId: string,
-  chunkIndex?: number
+  chunkIndex?: number,
 ): Promise<string> {
   // Generate presigned URL for 12Labs to download
   const signedUrl = await getSignedUrl(
@@ -58,7 +58,7 @@ async function indexVideo(
       Bucket: bucket,
       Key: key,
     }),
-    { expiresIn: 3600 }
+    { expiresIn: 3600 },
   );
 
   const logPrefix = chunkIndex !== undefined ? `chunk ${chunkIndex} of ` : "";
@@ -77,7 +77,7 @@ export const handler: Handler<S3Event> = async (event) => {
   try {
     // 1. Get 12Labs API Key
     const secretVal = await secretsClient.send(
-      new GetSecretValueCommand({ SecretId: SECRET_ARN })
+      new GetSecretValueCommand({ SecretId: SECRET_ARN }),
     );
     const apiKey = secretVal.SecretString;
     if (!apiKey) throw new Error("12Labs API Key not found");
@@ -113,7 +113,7 @@ export const handler: Handler<S3Event> = async (event) => {
 async function handleChunkIndexing(
   client: TwelveLabs,
   bucket: string,
-  key: string
+  key: string,
 ): Promise<void> {
   // Parse assetId and chunkIndex from key
   // Format: chunks/{assetId}/{assetId}-chunk-{N}.mp4
@@ -133,7 +133,7 @@ async function handleChunkIndexing(
     new GetCommand({
       TableName: TABLE_NAME,
       Key: { assetId },
-    })
+    }),
   );
 
   if (!assetRes.Item) {
@@ -170,7 +170,7 @@ async function handleChunkIndexing(
           // TTL: expire after 7 days (in case webhook never fires)
           expiresAt: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60,
         },
-      })
+      }),
     );
     console.log(`Saved chunk task ${taskId} to chunk_tasks table`);
   }
@@ -187,11 +187,11 @@ async function handleChunkIndexing(
         ":iid": TWELVE_LABS_INDEX_ID,
         ":updatedAt": new Date().toISOString(),
       },
-    })
+    }),
   );
 
   console.log(
-    `Started indexing task ${taskId} for chunk ${chunkIndex} of asset ${assetId}`
+    `Started indexing task ${taskId} for chunk ${chunkIndex} of asset ${assetId}`,
   );
 }
 
@@ -201,7 +201,7 @@ async function handleChunkIndexing(
 async function handleRawVideoUpload(
   client: TwelveLabs,
   bucket: string,
-  key: string
+  key: string,
 ): Promise<void> {
   // Parse assetId from key "raw/assetId.mp4"
   const assetId = key.split("/")[1]?.split(".")[0];
@@ -215,14 +215,14 @@ async function handleRawVideoUpload(
     new GetCommand({
       TableName: TABLE_NAME,
       Key: { assetId },
-    })
+    }),
   );
 
   const asset = assetRes.Item;
   const duration = asset?.duration || 0;
 
   console.log(
-    `Asset ${assetId} duration: ${duration}s (max single: ${MAX_SINGLE_VIDEO_DURATION}s)`
+    `Asset ${assetId} duration: ${duration}s (max single: ${MAX_SINGLE_VIDEO_DURATION}s)`,
   );
 
   // Check if video needs splitting
@@ -242,7 +242,7 @@ async function handleRawVideoUpload(
         FunctionName: SPLIT_FUNCTION_NAME,
         InvocationType: "Event", // Async invocation
         Payload: Buffer.from(JSON.stringify(splitPayload)),
-      })
+      }),
     );
 
     console.log(`Split function invoked, status: ${invokeResult.StatusCode}`);
@@ -262,7 +262,7 @@ async function handleRawVideoUpload(
           ":url": `s3://${bucket}/${key}`,
           ":updatedAt": new Date().toISOString(),
         },
-      })
+      }),
     );
 
     return;
@@ -289,7 +289,7 @@ async function handleRawVideoUpload(
         ":isChunked": false,
         ":updatedAt": new Date().toISOString(),
       },
-    })
+    }),
   );
 
   console.log(`Started indexing task ${taskId} for asset ${assetId}`);
