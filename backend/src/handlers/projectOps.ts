@@ -24,6 +24,7 @@ interface StoredSegmentRender {
   bucket: string;
   key: string;
   renderedAt: string;
+  contentHash?: string;
 }
 
 export const handler: APIGatewayProxyHandler = async (event) => {
@@ -118,6 +119,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       segmentId: string;
       title: string;
       url: string;
+      contentHash?: string;
     }> | null = null;
 
     const storedRenders: StoredSegmentRender[] = project.segmentRenders || [];
@@ -126,6 +128,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         segmentId: string;
         title: string;
         url: string;
+        contentHash?: string;
       }> = [];
 
       for (const render of storedRenders) {
@@ -139,6 +142,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
             segmentId: render.segmentId,
             title: render.title,
             url,
+            contentHash: render.contentHash,
           });
         } catch (e) {
           console.error(

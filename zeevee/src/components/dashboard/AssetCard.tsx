@@ -547,7 +547,7 @@ export function AssetCard({
                 onClick={handleCreateProject}
               >
                 <PlusCircle className="h-3.5 w-3.5 mr-1.5" />
-                Create Microdrama
+                Create Microseries
               </Button>
             )}
           </div>
@@ -573,7 +573,7 @@ export function AssetCard({
           ) : projects.length === 0 ? (
             <div className="text-center py-8">
               <p className="text-sm text-muted-foreground mb-4">
-                No microdramas yet
+                No microseries yet
               </p>
               <Button size="sm" onClick={handleCreateProject}>
                 <PlusCircle className="h-4 w-4 mr-2" />

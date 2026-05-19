@@ -8,6 +8,10 @@ import {
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { checkAuth } from "../utils/auth";
+import {
+  computeSegmentRenderFingerprint,
+  type SegmentFraming,
+} from "../utils/segmentRenderFingerprint";
 import { getRenderProgress } from "@remotion/lambda/client";
 import type { AwsRegion } from "@remotion/lambda";
 
@@ -27,6 +31,7 @@ interface StoredSegmentRender {
   bucket: string;
   key: string;
   renderedAt: string;
+  contentHash?: string;
 }
 
 interface SegmentRender {
@@ -54,6 +59,16 @@ interface SegmentDownload {
 async function persistRendersToProject(
   projectId: string,
   segmentRenders: SegmentRender[],
+  job: {
+    segments?: Array<{
+      id: string;
+      startTime: number;
+      endTime: number;
+      framing?: SegmentFraming;
+    }>;
+    captionSettings?: { enabled: boolean; style: unknown };
+    globalFraming?: { aspectRatio: string };
+  },
 ): Promise<void> {
   try {
     // Get existing renders from project
@@ -73,14 +88,30 @@ async function persistRendersToProject(
     }
 
     const now = new Date().toISOString();
+    const captionSettings = job.captionSettings || {
+      enabled: true,
+      style: {},
+    };
+    const globalFraming = job.globalFraming || { aspectRatio: "9:16" };
+
     for (const seg of segmentRenders) {
       if (seg.status === "completed" && seg.bucketName && seg.outputKey) {
+        const sourceSegment = job.segments?.find((s) => s.id === seg.segmentId);
+        const contentHash = sourceSegment
+          ? computeSegmentRenderFingerprint(
+              sourceSegment,
+              captionSettings,
+              globalFraming,
+            )
+          : undefined;
+
         renderMap.set(seg.segmentId, {
           segmentId: seg.segmentId,
           title: seg.title,
           bucket: seg.bucketName,
           key: seg.outputKey,
           renderedAt: now,
+          contentHash,
         });
       }
     }
@@ -304,7 +335,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         job.projectId
       ) {
         if (newStatus === "completed") {
-          await persistRendersToProject(job.projectId, segmentRenders);
+          await persistRendersToProject(job.projectId, segmentRenders, job);
         }
         // Clear activeRenderJobId since render is done
         await docClient.send(
@@ -337,7 +368,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     // Ensure renders are persisted to project (idempotent - safe to call multiple times)
     // This catches cases where persist failed or polling stopped before completion
     if (job.status === "completed" && job.projectId && completedCount > 0) {
-      await persistRendersToProject(job.projectId, segmentRenders);
+      await persistRendersToProject(job.projectId, segmentRenders, job);
     }
   }
 

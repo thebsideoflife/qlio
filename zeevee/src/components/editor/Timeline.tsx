@@ -18,7 +18,7 @@ import {
 } from "@/store/editorSlice";
 import type { FramingKeyframe } from "@/remotion/types";
 import { getEffectiveKeyframes } from "@/remotion/types";
-import { cn } from "@/lib/utils";
+import { cn, formatSegmentLabel } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   Scissors,
@@ -1421,7 +1421,7 @@ export function Timeline({
             ))}
 
             {/* Segments */}
-            {segments.map((segment) => {
+            {segments.map((segment, segmentIndex) => {
               const left = previewMode
                 ? timeToPx(segmentPreviewOffsets.get(segment.id) || 0)
                 : timeToPx(segment.startTime);
@@ -1443,7 +1443,7 @@ export function Timeline({
                   )}
                   style={{ left: `${left}px`, width: `${width}px` }}
                   onClick={(e) => handleSegmentClick(e, segment.id)}
-                  title={segment.title}
+                  title={formatSegmentLabel(segmentIndex + 1, segment.title)}
                 >
                   {!previewMode && (
                     <>
@@ -1464,7 +1464,7 @@ export function Timeline({
 
                   {width > 30 && (
                     <div className="px-1.5 py-0.5 text-[10px] text-white font-semibold truncate pointer-events-none">
-                      {segment.title}
+                      {formatSegmentLabel(segmentIndex + 1, segment.title)}
                     </div>
                   )}
                   {width > 60 && (
