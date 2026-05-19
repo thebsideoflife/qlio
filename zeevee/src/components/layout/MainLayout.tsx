@@ -34,8 +34,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ExportModal } from "@/components/editor/ExportModal";
 import { EditableTitle } from "@/components/ui/editable-title";
+import { cn } from "@/lib/utils";
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -56,6 +56,7 @@ export function MainLayout({ children }: MainLayoutProps) {
   );
 
   const isEditorPage = location.pathname.startsWith("/editor");
+  const isExportPage = /\/export$/.test(location.pathname);
   const projectIdFromPath = isEditorPage
     ? location.pathname.split("/")[2]
     : null;
@@ -65,8 +66,6 @@ export function MainLayout({ children }: MainLayoutProps) {
   const [isPasswordOpen, setIsPasswordOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [newPassword, setNewPassword] = useState("");
-  const [exportOpen, setExportOpen] = useState(false);
-
   const processingCount = useMemo(
     () =>
       assets.filter(
@@ -109,7 +108,7 @@ export function MainLayout({ children }: MainLayoutProps) {
 
   return (
     <div className="flex h-screen w-full flex-col bg-background text-foreground overflow-hidden">
-      <header className="flex h-16 items-center justify-between border-b-2 border-border px-8 bg-card gap-6">
+      <header className="flex h-14 sm:h-16 items-center justify-between border-b-2 border-border px-4 sm:px-8 bg-card gap-3 sm:gap-6">
         <Link
           to="/"
           className="flex items-center gap-3 font-bold hover:opacity-80 transition-opacity"
@@ -121,35 +120,57 @@ export function MainLayout({ children }: MainLayoutProps) {
         {/* Editor page info and actions in header */}
         {isEditorPage && (
           <>
-            <div className="flex-1 flex items-center justify-center">
-              <div className="text-center flex flex-col items-center">
-                <div className="flex items-center gap-2 text-sm">
+            <div
+              className={cn(
+                "flex-1 flex items-center justify-center min-w-0",
+                isExportPage && "hidden md:flex",
+              )}
+            >
+              <div className="text-center flex flex-col items-center min-w-0 max-w-full">
+                <div className="flex items-center gap-2 text-sm min-w-0 max-w-full">
                   <span
-                    className="text-muted-foreground max-w-[200px] truncate font-medium"
+                    className="text-muted-foreground max-w-[120px] sm:max-w-[200px] truncate font-medium"
                     title={assetName}
                   >
                     {assetName}
                   </span>
-                  <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                  <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />
 
                   {projectIdFromPath && (
                     <EditableTitle
-                      title={projectTitle || "Untitled Microdrama"}
+                      title={projectTitle || "Untitled Microseries"}
                       onSave={(newTitle) =>
                         dispatch(updateProjectTitle(newTitle))
                       }
-                      className="font-bold underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 hover:bg-muted/50 px-1.5 py-0.5 rounded"
+                      className="font-bold underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 hover:bg-muted/50 px-1.5 py-0.5 rounded truncate max-w-[140px] sm:max-w-none"
                       inputClassName="h-7 w-48 px-2 py-0 text-sm font-bold border-border focus-visible:ring-1"
                     />
                   )}
                 </div>
               </div>
             </div>
-            <div className="flex gap-3">
-              <Button size="sm" onClick={() => setExportOpen(true)}>
-                <Film className="h-4 w-4 mr-2" />
-                Export Video
-              </Button>
+            <div className="flex gap-3 shrink-0">
+              {isExportPage && projectIdFromPath ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => navigate(`/editor/${projectIdFromPath}`)}
+                >
+                  Back to Editor
+                </Button>
+              ) : (
+                projectIdFromPath && (
+                  <Button
+                    size="sm"
+                    onClick={() =>
+                      navigate(`/editor/${projectIdFromPath}/export`)
+                    }
+                  >
+                    <Film className="h-4 w-4 mr-2" />
+                    Export Video
+                  </Button>
+                )
+              )}
             </div>
           </>
         )}
@@ -263,15 +284,6 @@ export function MainLayout({ children }: MainLayoutProps) {
       </Dialog>
 
       <UploadWizard open={uploadOpen} onOpenChange={setUploadOpen} />
-
-      {/* Export Modal - only show in editor */}
-      {isEditorPage && projectIdFromPath && (
-        <ExportModal
-          open={exportOpen}
-          onOpenChange={setExportOpen}
-          projectId={projectIdFromPath}
-        />
-      )}
     </div>
   );
 }

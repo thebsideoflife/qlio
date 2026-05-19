@@ -4,6 +4,7 @@ import { store } from "./store/store";
 import { MainLayout } from "./components/layout/MainLayout";
 import Dashboard from "./pages/Dashboard";
 import Editor from "./pages/Editor";
+import Export from "./pages/Export";
 import SignIn from "./pages/SignIn";
 import { RequireAuth } from "./components/RequireAuth";
 
@@ -29,6 +30,16 @@ function App() {
               <RequireAuth>
                 <MainLayout>
                   <Editor />
+                </MainLayout>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/editor/:projectId/export"
+            element={
+              <RequireAuth>
+                <MainLayout>
+                  <Export />
                 </MainLayout>
               </RequireAuth>
             }

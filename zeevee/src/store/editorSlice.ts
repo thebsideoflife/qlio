@@ -53,7 +53,12 @@ interface EditorState {
   showKeyframes: boolean;
   // Last rendered segments - cached to avoid re-renders
   lastSegmentRenders:
-    | { segmentId: string; title: string; url: string }[]
+    | {
+        segmentId: string;
+        title: string;
+        url: string;
+        contentHash?: string;
+      }[]
     | null;
 }
 
@@ -766,7 +771,12 @@ export const editorSlice = createSlice({
     setLastSegmentRenders: (
       state,
       action: PayloadAction<
-        { segmentId: string; title: string; url: string }[]
+        {
+          segmentId: string;
+          title: string;
+          url: string;
+          contentHash?: string;
+        }[]
       >,
     ) => {
       state.lastSegmentRenders = action.payload;

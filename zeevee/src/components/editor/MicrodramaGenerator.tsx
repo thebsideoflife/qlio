@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -49,6 +49,7 @@ interface MicrodramaGeneratorProps {
   initialUserPrompt?: string;
   autoFrameEnabled: boolean;
   onAutoFrameChange: (enabled: boolean) => void;
+  onPlatformChange?: (platform: string) => void;
 }
 
 type Option = {
@@ -56,6 +57,7 @@ type Option = {
   label: string;
   icon: LucideIcon | IconType;
   tooltip: string;
+  disabled?: boolean;
 };
 
 // Asset Type options
@@ -104,43 +106,38 @@ const FORMATS: Option[] = [
     tooltip: "Condense video to target %",
   },
   {
-    value: "full_video",
-    label: "Full Video",
-    icon: LayoutGrid,
-    tooltip: "Split into chapters (1-3 min each)",
-  },
-  {
     value: "highlights",
     label: "Highlights",
     icon: Sparkles,
     tooltip: "Best moments",
   },
   {
-    value: "trailer",
-    label: "Trailer",
-    icon: PlayCircle,
-    tooltip: "Promo preview",
-  },
-  {
     value: "episode_recap",
     label: "Ep Recap",
     icon: Repeat,
     tooltip: "Episode summary",
+    disabled: true,
+  },
+  {
+    value: "trailer",
+    label: "Trailer",
+    icon: PlayCircle,
+    tooltip: "Promo preview",
+    disabled: true,
+  },
+  {
+    value: "full_video",
+    label: "Full Video",
+    icon: LayoutGrid,
+    tooltip: "Split into chapters (1-3 min each)",
   },
   {
     value: "season_recap",
     label: "Season Recap",
     icon: ListVideo,
     tooltip: "Season summary",
+    disabled: true,
   },
-];
-
-// Retain percentage options — "auto" = no fixed % target (backend)
-const RETAIN_OPTIONS = [
-  { value: "auto", label: "Auto" },
-  { value: "25", label: "25%" },
-  { value: "50", label: "50%" },
-  { value: "75", label: "75%" },
 ];
 
 // Segment duration defaults per format
@@ -153,18 +150,20 @@ const SEGMENT_DURATION_DEFAULTS: Record<string, { min: number; max: number }> = 
   season_recap: { min: 60, max: 180 },
 };
 
+// Percent presets for compact video
+const PERCENT_OPTIONS = [
+  { value: "auto", label: "Auto", tooltip: "Let AI decide" },
+  { value: "25", label: "25%", tooltip: "Quarter of original" },
+  { value: "50", label: "50%", tooltip: "Half of original" },
+  { value: "75", label: "75%", tooltip: "Three quarters" },
+];
+
 // Default selections
 const DEFAULT_ASSET_TYPE = "tv";
 const DEFAULT_PLATFORM = "mobile";
 const DEFAULT_FORMAT = "compact_video";
-const DEFAULT_RETAIN = "auto";
 
-function retainToTargetPercent(retain: string): number | null {
-  if (retain === "auto") return null;
-  const n = parseInt(retain, 10);
-  if (n === 25 || n === 50 || n === 75) return n;
-  return null;
-}
+const RETAIN_ENABLED = false;
 
 export function MicrodramaGenerator({
   onGenerate,
@@ -173,13 +172,16 @@ export function MicrodramaGenerator({
   initialUserPrompt,
   autoFrameEnabled,
   onAutoFrameChange,
+  onPlatformChange,
 }: MicrodramaGeneratorProps) {
   const [userPrompt, setUserPrompt] = useState(initialUserPrompt || "");
 
   const [assetType, setAssetType] = useState(DEFAULT_ASSET_TYPE);
   const [platform, setPlatform] = useState(DEFAULT_PLATFORM);
   const [format, setFormat] = useState(DEFAULT_FORMAT);
-  const [retain, setRetain] = useState(DEFAULT_RETAIN);
+
+  // Target percent for compact_video mode ("auto" means let AI decide)
+  const [targetPercent, setTargetPercent] = useState<string>("auto");
 
   // Duration bounds state - initialized from format defaults
   const [minDuration, setMinDuration] = useState(
@@ -189,16 +191,21 @@ export function MicrodramaGenerator({
     SEGMENT_DURATION_DEFAULTS[DEFAULT_FORMAT].max,
   );
 
+  // Whether we're in compact video mode
+  const isCompactVideo = format === "compact_video";
+
   // Update duration bounds when format changes
   const handleFormatChange = (newFormat: string) => {
     setFormat(newFormat);
     const defaults = SEGMENT_DURATION_DEFAULTS[newFormat] || SEGMENT_DURATION_DEFAULTS.compact_video;
     setMinDuration(defaults.min);
     setMaxDuration(defaults.max);
+    // Reset to Auto when switching to compact video
+    if (newFormat === "compact_video") {
+      setTargetPercent("auto");
+    }
   };
 
-  // Show Retain picker only for compact_video and highlights
-  const showRetainPicker = format === "compact_video" || format === "highlights";
 
   const maxLength = 500;
   const remaining = maxLength - userPrompt.length;
@@ -206,7 +213,10 @@ export function MicrodramaGenerator({
   const handleGenerate = () => {
     onGenerate({
       userPrompt,
-      targetPercent: showRetainPicker ? retainToTargetPercent(retain) : null,
+      targetPercent:
+        RETAIN_ENABLED && isCompactVideo && targetPercent !== "auto"
+          ? parseInt(targetPercent, 10)
+          : null,
       minSegmentDuration: minDuration,
       maxSegmentDuration: maxDuration,
       format,
@@ -243,7 +253,10 @@ export function MicrodramaGenerator({
             <DemoOptionGrid
               options={PLATFORMS}
               selectedValue={platform}
-              onSelect={setPlatform}
+              onSelect={(value) => {
+                setPlatform(value);
+                onPlatformChange?.(value);
+              }}
               columns={3}
             />
           </DemoSection>
@@ -258,13 +271,12 @@ export function MicrodramaGenerator({
             />
           </DemoSection>
 
-          {/* Retain - only for compact_video and highlights */}
-          {showRetainPicker && (
+          {/* Retain Percentage - only for compact_video */}
+          {RETAIN_ENABLED && isCompactVideo && (
             <DemoSection label="Retain">
-              <DemoRetainPicker
-                options={RETAIN_OPTIONS}
-                selectedValue={retain}
-                onSelect={setRetain}
+              <RetainPicker
+                selected={targetPercent}
+                onSelect={setTargetPercent}
               />
             </DemoSection>
           )}
@@ -289,6 +301,7 @@ export function MicrodramaGenerator({
                 onChange={(e) =>
                   setUserPrompt(e.target.value.slice(0, maxLength))
                 }
+                onKeyDown={(e) => e.stopPropagation()}
                 maxLength={maxLength}
                 placeholder="Any special instructions? (optional)"
                 className="w-full h-24 px-3 py-2.5 text-sm rounded-lg bg-card border-2 border-dashed border-border focus:border-blue-400 focus:border-solid focus:outline-none resize-none placeholder:text-muted-foreground/50"
@@ -354,7 +367,7 @@ export function MicrodramaGenerator({
             <p className="text-xs text-muted-foreground text-center">
               {generationStatus.status === "framing"
                 ? "Analyzing framing for each segment..."
-                : "This may take 1-2 minutes for longer videos"}
+                : "Stay tuned — this may take a few minutes for longer videos."}
             </p>
           )}
         </div>
@@ -400,16 +413,23 @@ function DemoOptionGrid({
     >
       {options.map((opt) => {
         const isSelected = selectedValue === opt.value;
+        const isDisabled = opt.disabled === true;
         return (
           <Tooltip key={opt.value}>
             <TooltipTrigger asChild>
               <button
-                onClick={() => onSelect(opt.value)}
+                type="button"
+                disabled={isDisabled}
+                onClick={() => {
+                  if (!isDisabled) onSelect(opt.value);
+                }}
                 className={cn(
                   "flex flex-col items-center gap-1 p-2.5 rounded-lg border-2 transition-all",
+                  isDisabled && "opacity-50 cursor-not-allowed",
                   isSelected
                     ? "bg-blue-600 border-blue-600 text-white shadow-md"
                     : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30",
+                  isDisabled && "hover:border-border hover:bg-card",
                 )}
               >
                 <opt.icon
@@ -428,7 +448,9 @@ function DemoOptionGrid({
                 </span>
               </button>
             </TooltipTrigger>
-            <TooltipContent side="bottom">{opt.tooltip}</TooltipContent>
+            <TooltipContent side="bottom">
+              {isDisabled ? "Coming soon" : opt.tooltip}
+            </TooltipContent>
           </Tooltip>
         );
       })}
@@ -436,40 +458,6 @@ function DemoOptionGrid({
   );
 }
 
-function DemoRetainPicker({
-  options,
-  selectedValue,
-  onSelect,
-}: {
-  options: { value: string; label: string }[];
-  selectedValue: string;
-  onSelect: (value: string) => void;
-}) {
-  return (
-    <div className="flex gap-2">
-      {options.map((opt) => {
-        const isSelected = selectedValue === opt.value;
-        return (
-          <button
-            key={opt.value}
-            onClick={() => onSelect(opt.value)}
-            className={cn(
-              "px-4 py-2 rounded-xl text-sm font-medium transition-all",
-              isSelected
-                ? "bg-blue-600 text-white shadow-md"
-                : "bg-card border-2 border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30",
-            )}
-          >
-            {opt.label}
-          </button>
-        );
-      })}
-      <div className="px-4 py-2 rounded-xl text-sm font-medium bg-card border-2 border-dashed border-border text-muted-foreground">
-        Other
-      </div>
-    </div>
-  );
-}
 
 function DemoDurationPicker({
   minValue,
@@ -486,17 +474,33 @@ function DemoDurationPicker({
   minBound: number;
   maxBound: number;
 }) {
-  const handleMinChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = parseInt(e.target.value, 10);
+  const [minInput, setMinInput] = useState(String(minValue));
+  const [maxInput, setMaxInput] = useState(String(maxValue));
+
+  // Sync local state when parent values change (e.g., format switch)
+  useEffect(() => {
+    setMinInput(String(minValue));
+  }, [minValue]);
+
+  useEffect(() => {
+    setMaxInput(String(maxValue));
+  }, [maxValue]);
+
+  const handleMinBlur = () => {
+    const val = parseInt(minInput, 10);
     if (!isNaN(val) && val >= minBound && val < maxValue) {
       onMinChange(val);
+    } else {
+      setMinInput(String(minValue));
     }
   };
 
-  const handleMaxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = parseInt(e.target.value, 10);
+  const handleMaxBlur = () => {
+    const val = parseInt(maxInput, 10);
     if (!isNaN(val) && val > minValue && val <= maxBound) {
       onMaxChange(val);
+    } else {
+      setMaxInput(String(maxValue));
     }
   };
 
@@ -507,11 +511,12 @@ function DemoDurationPicker({
           Min (sec)
         </label>
         <input
-          type="number"
-          value={minValue}
-          onChange={handleMinChange}
-          min={minBound}
-          max={maxValue - 1}
+          type="text"
+          inputMode="numeric"
+          value={minInput}
+          onChange={(e) => setMinInput(e.target.value)}
+          onBlur={handleMinBlur}
+          onKeyDown={(e) => e.key === "Enter" && handleMinBlur()}
           className="w-full px-3 py-2 text-sm rounded-lg bg-card border-2 border-border focus:border-blue-400 focus:outline-none"
         />
       </div>
@@ -520,14 +525,96 @@ function DemoDurationPicker({
           Max (sec)
         </label>
         <input
-          type="number"
-          value={maxValue}
-          onChange={handleMaxChange}
-          min={minValue + 1}
-          max={maxBound}
+          type="text"
+          inputMode="numeric"
+          value={maxInput}
+          onChange={(e) => setMaxInput(e.target.value)}
+          onBlur={handleMaxBlur}
+          onKeyDown={(e) => e.key === "Enter" && handleMaxBlur()}
           className="w-full px-3 py-2 text-sm rounded-lg bg-card border-2 border-border focus:border-blue-400 focus:outline-none"
         />
       </div>
+    </div>
+  );
+}
+
+function RetainPicker({
+  selected,
+  onSelect,
+}: {
+  selected: string;
+  onSelect: (value: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [customValue, setCustomValue] = useState("");
+
+  const isCustom =
+    selected &&
+    !PERCENT_OPTIONS.some((opt) => opt.value === selected);
+
+  const submitCustom = () => {
+    if (customValue.trim()) {
+      const num = parseInt(customValue.replace("%", "").trim(), 10);
+      if (!isNaN(num) && num > 0 && num <= 100) {
+        onSelect(String(num));
+      }
+    }
+    setEditing(false);
+  };
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {PERCENT_OPTIONS.map((opt) => {
+        const isSelected = selected === opt.value;
+        return (
+          <Tooltip key={opt.value}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => onSelect(opt.value)}
+                className={cn(
+                  "px-4 py-2 rounded-lg text-sm font-medium transition-all border-2",
+                  isSelected
+                    ? "bg-blue-600 border-blue-600 text-white shadow-md"
+                    : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-foreground"
+                )}
+              >
+                {opt.label}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{opt.tooltip}</TooltipContent>
+          </Tooltip>
+        );
+      })}
+
+      {editing ? (
+        <input
+          type="text"
+          value={customValue}
+          onChange={(e) => setCustomValue(e.target.value)}
+          onBlur={submitCustom}
+          onKeyDown={(e) => e.key === "Enter" && submitCustom()}
+          placeholder="40%"
+          autoFocus
+          className="w-16 px-3 py-2 rounded-lg text-sm font-medium text-center bg-blue-600 text-white border-2 border-blue-600 focus:outline-none"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => {
+            setCustomValue(isCustom ? `${selected}%` : "");
+            setEditing(true);
+          }}
+          className={cn(
+            "px-3 py-2 rounded-lg text-sm font-medium transition-all border-2 border-dashed",
+            isCustom
+              ? "bg-blue-600 text-white border-blue-600 shadow-md"
+              : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-muted-foreground"
+          )}
+        >
+          {isCustom ? `${selected}%` : "Other"}
+        </button>
+      )}
     </div>
   );
 }

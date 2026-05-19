@@ -13,9 +13,9 @@ import { addAsset, updateAssetStatus } from "@/store/assetsSlice";
 import { ArrowRight, Upload, Loader2, AlertCircle } from "lucide-react";
 import {
   getUploadCredentials,
-  uploadToS3,
   type UploadCredentialsResponse,
 } from "@/services/api";
+import { uploadToS3 } from "@/services/s3Upload";
 import { cn } from "@/lib/utils";
 import type { AppDispatch } from "@/store/store";
 
@@ -87,7 +87,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
     if (duration > MAX_VIDEO_DURATION_SECONDS) {
       const durationMinutes = Math.round(duration / 60);
       setDurationError(
-        `Video is too long (${durationMinutes} minutes). Maximum allowed duration is 120 minutes.`
+        `Video is too long (${durationMinutes} minutes). Maximum allowed duration is 120 minutes.`,
       );
       setIsCreatingAsset(false);
       setUploadProgress("idle");
@@ -116,7 +116,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
         createdAt: new Date().toISOString(),
         uploadProgress: 0,
       };
-      // @ts-ignore
+
       dispatch(addAsset(newAsset));
 
       // Close wizard immediately to let upload run in background
@@ -131,7 +131,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
             id: uploadInfo.assetId,
             status: "uploading",
             progress: progress.percentage,
-          })
+          }),
         );
       })
         .then(() => {
@@ -141,7 +141,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
             updateAssetStatus({
               id: uploadInfo.assetId,
               status: "indexing",
-            })
+            }),
           );
         })
         .catch((err) => {
@@ -150,7 +150,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
             updateAssetStatus({
               id: uploadInfo.assetId,
               status: "failed",
-            })
+            }),
           );
         });
     } catch (error) {
@@ -197,7 +197,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
           className={cn(
             "cursor-pointer flex flex-col items-center gap-4",
             (isCreatingAsset || uploadProgress === "uploading") &&
-              "opacity-50 cursor-not-allowed"
+              "opacity-50 cursor-not-allowed",
           )}
         >
           <div className="p-4 bg-background rounded-full shadow-sm">
@@ -242,7 +242,7 @@ export function UploadWizard({ open, onOpenChange }: UploadWizardProps) {
             <span>Upload Video</span>
           </DialogTitle>
           <p className="text-sm text-muted-foreground mt-1.5">
-            Select a video file to upload. You can create a microdrama from it
+            Select a video file to upload. You can create a microseries from it
             later.
           </p>
         </DialogHeader>

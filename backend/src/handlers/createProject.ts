@@ -92,7 +92,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     const createdAt = new Date().toISOString();
 
     // Distinct Project Title (Timestamp based for now to avoid collision with Asset Name)
-    const projectTitle = `Microdrama ${new Date().toLocaleString()}`;
+    const projectTitle = `Microseries ${new Date().toLocaleString()}`;
 
     // 5. Create Project with Segments
     await docClient.send(

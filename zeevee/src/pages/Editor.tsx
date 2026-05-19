@@ -19,6 +19,7 @@ import {
   resetEditor,
   updateFramingKeyframe,
   updateCaptionWord,
+  setGlobalAspectRatio,
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
 import { useRef, useEffect, useState } from "react";
@@ -43,6 +44,11 @@ import {
 } from "lucide-react";
 import { getEffectiveKeyframes } from "@/remotion/types";
 import type { AspectRatio } from "@/remotion/types";
+
+function platformToAspectRatio(platform: string): AspectRatio {
+  if (platform === "tv") return "16:9";
+  return "9:16";
+}
 
 export default function Editor() {
   const { projectId } = useParams();
@@ -84,6 +90,7 @@ export default function Editor() {
   useEffect(() => {
     projectIdRef.current = projectId;
   }, [projectId]);
+
   // Stores "projectId:jobId" — naturally unique per project, no reset needed on navigation
   const resumedGenerationJobRef = useRef<string | null>(null);
 
@@ -571,9 +578,7 @@ export default function Editor() {
 
       if (result.segments.length > 0) {
         dispatch(setSegments(result.segments));
-        // Auto-select first segment and switch to transcript tab
         dispatch(selectSegment(result.segments[0].id));
-        setActiveTab("transcript");
         console.log(
           `[Editor] Generation complete: ${result.segments.length} segments`,
         );
@@ -904,6 +909,11 @@ export default function Editor() {
                     initialUserPrompt={generationMetadata?.userPrompt}
                     autoFrameEnabled={autoFrameEnabled}
                     onAutoFrameChange={setAutoFrameEnabled}
+                    onPlatformChange={(platform) => {
+                      dispatch(
+                        setGlobalAspectRatio(platformToAspectRatio(platform)),
+                      );
+                    }}
                   />
                 )}
                 {activeTab === "captions" && <CaptionEditor />}

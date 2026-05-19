@@ -1,6 +1,4 @@
 import axios from "axios";
-import { S3Client } from "@aws-sdk/client-s3";
-import { Upload } from "@aws-sdk/lib-storage";
 
 const API_URL = import.meta.env.VITE_API_URL;
 const AUTH_KEY = "api_password";
@@ -58,60 +56,6 @@ export const getUploadCredentials = async (
     },
   );
   return response.data;
-};
-
-export interface UploadProgress {
-  loaded: number;
-  total: number;
-  percentage: number;
-}
-
-export const uploadToS3 = async (
-  uploadInfo: UploadCredentialsResponse,
-  file: File,
-  onProgress?: (progress: UploadProgress) => void,
-): Promise<void> => {
-  const { bucket, key, region, credentials } = uploadInfo;
-
-  const s3Client = new S3Client({
-    region,
-    credentials: {
-      accessKeyId: credentials.accessKeyId,
-      secretAccessKey: credentials.secretAccessKey,
-      sessionToken: credentials.sessionToken,
-    },
-    useAccelerateEndpoint: true, // Enable S3 Transfer Acceleration
-    // Disable checksums to prevent "InvalidRequest: The upload was created using a crc32 checksum..." errors
-    // S3 will still use standard ETag verification.
-    requestChecksumCalculation: "WHEN_REQUIRED",
-    responseChecksumValidation: "WHEN_REQUIRED",
-  });
-
-  const upload = new Upload({
-    client: s3Client,
-    params: {
-      Bucket: bucket,
-      Key: key,
-      Body: file,
-      ContentType: file.type,
-    },
-    // Multipart upload settings
-    queueSize: 8, // Increase concurrency (browsers support more via HTTP/2)
-    partSize: 64 * 1024 * 1024, // 64MB chunks (Better throughput for large files)
-    leavePartsOnError: false, // Clean up on failure
-  });
-
-  upload.on("httpUploadProgress", (progress) => {
-    if (onProgress && progress.loaded && progress.total) {
-      onProgress({
-        loaded: progress.loaded,
-        total: progress.total,
-        percentage: Math.round((progress.loaded / progress.total) * 100),
-      });
-    }
-  });
-
-  await upload.done();
 };
 
 // ============================================================================

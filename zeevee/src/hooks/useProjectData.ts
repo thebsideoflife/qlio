@@ -70,7 +70,7 @@ export function useProjectData(projectId: string | undefined) {
         dispatch(setGlobalFraming(project.globalFraming));
       }
 
-      // Load cached segment renders from last completed render job
+      // Load cached segment renders (preserve original hashes - don't backfill)
       if (
         project.lastRenderDownloads &&
         project.lastRenderDownloads.length > 0
