@@ -272,11 +272,12 @@ export function MicrodramaGenerator({
           </DemoSection>
 
           {/* Retain Percentage - only for compact_video */}
-          {RETAIN_ENABLED && isCompactVideo && (
+          {isCompactVideo && (
             <DemoSection label="Retain">
               <RetainPicker
                 selected={targetPercent}
                 onSelect={setTargetPercent}
+                disabled={!RETAIN_ENABLED}
               />
             </DemoSection>
           )}
@@ -541,9 +542,11 @@ function DemoDurationPicker({
 function RetainPicker({
   selected,
   onSelect,
+  disabled = false,
 }: {
   selected: string;
   onSelect: (value: string) => void;
+  disabled?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [customValue, setCustomValue] = useState("");
@@ -563,7 +566,12 @@ function RetainPicker({
   };
 
   return (
-    <div className="flex flex-wrap gap-2">
+    <div
+      className={cn(
+        "flex flex-wrap gap-2",
+        disabled && "opacity-50 pointer-events-none",
+      )}
+    >
       {PERCENT_OPTIONS.map((opt) => {
         const isSelected = selected === opt.value;
         return (
@@ -571,12 +579,15 @@ function RetainPicker({
             <TooltipTrigger asChild>
               <button
                 type="button"
+                disabled={disabled}
                 onClick={() => onSelect(opt.value)}
                 className={cn(
                   "px-4 py-2 rounded-lg text-sm font-medium transition-all border-2",
+                  disabled && "cursor-not-allowed",
                   isSelected
                     ? "bg-blue-600 border-blue-600 text-white shadow-md"
-                    : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-foreground"
+                    : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-foreground",
+                  disabled && "hover:border-border hover:bg-card",
                 )}
               >
                 {opt.label}
@@ -587,7 +598,7 @@ function RetainPicker({
         );
       })}
 
-      {editing ? (
+      {editing && !disabled ? (
         <input
           type="text"
           value={customValue}
@@ -601,15 +612,18 @@ function RetainPicker({
       ) : (
         <button
           type="button"
+          disabled={disabled}
           onClick={() => {
             setCustomValue(isCustom ? `${selected}%` : "");
             setEditing(true);
           }}
           className={cn(
             "px-3 py-2 rounded-lg text-sm font-medium transition-all border-2 border-dashed",
+            disabled && "cursor-not-allowed",
             isCustom
               ? "bg-blue-600 text-white border-blue-600 shadow-md"
-              : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-muted-foreground"
+              : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 text-muted-foreground",
+            disabled && "hover:border-border hover:bg-card",
           )}
         >
           {isCustom ? `${selected}%` : "Other"}
