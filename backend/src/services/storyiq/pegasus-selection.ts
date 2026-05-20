@@ -6,10 +6,12 @@
  */
 
 import type { ContentType, ProposedSegment } from "./types";
+import { Purpose } from "./types";
 
 export interface SelectionOptions {
   targetDuration: number;
   contentType: ContentType;
+  purpose?: Purpose;
   lowerBoundMultiplier?: number;
   upperBoundMultiplier?: number;
 }
@@ -39,24 +41,58 @@ export interface SelectionResult {
 // ============================================================================
 
 /**
- * Score a segment for generic/microdrama content.
- * Uses: clip_fit, vertical_hook_potential, primary_storyline
+ * Score a segment for qlio_microseries (compact) metadata.
+ */
+function scoreMicroseriesSegment(meta: Record<string, unknown>): number {
+  let score = 0.5;
+
+  const role = String(meta.narrative_role || "").toLowerCase();
+  if (role === "main_story") score += 0.25;
+  else if (role === "secondary_story") score += 0.12;
+  else if (role === "subplot") score -= 0.15;
+  else if (role === "filler" || role === "transition") score -= 0.25;
+
+  if (String(meta.microseries_keep || "").toLowerCase() === "yes") score += 0.08;
+
+  // Legacy fields (older Pegasus tasks)
+  const clipFit = String(meta.clip_fit || "").toLowerCase();
+  if (clipFit === "strong") score += 0.15;
+  else if (clipFit === "weak") score -= 0.1;
+
+  return Math.max(0, Math.min(1, score));
+}
+
+/**
+ * Score a segment for episode recap metadata.
+ */
+function scoreRecapSegment(meta: Record<string, unknown>): number {
+  let score = 0.5;
+
+  const importance = String(meta.recap_importance || "").toLowerCase();
+  if (importance === "essential") score += 0.35;
+  else if (importance === "helpful") score += 0.12;
+  else if (importance === "skip") score -= 0.35;
+
+  if (String(meta.recap_keep || "").toLowerCase() === "yes") score += 0.08;
+
+  return Math.max(0, Math.min(1, score));
+}
+
+/**
+ * Score a segment for generic content (legacy clip_fit fields).
  */
 function scoreGenericSegment(meta: Record<string, unknown>): number {
-  let score = 0.5; // Base score
+  let score = 0.5;
 
-  // clip_fit: strong=+0.3, moderate=+0.1, weak=-0.1
   const clipFit = String(meta.clip_fit || "").toLowerCase();
   if (clipFit === "strong") score += 0.3;
   else if (clipFit === "moderate") score += 0.1;
   else if (clipFit === "weak") score -= 0.1;
 
-  // vertical_hook_potential: presence is a positive signal
   if (meta.vertical_hook_potential && String(meta.vertical_hook_potential).length > 10) {
     score += 0.1;
   }
 
-  // primary_storyline: A/B preferred over C for compact
   const storyline = String(meta.primary_storyline || "").toUpperCase();
   if (storyline === "A") score += 0.1;
   else if (storyline === "C") score -= 0.15;
@@ -105,8 +141,17 @@ export function scoreSegment(
   segment: ProposedSegment,
   contentType: ContentType,
   metadata?: Record<string, unknown>,
+  purpose?: Purpose,
 ): number {
   const meta = metadata || {};
+
+  if (purpose === Purpose.EPISODE_RECAP || meta.recap_importance != null) {
+    return scoreRecapSegment(meta);
+  }
+
+  if (meta.narrative_role != null || meta.microseries_keep != null) {
+    return scoreMicroseriesSegment(meta);
+  }
 
   switch (contentType) {
     case "serialized_scifi":
@@ -138,6 +183,7 @@ export function selectSegmentsForTarget(
   const {
     targetDuration,
     contentType,
+    purpose,
     lowerBoundMultiplier = 0.85,
     upperBoundMultiplier = 1.15,
   } = options;
@@ -164,7 +210,7 @@ export function selectSegmentsForTarget(
   // Score all segments
   const scored: ScoredSegment[] = candidates.map((seg, idx) => {
     const meta = pegasusMetadata?.get(idx) || {};
-    const selectionScore = scoreSegment(seg, contentType, meta);
+    const selectionScore = scoreSegment(seg, contentType, meta, purpose);
     return { ...seg, selectionScore, pegasusMetadata: meta };
   });
 

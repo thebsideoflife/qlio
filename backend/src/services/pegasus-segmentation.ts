@@ -21,66 +21,67 @@ import type { ContentType } from "./storyiq/types";
 export const QLIO_PEGASUS_SEGMENT_MIN_SEC = 60;
 export const QLIO_PEGASUS_SEGMENT_MAX_SEC = 180;
 
+// =============================================================================
+// Qlio Microseries Definition (replaces A/B/C prompt)
+// =============================================================================
+
 /**
- * Segment definitions for microdrama editor use: scene units + plot-lane tagging (A/B/C).
- * One definition keeps segments non-overlapping on the timeline; fields carry thread + hook metadata.
+ * Microseries segment definition — simple, editorial-focused.
+ * No A/B/C jargon. Uses `microseries_keep` for downstream filtering.
  */
-export function qlioMicrodramaSegmentDefinitions(): TwelvelabsApi.SegmentDefinition[] {
+export function qlioMicroseriesSegmentDefinitions(): TwelvelabsApi.SegmentDefinition[] {
   return [
     {
       id: "qlio_scene",
       description:
-        "Segment the full video into distinct scenes or substantive beats " +
+        "Segment the video into distinct scenes or substantive beats " +
         "(setting change, major story turn, or clear emotional shift). " +
-        "Each segment should be one coherent unit an editor could turn into a short-form clip candidate. " +
-        "If a microdrama uses interleaved storylines, keep timeline order; tag which narrative thread dominates.",
+        "A microseries cut keeps the main storyline plus one meaningful secondary thread with core cast; " +
+        "tangential subplots, filler, and transitions that don't advance plot should be marked for exclusion. " +
+        "If no clear threads exist, deliver a pared-down main spine only.",
       fields: [
         {
-          name: "summary",
+          name: "title",
           type: "string",
           description:
-            "One pithy sentence (10-20 words) describing what happens in this segment. " +
-            "Write as a third-person scene headline: WHO does WHAT. " +
-            "Example: 'Kirk and Spock discover the time portal and realize McCoy has altered history.' " +
-            "Do NOT use dialogue quotes, character speech, or transcript text — describe the action.",
+            "3-5 words: WHO does WHAT. A punchy scene headline. " +
+            "Example: 'Spock Discovers Time Portal'. " +
+            "Do NOT use dialogue quotes or 'Scene X' labels.",
         },
         {
-          name: "primary_storyline",
+          name: "description",
           type: "string",
           description:
-            "Which narrative thread this segment mainly advances, if any (microdrama A/B/C style).",
-          enum: ["A", "B", "C", "multiple", "none", "unclear"],
+            "7-10 words: One pithy sentence expanding the title. " +
+            "Example: 'Kirk and Spock realize McCoy has altered history through the Guardian.' " +
+            "Third-person, action-focused, no transcript verbatim.",
         },
         {
-          name: "storyline_note",
-          type: "string",
-          description:
-            "If primary_storyline is multiple or unclear, briefly explain overlapping threads or transitions.",
-        },
-        {
-          name: "characters",
+          name: "lead_characters",
           type: "array",
           description:
             "Named or identifiable characters prominently in this segment.",
           items: { type: "string" },
         },
         {
-          name: "dominant_mood",
+          name: "narrative_role",
           type: "string",
           description:
-            "Primary emotional tone (dialogue + performance + visuals).",
+            "Where this segment sits in the story: main_story (core plot), secondary_story (B-plot with main cast), subplot (tangential thread), filler (exposition/transition), or transition (bridging only).",
+          enum: [
+            "main_story",
+            "secondary_story",
+            "subplot",
+            "filler",
+            "transition",
+          ],
         },
         {
-          name: "vertical_hook_potential",
+          name: "microseries_keep",
           type: "string",
           description:
-            "One line: why a viewer might stop scrolling here (tension, reveal, conflict, etc.).",
-        },
-        {
-          name: "clip_fit",
-          type: "string",
-          description: "How suitable this beat is as a standalone short clip.",
-          enum: ["strong", "moderate", "weak"],
+            "Should this segment be kept in the microseries cut? 'yes' for main_story and valuable secondary_story; 'no' for subplot, filler, pure transitions, or content that doesn't advance core narrative.",
+          enum: ["yes", "no"],
         },
       ],
     },
@@ -88,111 +89,87 @@ export function qlioMicrodramaSegmentDefinitions(): TwelvelabsApi.SegmentDefinit
 }
 
 /**
- * Same definitions as {@link qlioMicrodramaSegmentDefinitions}, with extra
- * natural-language goals baked into the segmenter prompt (producer instructions,
- * target runtime, subplot tagging).
+ * Microseries definitions with generation-time guidance.
+ * Only adds user instructions when provided — no default producer suffix.
  */
-export function qlioMicrodramaSegmentDefinitionsForGeneration(opts: {
+export function qlioMicroseriesSegmentDefinitionsForGeneration(opts: {
   userInstructions?: string;
   targetDurationSeconds?: number;
   videoDurationSeconds: number;
 }): TwelvelabsApi.SegmentDefinition[] {
-  const defs = qlioMicrodramaSegmentDefinitions();
+  const defs = qlioMicroseriesSegmentDefinitions();
   const d = defs[0];
   const parts: string[] = [];
+
+  // Only add user instructions if provided (no default noise)
   if (opts.userInstructions?.trim()) {
-    parts.push(`Producer instructions (follow closely): ${opts.userInstructions.trim()}`);
+    parts.push(`Producer instructions: ${opts.userInstructions.trim()}`);
   }
+
   if (opts.targetDurationSeconds && opts.targetDurationSeconds > 0) {
     parts.push(
-      `The intended supercut targets about ${Math.round(opts.targetDurationSeconds)}s of selected material from this ${Math.round(opts.videoDurationSeconds)}s source; mark clip_fit=strong on beats that are essential for hitting that target, weak on tangents.`,
+      `Target ~${Math.round(opts.targetDurationSeconds)}s from this ${Math.round(opts.videoDurationSeconds)}s source.`,
     );
   }
+
   parts.push(
-    "Use primary_storyline A/B/C only when threads are clearly distinct; use multiple if A and B are hard to separate; use none for intros/outros.",
-    'If the producer asks to drop or exclude a subplot (often "C"), label those beats primary_storyline=C.',
-    "When choosing start/end times, prefer boundaries at natural dialogue pauses, line turns, or clear visual beat changes while respecting segment duration limits.",
+    "Prefer boundaries at natural dialogue pauses, scene changes, or clear visual beat shifts.",
   );
+
   const suffix = parts.length ? ` ${parts.join(" ")}` : "";
   return [{ ...d, description: d.description + suffix }];
 }
 
 // =============================================================================
-// Serialized Sci-Fi (Star Trek–style) Profile
+// Episode Recap Definition
 // =============================================================================
 
 /**
- * Segment definitions for serialized sci-fi with interleaved A/B/C plot threading,
- * optimized for episodic structure like Star Trek.
+ * Episode recap segment definition — "previously on" style beats.
  */
-export function trekSerializedSegmentDefinitions(): TwelvelabsApi.SegmentDefinition[] {
+export function episodeRecapSegmentDefinitions(): TwelvelabsApi.SegmentDefinition[] {
   return [
     {
-      id: "qlio_trek_scene",
+      id: "qlio_scene",
       description:
-        "Segment the episode into distinct scenes, tracking interleaved narrative threads. " +
-        "Each segment should be 60-180s representing one coherent scene unit. " +
-        "Tag which storyline (A/B/C) dominates each segment: " +
-        "A = main bridge/captain's mission/primary conflict, " +
-        "B = secondary mission or character B-story, " +
-        "C = tertiary/bottle thread or episodic subplot. " +
-        "A/B/C designation helps downstream filtering (e.g., drop C-plots for condensed version). " +
-        "Maintain timeline order; do not overlap segments.",
+        "Segment the episode for a 'previously on' recap (4-6 snappy beats, 60-90 seconds total). " +
+        "Select only beats essential to understand the current episode's plot: " +
+        "key reveals, character decisions, cliffhangers, and setup for this episode's conflict. " +
+        "Skip filler, comedy relief, and self-contained scenes that don't connect to ongoing arcs.",
       fields: [
         {
-          name: "summary",
+          name: "title",
           type: "string",
           description:
-            "One pithy sentence (10-20 words) describing what happens in this segment. " +
-            "Write as a third-person scene headline: WHO does WHAT. " +
-            "Example: 'Spock builds a mnemonic memory circuit while Kirk falls for Edith Keeler.' " +
-            "Do NOT use dialogue quotes, character speech, or transcript text — describe the action.",
+            "3-5 words: WHO does WHAT. A punchy recap beat headline. " +
+            "Example: 'Picard Refuses Surrender'. No dialogue quotes.",
         },
         {
-          name: "primary_storyline",
+          name: "description",
           type: "string",
           description:
-            "Which narrative thread this segment mainly advances. A = main plot (captain's mission, primary conflict), B = secondary mission or character B-story, C = tertiary subplot or bottle thread.",
-          enum: ["A", "B", "C", "multiple", "none", "unclear"],
+            "7-10 words: One sentence explaining the beat's importance. " +
+            "Example: 'Picard defies Starfleet orders, setting up the season's central conflict.'",
         },
         {
-          name: "storyline_note",
-          type: "string",
-          description:
-            "If primary_storyline is multiple or unclear, explain the overlapping threads or why classification is difficult.",
-        },
-        {
-          name: "characters",
+          name: "lead_characters",
           type: "array",
-          description:
-            "Named characters prominently featured in this segment (e.g., 'Captain Picard', 'Data', 'Spock').",
+          description: "Characters featured in this beat.",
           items: { type: "string" },
         },
         {
-          name: "dominant_mood",
+          name: "recap_importance",
           type: "string",
           description:
-            "Primary emotional tone of the segment (e.g., 'tense', 'philosophical', 'action', 'humorous', 'melancholic').",
+            "How critical is this beat for understanding the story? essential (plot-critical), helpful (provides context), or skip (not needed for recap).",
+          enum: ["essential", "helpful", "skip"],
         },
         {
-          name: "plot_function",
+          name: "recap_keep",
           type: "string",
           description:
-            "Where this segment sits in narrative structure: setup (establishing stakes), conflict (rising tension), climax (peak confrontation), resolution (aftermath), or transition (bridging scenes).",
-          enum: ["setup", "conflict", "climax", "resolution", "transition"],
-        },
-        {
-          name: "vertical_hook_potential",
-          type: "string",
-          description:
-            "One line: why a viewer might stop scrolling here (dramatic reveal, character moment, visual spectacle, etc.).",
-        },
-        {
-          name: "clip_fit",
-          type: "string",
-          description:
-            "How suitable this segment is as a standalone short clip.",
-          enum: ["strong", "moderate", "weak"],
+            "Include in recap? 'yes' for at most 4-6 essential/helpful beats that fit 60-90s; 'no' for everything else.",
+          enum: ["yes", "no"],
         },
       ],
     },
@@ -200,30 +177,32 @@ export function trekSerializedSegmentDefinitions(): TwelvelabsApi.SegmentDefinit
 }
 
 /**
- * Trek serialized definitions with generation-time guidance.
+ * Episode recap definitions with generation-time guidance.
  */
-export function trekSerializedSegmentDefinitionsForGeneration(opts: {
+export function episodeRecapSegmentDefinitionsForGeneration(opts: {
   userInstructions?: string;
-  targetDurationSeconds?: number;
   videoDurationSeconds: number;
+  targetDurationSeconds?: number;
 }): TwelvelabsApi.SegmentDefinition[] {
-  const defs = trekSerializedSegmentDefinitions();
+  const defs = episodeRecapSegmentDefinitions();
   const d = defs[0];
   const parts: string[] = [];
+
   if (opts.userInstructions?.trim()) {
-    parts.push(`Producer instructions (follow closely): ${opts.userInstructions.trim()}`);
+    parts.push(`Producer instructions: ${opts.userInstructions.trim()}`);
   }
-  if (opts.targetDurationSeconds && opts.targetDurationSeconds > 0) {
-    parts.push(
-      `The intended supercut targets about ${Math.round(opts.targetDurationSeconds)}s from this ${Math.round(opts.videoDurationSeconds)}s episode; mark clip_fit=strong on essential A-plot beats, weak on skippable C-plot tangents.`,
-    );
-  }
+
+  const recapTarget =
+    opts.targetDurationSeconds && opts.targetDurationSeconds > 0
+      ? Math.round(opts.targetDurationSeconds)
+      : 75;
+
   parts.push(
-    "Use primary_storyline A/B/C to track distinct narrative threads; use multiple only when threads genuinely interweave in a single scene.",
-    "If producer asks to drop C-plots, mark those segments primary_storyline=C so they can be filtered.",
-    "For classic Trek structure: teaser → A-plot setup → B-plot introduction → interleaved development → convergence → resolution.",
-    "When choosing segment boundaries, prefer scene changes (location shifts, act breaks, commercial-break-style transitions).",
+    "Think like a 'previously on' editor: what does the viewer NEED to remember?",
+    `The finished recap should total 60-90 seconds (target ~${recapTarget}s) — snappy beats only, not long scene blocks.`,
+    "Prefer exactly 4-6 short beats; mark recap_keep=yes only for beats that belong in that runtime.",
   );
+
   const suffix = parts.length ? ` ${parts.join(" ")}` : "";
   return [{ ...d, description: d.description + suffix }];
 }
@@ -238,15 +217,20 @@ export function getSegmentDefinitions(
     userInstructions?: string;
     targetDurationSeconds?: number;
     videoDurationSeconds: number;
+    purpose?: "compact_video" | "full_video" | "highlights" | "episode_recap";
   },
 ): TwelvelabsApi.SegmentDefinition[] {
-  switch (contentType) {
-    case "serialized_scifi":
-      return trekSerializedSegmentDefinitionsForGeneration(opts);
-    case "generic":
-    default:
-      return qlioMicrodramaSegmentDefinitionsForGeneration(opts);
+  // Episode recap uses dedicated definition
+  if (opts.purpose === "episode_recap") {
+    return episodeRecapSegmentDefinitionsForGeneration({
+      userInstructions: opts.userInstructions,
+      videoDurationSeconds: opts.videoDurationSeconds,
+      targetDurationSeconds: opts.targetDurationSeconds,
+    });
   }
+
+  // All other purposes use microseries definition (includes generic and serialized_scifi)
+  return qlioMicroseriesSegmentDefinitionsForGeneration(opts);
 }
 
 // =============================================================================
@@ -283,12 +267,11 @@ export async function createQlioPegasusSegmentationTask(
   params: CreateQlioSegmentationTaskParams,
 ): Promise<TwelvelabsApi.CreateAnalyzeTaskResponse> {
   let segmentDefinitions =
-    params.segmentDefinitions ?? qlioMicrodramaSegmentDefinitions();
+    params.segmentDefinitions ?? qlioMicroseriesSegmentDefinitions();
 
   if (
     params.limitAnalysisToWindow &&
-    (params.startTime !== undefined ||
-      params.endTime !== undefined)
+    (params.startTime !== undefined || params.endTime !== undefined)
   ) {
     throw new Error(
       "[Pegasus] limitAnalysisToWindow is mutually exclusive with startTime/endTime",
@@ -364,12 +347,22 @@ export async function pollPegasusAnalyzeTask(
   }
 
   if (task.status === "failed") {
-    console.error(`[Pegasus] Task ${taskId} failed. Full error:`, JSON.stringify(task.error, null, 2));
-    console.error(`[Pegasus] Task ${taskId} full response:`, JSON.stringify({
-      status: task.status,
-      requestParams: task.requestParams,
-      error: task.error,
-    }, null, 2));
+    console.error(
+      `[Pegasus] Task ${taskId} failed. Full error:`,
+      JSON.stringify(task.error, null, 2),
+    );
+    console.error(
+      `[Pegasus] Task ${taskId} full response:`,
+      JSON.stringify(
+        {
+          status: task.status,
+          requestParams: task.requestParams,
+          error: task.error,
+        },
+        null,
+        2,
+      ),
+    );
     const msg = task.error?.message ?? JSON.stringify(task.error ?? {});
     throw new Error(`[Pegasus] Task ${taskId} failed: ${msg}`);
   }

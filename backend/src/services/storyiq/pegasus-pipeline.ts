@@ -30,10 +30,18 @@ import {
   type TranscriptSegment,
 } from "./types";
 import { classifyContent } from "./pegasus-content-class";
-import { selectSegmentsForTarget, buildPegasusMetadataMap } from "./pegasus-selection";
+import {
+  selectSegmentsForTarget,
+  buildPegasusMetadataMap,
+} from "./pegasus-selection";
 import { generateSportsHighlights } from "./sports-highlights-pipeline";
 
 const PRESIGN_TTL_SEC = 43_200;
+
+/** Default total runtime when Retain is Auto (compact). */
+const COMPACT_DEFAULT_TARGET_PERCENT = 30;
+/** Default "previously on" recap length (1-1.5 min). */
+const EPISODE_RECAP_DEFAULT_TARGET_SEC = 75;
 
 interface PegasusSceneRow {
   start_time: number;
@@ -54,22 +62,23 @@ function pegasusSegmentDurationBounds(options?: {
   };
 }
 
-function shouldApplyDefaultExcludeStorylineC(
-  purpose: Purpose,
-  userInstructions?: string,
-): boolean {
-  if (purpose !== Purpose.COMPACT_VIDEO && purpose !== Purpose.HIGHLIGHTS) {
-    return false;
+/**
+ * Check if segment should be kept based on microseries_keep or recap_keep field.
+ */
+function shouldKeepSegment(meta: Record<string, unknown>): boolean {
+  const microseriesKeep = meta.microseries_keep;
+  const recapKeep = meta.recap_keep;
+  
+  // Check microseries_keep (compact_video) or recap_keep (episode_recap)
+  if (typeof microseriesKeep === "string") {
+    return microseriesKeep.toLowerCase() === "yes";
   }
-  const u = userInstructions?.toLowerCase() ?? "";
-  if (/\binclude\b.*\b(storyline\s*)?c\b/.test(u)) return false;
-  if (/\bkeep\b.*\b(storyline\s*)?c\b/.test(u)) return false;
+  if (typeof recapKeep === "string") {
+    return recapKeep.toLowerCase() === "yes";
+  }
+  
+  // Fallback: keep all if no keep field (full_video, sports, etc.)
   return true;
-}
-
-function normalizeStoryline(raw: unknown): string {
-  if (typeof raw !== "string") return "unclear";
-  return raw.trim().toUpperCase();
 }
 
 // =============================================================================
@@ -401,72 +410,79 @@ function transcriptSnippetForRange(
 
 /**
  * Extract title from Pegasus metadata.
- * Pegasus is now prompted to return a pithy single-sentence summary.
- * Falls back to other metadata fields if summary is missing or too short.
+ * Prefers new `title` field (3–5 words), falls back to `description` or legacy `summary`.
  */
 function titleFromPegasusRow(meta: Record<string, unknown>): string {
+  // Prefer new title field (3-5 words)
+  const title = typeof meta.title === "string" ? meta.title.trim() : "";
+  if (title && title.length >= 5 && title.length <= 60) {
+    return title;
+  }
+
+  // Fallback: first 5 words of description
+  const description = typeof meta.description === "string" ? meta.description.trim() : "";
+  if (description) {
+    const words = description.split(/\s+/).slice(0, 5).join(" ");
+    if (words.length >= 5) {
+      return words.length <= 50 ? words : `${words.slice(0, 47)}…`;
+    }
+  }
+
+  // Legacy fallback: summary field (from old prompts)
   const summary = typeof meta.summary === "string" ? meta.summary.trim() : "";
-  
-  // Pegasus should return a pithy sentence — use it if it looks valid
-  // (at least 5 words, not just a dialogue fragment)
-  const wordCount = summary.split(/\s+/).filter(Boolean).length;
-  if (summary && wordCount >= 5 && summary.length >= 20) {
-    // Truncate if over 100 chars
-    if (summary.length <= 100) return summary;
-    const cut = summary.lastIndexOf(" ", 97);
-    return cut > 50 ? `${summary.slice(0, cut)}…` : `${summary.slice(0, 97)}…`;
+  if (summary && summary.length >= 10) {
+    if (summary.length <= 60) return summary;
+    const cut = summary.lastIndexOf(" ", 57);
+    return cut > 20 ? `${summary.slice(0, cut)}…` : `${summary.slice(0, 57)}…`;
   }
 
-  // Fallback: try vertical_hook_potential
-  const hook =
-    typeof meta.vertical_hook_potential === "string"
-      ? meta.vertical_hook_potential.trim()
-      : "";
-  if (hook && hook.split(/\s+/).length >= 4) {
-    return hook.length <= 100 ? hook : `${hook.slice(0, 97)}…`;
-  }
-
-  // Fallback: compose from characters + mood
-  const chars = meta.characters;
-  const charLine =
-    Array.isArray(chars) && chars.some((x) => typeof x === "string")
-      ? (chars as unknown[])
-          .filter((x): x is string => typeof x === "string")
-          .map((x) => x.trim())
-          .filter(Boolean)
-          .slice(0, 3)
-          .join(", ")
-      : "";
-
-  const mood =
-    typeof meta.dominant_mood === "string" ? meta.dominant_mood.trim() : "";
-
-  if (charLine && mood) {
-    return `${charLine} — ${mood}`;
-  }
-  if (charLine) {
-    return charLine;
+  // Last resort: use lead_characters or characters
+  const chars = meta.lead_characters || meta.characters;
+  if (Array.isArray(chars) && chars.length > 0) {
+    const charLine = (chars as unknown[])
+      .filter((x): x is string => typeof x === "string")
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .slice(0, 2)
+      .join(" & ");
+    if (charLine) return charLine;
   }
 
   return "Scene";
 }
 
+/**
+ * Extract description/reasoning from Pegasus metadata.
+ * Prefers new `description` field (7–10 words), falls back to legacy `summary`.
+ */
 function reasoningFromRow(meta: Record<string, unknown>): string {
   const bits: string[] = [];
-  if (typeof meta.summary === "string" && meta.summary.trim()) {
-    bits.push(meta.summary.trim());
+
+  // Prefer new description field
+  const description = typeof meta.description === "string" ? meta.description.trim() : "";
+  if (description) {
+    bits.push(description);
+  } else {
+    // Legacy fallback: summary
+    const summary = typeof meta.summary === "string" ? meta.summary.trim() : "";
+    if (summary) {
+      bits.push(summary);
+    }
   }
-  const lane = normalizeStoryline(meta.primary_storyline);
-  if (lane && lane !== "UNCLEAR") {
-    bits.push(`Storyline: ${lane}.`);
+
+  // Add narrative role if present
+  const role = typeof meta.narrative_role === "string" ? meta.narrative_role : "";
+  if (role && role !== "main_story") {
+    bits.push(`Role: ${role.replace(/_/g, " ")}.`);
   }
-  if (typeof meta.vertical_hook_potential === "string") {
-    bits.push(meta.vertical_hook_potential.trim());
+
+  // Add recap importance if present
+  const recapImportance = typeof meta.recap_importance === "string" ? meta.recap_importance : "";
+  if (recapImportance) {
+    bits.push(`Recap: ${recapImportance}.`);
   }
-  if (typeof meta.clip_fit === "string") {
-    bits.push(`Clip fit: ${meta.clip_fit}.`);
-  }
-  return bits.join(" ").slice(0, 1500);
+
+  return bits.join(" ").slice(0, 500);
 }
 
 function rowsToProposedSegments(
@@ -480,17 +496,17 @@ function rowsToProposedSegments(
     let end = Math.min(videoDuration, row.end_time);
     if (end - start < 2) continue;
     const meta = row.metadata;
-    const lane = normalizeStoryline(meta.primary_storyline);
+    
+    // Extract narrative role for section tagging
+    const role = typeof meta.narrative_role === "string" ? meta.narrative_role : "";
+    
     out.push({
       startTime: start,
       endTime: end,
       title: titleFromPegasusRow(meta),
       reasoning: reasoningFromRow(meta),
       expectedContent: transcriptSnippetForRange(transcript, start, end),
-      section:
-        lane && ["A", "B", "C", "MULTIPLE", "NONE"].includes(lane)
-          ? `storyline-${lane}`
-          : undefined,
+      section: role ? `role-${role}` : undefined,
     });
   }
   out.sort((a, b) => a.startTime - b.startTime);
@@ -539,11 +555,28 @@ export async function generateSegmentsWithPegasus(
   // Resolve video context (handles chunked videos)
   const videoContext = await resolveVideoContextForPegasus(twelvelabs, metadata.assetId);
 
-  const targetSeconds =
+  let targetSeconds =
     targetDuration ??
     (options.targetPercent
       ? Math.round((metadata.duration * options.targetPercent) / 100)
       : undefined);
+
+  // Auto Retain / no explicit target: apply product defaults so output isn't full-length
+  if (!targetSeconds || targetSeconds <= 0) {
+    if (purpose === Purpose.EPISODE_RECAP) {
+      targetSeconds = EPISODE_RECAP_DEFAULT_TARGET_SEC;
+      console.log(
+        `[StoryIQ Pegasus] episode_recap default target: ${targetSeconds}s`,
+      );
+    } else if (purpose === Purpose.COMPACT_VIDEO) {
+      targetSeconds = Math.round(
+        (metadata.duration * COMPACT_DEFAULT_TARGET_PERCENT) / 100,
+      );
+      console.log(
+        `[StoryIQ Pegasus] compact_video default target: ${targetSeconds}s (${COMPACT_DEFAULT_TARGET_PERCENT}% of ${Math.round(metadata.duration)}s)`,
+      );
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Classify video (or skip if assumeSports=true or user provided prompt)
@@ -573,9 +606,9 @@ export async function generateSegmentsWithPegasus(
   }
 
   // -------------------------------------------------------------------------
-  // Sports → replay detection pipeline
+  // Sports → replay detection pipeline (only for highlights, not episode_recap)
   // -------------------------------------------------------------------------
-  if (contentType === "sports") {
+  if (contentType === "sports" && purpose !== Purpose.EPISODE_RECAP) {
     console.log("[Pegasus] Routing to sports replay pipeline");
     return generateSportsHighlights(twelvelabs, {
       metadata,
@@ -588,12 +621,27 @@ export async function generateSegmentsWithPegasus(
   }
 
   // -------------------------------------------------------------------------
-  // Get segment definitions for content type
+  // Get segment definitions for content type and purpose
   // -------------------------------------------------------------------------
+  const purposeKey =
+    options.format ??
+    (purpose === Purpose.EPISODE_RECAP
+      ? "episode_recap"
+      : purpose === Purpose.FULL_VIDEO
+        ? "full_video"
+        : purpose === Purpose.HIGHLIGHTS
+          ? "highlights"
+          : "compact_video");
+
   const segmentDefinitions = getSegmentDefinitions(contentType, {
     userInstructions,
     targetDurationSeconds: targetSeconds,
     videoDurationSeconds: metadata.duration,
+    purpose: purposeKey as
+      | "compact_video"
+      | "full_video"
+      | "highlights"
+      | "episode_recap",
   });
 
   const { minSegmentDuration, maxSegmentDuration } =
@@ -657,15 +705,18 @@ export async function generateSegmentsWithPegasus(
     throw new Error("[Pegasus] No video context available");
   }
 
-  // Apply C-storyline filter for trek/generic profiles
-  if (shouldApplyDefaultExcludeStorylineC(purpose, userInstructions)) {
-    const before = rows.length;
-    rows = rows.filter(
-      (r) => normalizeStoryline(r.metadata.primary_storyline) !== "C",
-    );
-    if (rows.length < before) {
+  // -------------------------------------------------------------------------
+  // Apply microseries_keep / recap_keep filter (replaces A/B/C filter + scoring)
+  // -------------------------------------------------------------------------
+  const beforeFilter = rows.length;
+
+  // For compact_video and episode_recap, trust Pegasus keep decisions
+  // For full_video and highlights (sports), keep all segments
+  if (purpose === Purpose.COMPACT_VIDEO || purpose === Purpose.EPISODE_RECAP) {
+    rows = rows.filter((r) => shouldKeepSegment(r.metadata));
+    if (rows.length < beforeFilter) {
       console.log(
-        `[StoryIQ Pegasus] Excluded ${before - rows.length} beat(s) tagged storyline C`,
+        `[StoryIQ Pegasus] Filtered ${beforeFilter - rows.length} segments via microseries_keep/recap_keep`,
       );
     }
   }
@@ -676,36 +727,39 @@ export async function generateSegmentsWithPegasus(
     throw new Error("[Pegasus] No segments after parsing and filters");
   }
 
-  // -------------------------------------------------------------------------
-  // Step 5: Scored selection toward target (for HIGHLIGHTS/COMPACT with target)
-  // -------------------------------------------------------------------------
-  let selectionNotes: string[] = [];
+  let selectionNotes: string[] = [
+    `${beforeFilter} raw → ${proposed.length} after keep filter`,
+  ];
+
+  // Trim total runtime toward target (compact only — recap trusts Pegasus recap_keep + prompt)
   if (
     targetSeconds &&
     targetSeconds > 0 &&
-    (purpose === Purpose.HIGHLIGHTS || purpose === Purpose.COMPACT_VIDEO)
+    purpose === Purpose.COMPACT_VIDEO
   ) {
-    console.log(
-      `[StoryIQ Pegasus] Running scored selection (${proposed.length} candidates, target=${targetSeconds}s)`,
+    const totalBefore = proposed.reduce(
+      (sum, s) => sum + (s.endTime - s.startTime),
+      0,
     );
-
-    const pegasusMetadata = buildPegasusMetadataMap(rows);
-    const selection = selectSegmentsForTarget(
-      proposed,
-      { targetDuration: targetSeconds, contentType },
-      pegasusMetadata,
-    );
-
-    console.log(
-      `[StoryIQ Pegasus] Selection: ${selection.selected.length} selected, ${selection.dropped.length} dropped, ` +
-        `${Math.round(selection.totalDuration)}s total, hitBand=${selection.hitTargetBand}`,
-    );
-
-    proposed = selection.selected;
-    selectionNotes = selection.scoringNotes;
-
-    if (proposed.length === 0) {
-      throw new Error("[Pegasus] No segments after selection");
+    if (totalBefore > targetSeconds * 1.05) {
+      console.log(
+        `[StoryIQ Pegasus] Running duration selection (${proposed.length} candidates, ${Math.round(totalBefore)}s → target ${targetSeconds}s)`,
+      );
+      const pegasusMetadata = buildPegasusMetadataMap(rows);
+      const selection = selectSegmentsForTarget(
+        proposed,
+        { targetDuration: targetSeconds, contentType, purpose },
+        pegasusMetadata,
+      );
+      proposed = selection.selected;
+      selectionNotes = [
+        ...selectionNotes,
+        ...selection.scoringNotes,
+        `Duration trim: ${Math.round(totalBefore)}s → ${Math.round(selection.totalDuration)}s`,
+      ];
+      if (proposed.length === 0) {
+        throw new Error("[Pegasus] No segments after duration selection");
+      }
     }
   }
 

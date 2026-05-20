@@ -188,8 +188,8 @@ export async function generateWithStoryIQ(
 export interface GenerateMetadata {
   userPrompt?: string;
   videoDuration?: number;
-  /** IQ panel: highlights-only flow for now */
-  purpose?: "compact_video" | "highlights" | "full_video";
+  /** IQ panel purpose */
+  purpose?: "compact_video" | "highlights" | "full_video" | "episode_recap";
   /** Omitted or null = Auto (no fixed %). 25 / 50 / 75 when set. */
   targetPercent?: number | null;
   /** Skip classification and assume sports content (faster for known sports videos) */
@@ -222,6 +222,9 @@ export function mapMetadataToGoals(metadata: GenerateMetadata): StoryIQGoals {
       break;
     case "full_video":
       purpose = Purpose.FULL_VIDEO;
+      break;
+    case "episode_recap":
+      purpose = Purpose.EPISODE_RECAP;
       break;
     case "compact_video":
     default:

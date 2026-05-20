@@ -577,7 +577,7 @@ export function AssetCard({
               </p>
               <Button size="sm" onClick={handleCreateProject}>
                 <PlusCircle className="h-4 w-4 mr-2" />
-                Create First
+                Create First Microseries
               </Button>
             </div>
           ) : (
@@ -628,7 +628,7 @@ export function AssetCard({
                               {index + 1}.
                             </span>
                             <EditableTitle
-                              title={project.title || "Untitled"}
+                              title={project.title || "Untitled Microseries"}
                               onSave={(newTitle) =>
                                 handleUpdateProjectTitle(project.projectId, newTitle)
                               }

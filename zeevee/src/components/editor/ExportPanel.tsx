@@ -565,17 +565,22 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
             </ScrollArea>
           </ExportColumn>
 
-          {/* Metadata */}
+          {/* Metadata (UI preview - backend wiring TBD) */}
           <ExportColumn>
             <ColumnHeader
               title="Metadata"
               trailing={
-                <Switch
-                  checked={metadataEnabled}
-                  onCheckedChange={setMetadataEnabled}
-                  disabled={isProcessing}
-                  aria-label="Include metadata"
-                />
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                    Coming soon
+                  </span>
+                  <Switch
+                    checked={metadataEnabled}
+                    onCheckedChange={setMetadataEnabled}
+                    disabled={isProcessing}
+                    aria-label="Include metadata"
+                  />
+                </div>
               }
             />
             <div
@@ -675,12 +680,17 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
               <ConfigSection
                 title="Ads"
                 trailing={
-                  <Switch
-                    checked={adsEnabled}
-                    onCheckedChange={setAdsEnabled}
-                    disabled={isProcessing}
-                    aria-label="Enable ads"
-                  />
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                      Coming soon
+                    </span>
+                    <Switch
+                      checked={adsEnabled}
+                      onCheckedChange={setAdsEnabled}
+                      disabled={isProcessing}
+                      aria-label="Enable ads"
+                    />
+                  </div>
                 }
               >
                 <div
@@ -760,7 +770,14 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
 
               <Separator />
 
-              <ConfigSection title="Video Format">
+              <ConfigSection
+                title="Video Format"
+                trailing={
+                  <span className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                    Coming soon
+                  </span>
+                }
+              >
                 <RadioGroup
                   name="video-format"
                   value={videoFormat}

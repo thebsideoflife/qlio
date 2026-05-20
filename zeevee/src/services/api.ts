@@ -245,7 +245,7 @@ export interface GenerateSegmentsResponse {
   status: "pending";
 }
 
-export type GenerationPurpose = "compact_video" | "highlights" | "full_video";
+export type GenerationPurpose = "compact_video" | "highlights" | "full_video" | "episode_recap";
 
 export interface GenerateSegmentsRequest {
   userPrompt?: string;

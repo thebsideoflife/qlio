@@ -1,9 +1,9 @@
 import React, { useCallback } from "react";
 import { Timeline } from "@/components/editor/Timeline";
 import {
-  MicrodramaGenerator,
+  MicroseriesGenerator,
   type GenerateRequest,
-} from "@/components/editor/MicrodramaGenerator";
+} from "@/components/editor/MicroseriesGenerator";
 import { CaptionOverlay } from "@/components/editor/CaptionOverlay";
 import { CaptionEditor } from "@/components/editor/CaptionEditor";
 import { FramingSlider } from "@/components/editor/FramingSlider";
@@ -540,7 +540,9 @@ export default function Editor() {
           ? "highlights"
           : format === "full_video"
             ? "full_video"
-            : "compact_video";
+            : format === "episode_recap"
+              ? "episode_recap"
+              : "compact_video";
 
       // Start async generation job — backend handles auto-framing if requested
       const { jobId } = await generateSegments(projectId, {
@@ -902,7 +904,7 @@ export default function Editor() {
 
               <div className="flex-1 overflow-y-auto relative">
                 {activeTab === "ai" && (
-                  <MicrodramaGenerator
+                  <MicroseriesGenerator
                     onGenerate={handleGenerateSegments}
                     isGenerating={isGenerating}
                     generationStatus={generationStatus}
