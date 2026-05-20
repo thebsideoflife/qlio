@@ -70,6 +70,8 @@ export enum Purpose {
   COMPACT_VIDEO = "compact_video",
   /** Highlights - key moments (treated same as compact_video) */
   HIGHLIGHTS = "highlights",
+  /** Episode recap - "previously on" style summary */
+  EPISODE_RECAP = "episode_recap",
 }
 
 /**
@@ -88,8 +90,8 @@ export function getPurposeConstraints(purpose: Purpose): {
 /**
  * The three content types we support.
  * - sports: Uses replay detection pipeline (what did the broadcast replay?)
- * - serialized_scifi: Trek-style A/B/C plot threading
- * - generic: Standard microdrama segmentation
+ * - serialized_scifi: Trek-style narrative threading
+ * - generic: Standard microseries segmentation
  */
 export type ContentType = "sports" | "serialized_scifi" | "generic";
 

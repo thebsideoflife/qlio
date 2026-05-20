@@ -63,67 +63,64 @@ export interface ReplayDetectionResult {
 // ============================================================================
 
 /**
- * Segment definitions optimized for detecting replay sequences in sports broadcasts.
+ * Segment definitions optimized for detecting instant replay sequences in sports broadcasts.
  *
- * Key fields:
- * - is_replay: Boolean for whether this is replay footage vs live action
- * - replay_type: slow_mo | multi_angle | super_slo_mo | standard_replay
- * - replay_of_timestamp: Approximate timestamp of the original action
- * - play_description: What happened in the play
+ * Key insight: We only want actual replays (slow-mo, multi-angle, super-slo).
+ * Ignore: live action, timeouts, crowd shots, commercials, player interviews.
  */
 export function sportsReplayDetectionDefinitions(): TwelvelabsApi.SegmentDefinition[] {
   return [
     {
       id: "qlio_replay_detector",
       description:
-        "Analyze this sports broadcast with FINE-GRAINED timeline segments. " +
-        "Each segment is one contiguous shot: either LIVE GAME ACTION (real-time field/play) or REPLAY FOOTAGE " +
-        "(slow motion, repeated angle, 'look at that again', super-slo close-up, same play from a new camera). " +
-        "Replay segments must be tagged footage_type=replay and should typically be SHORT (often 5–30s per angle). " +
-        "Live segments should not span multiple unrelated plays—break at stoppages and shot changes where possible. " +
-        "For each replay segment, set original_play_timestamp to when the live action occurred on the clock (seconds earlier on the timeline).",
+        "Detect INSTANT REPLAY footage only. " +
+        "Tag segments as footage_type=replay ONLY when they show actual game action replays: " +
+        "slow motion, super slow-mo close-ups, multi-angle replays of the same play. " +
+        "DO NOT tag live action, timeouts, crowd reactions, player walks, or breaks as replay.",
       fields: [
         {
           name: "footage_type",
           type: "string",
           description:
-            "Whether this segment shows live action or replay footage.",
+            "Is this segment instant replay footage? 'replay' = slow-mo or multi-angle replay of game action. 'live_action' = everything else (real-time play, breaks, crowd shots).",
           enum: ["live_action", "replay"],
         },
         {
           name: "replay_type",
           type: "string",
           description:
-            "If footage_type=replay: what kind of replay. slow_mo=slow motion, multi_angle=same play from different camera, super_slo_mo=extreme slow motion close-up, standard=normal speed replay.",
+            "If footage_type=replay: slow_mo, multi_angle, super_slo_mo, or standard. Use n/a for live_action.",
           enum: ["slow_mo", "multi_angle", "super_slo_mo", "standard", "n/a"],
         },
         {
           name: "original_play_timestamp",
           type: "number",
           description:
-            "If footage_type=replay: approximate timestamp (in seconds) when the original live action occurred. Usually 5-60 seconds before the replay.",
+            "If footage_type=replay: timestamp (seconds) of the original live play. Usually 5-60s before this replay.",
         },
         {
-          name: "play_description",
+          name: "title",
           type: "string",
           description:
-            "The ACTION being shown (not a meta-description). " +
-            "For replay footage: name the exciting play itself — 'Cole Young line drive to center', 'diving catch by Martinez', 'close play at second base'. " +
-            "DO NOT say 'replay of X' or 'showing the X' — just describe the action directly. " +
-            "For live action: describe the current play happening on the field.",
+            "3–5 words: The play being replayed. 'Martinez Diving Catch', 'Cole Line Drive'. " +
+            "No meta-language like 'replay of' — just the action.",
+        },
+        {
+          name: "description",
+          type: "string",
+          description:
+            "7–10 words: Describe the play. 'Martinez makes a spectacular diving catch.'",
         },
         {
           name: "players_involved",
           type: "array",
-          description:
-            "Players prominently featured (names, jersey numbers, or roles like 'quarterback', 'goalkeeper').",
+          description: "Players featured (names, numbers, or positions).",
           items: { type: "string" },
         },
         {
           name: "game_context",
           type: "string",
-          description:
-            "Brief game situation context (e.g., '4th quarter, 2 min left', 'overtime', 'penalty shootout').",
+          description: "Brief context (e.g., 'bottom 9th, 2 outs').",
         },
       ],
     },
@@ -146,14 +143,8 @@ export function sportsReplayDetectionDefinitionsForGeneration(opts: {
   }
 
   parts.push(
-    "SEGMENT LENGTH: Prefer SHORT spans. Typical replay angle 5–25s; live shots between whistles 10–45s. " +
-      "Split when camera angle, scene, or replay treatment changes; do not absorb multiple unrelated plays in one segment.",
-    "CRITICAL: Accurately distinguish between LIVE ACTION and REPLAY footage. " +
-      "Only mark segments as 'replay' when they show actual game action replays, NOT: players walking off, crowd shots, timeouts, breaks, commercials.",
-    "Replay indicators: slow motion, instant replay graphics, same play from new angle, commentator saying 'let's see that again'.",
-    "Live action indicators: real-time speed, game clock running, play-by-play commentary.",
-    "For each replay, estimate when the original play happened (look back 5-60 seconds for the live version).",
-    "play_description must describe THE ACTION (e.g. 'diving catch by Martinez') not meta-descriptions (e.g. 'replay of the catch'). This becomes the title.",
+    "ONLY tag actual instant replays (slow-mo, multi-angle). Ignore live action, breaks, crowds.",
+    "Replay = slow motion or repeated angle of a play. If unsure, mark as live_action.",
   );
 
   const suffix = parts.length ? ` ${parts.join(" ")}` : "";
@@ -204,7 +195,13 @@ export function parseReplayDetectionResponse(
     const footageType = String(meta.footage_type || "live_action");
     const replayType = String(meta.replay_type || "n/a");
     const originalTs = meta.original_play_timestamp;
-    const playDesc = String(meta.play_description || "Unknown play");
+    
+    // Prefer new title field, fall back to play_description
+    const title = typeof meta.title === "string" ? meta.title.trim() : "";
+    const description = typeof meta.description === "string" ? meta.description.trim() : "";
+    const legacyDesc = String(meta.play_description || "");
+    const playDesc = title || description || legacyDesc || "Unknown play";
+    
     const players = Array.isArray(meta.players_involved)
       ? meta.players_involved.map(String)
       : [];
@@ -463,7 +460,7 @@ export function replayClipsToProposedSegments(
 
 /**
  * Generate intelligent segment titles from replay data.
- * Cleans up Pegasus descriptions to be action-focused titles.
+ * Prefers new meta.title field; falls back to reason_replayed cleanup.
  */
 function generateSegmentTitle(play: ReplayedPlay, index: number): string {
   let title = play.reason_replayed.trim();
@@ -471,42 +468,24 @@ function generateSegmentTitle(play: ReplayedPlay, index: number): string {
   // Strip meta-prefixes like "Replay of", "Showing the", etc.
   title = title
     .replace(/^(replay of|replaying|showing the|look at this|watch this|here's the)\s*/i, "")
-    .replace(/^(the\s+)?/i, ""); // Remove leading "the"
+    .replace(/^(the\s+)?/i, "");
 
-  // Filter out boring/generic descriptions that aren't about game action
-  const boringPatterns = [
-    /players?\s+(walk|walking|leave|leaving|head|heading)\s+(off|to|toward)/i,
-    /crowd\s+(cheering|reacting|celebrating)/i,
-    /scoreboard/i,
-    /commercial\s+break/i,
-    /between\s+innings/i,
-    /timeout/i,
-    /break\s+in\s+action/i,
-  ];
+  // If we have a good action-focused title (3-5 words, not boring), use it
+  const wordCount = title.split(/\s+/).length;
+  const isBoring = /players?\s+walk|crowd\s+cheer|scoreboard|timeout|break/i.test(title);
 
-  const isBoring = boringPatterns.some((p) => p.test(title));
-
-  // If we have a good action-focused title, use it
-  if (!isBoring && title.length > 5 && title.length < 80) {
-    // Capitalize first letter, remove trailing punctuation
+  if (!isBoring && wordCount >= 2 && wordCount <= 8 && title.length > 5 && title.length < 60) {
     const cleaned = title.charAt(0).toUpperCase() + title.slice(1);
     return cleaned.replace(/[.!?]+$/, "");
   }
 
-  // Try to use player names if available
+  // Try player names
   if (play.players_involved && play.players_involved.length > 0) {
-    const player = play.players_involved[0];
-    return `${player}'s Play`;
+    return `${play.players_involved[0]}'s Play`;
   }
 
-  // Fallback to importance-based generic title
-  const prefix =
-    play.importance === "critical"
-      ? "Key Play"
-      : play.importance === "high"
-        ? "Highlight"
-        : "Play";
-  return `${prefix} ${index + 1}`;
+  // Fallback
+  return play.importance === "critical" ? `Key Play ${index + 1}` : `Highlight ${index + 1}`;
 }
 
 /**

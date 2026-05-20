@@ -81,7 +81,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       };
     }
 
-    // 3. (Optional) Generate Initial Microdrama Segments
+    // 3. (Optional) Generate Initial Microseries Segments
     // This logic is now primarily handled in the Editor via 'generateSegments' API,
     // but we can keep a lightweight version here for initial project creation or initialize empty.
 

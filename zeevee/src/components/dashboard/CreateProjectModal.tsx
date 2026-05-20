@@ -52,7 +52,7 @@ export function CreateProjectModal({
     >
       <DialogContent className="sm:max-w-[420px]">
         <DialogHeader>
-          <DialogTitle>Create Project</DialogTitle>
+          <DialogTitle>Create Microseries</DialogTitle>
           <p className="text-sm text-muted-foreground mt-1.5">
             Start editing this video. You can configure format and style in the
             editor.

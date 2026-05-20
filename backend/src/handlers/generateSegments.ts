@@ -46,8 +46,8 @@ interface AsyncJobPayload {
   jobId: string;
   autoFrame?: boolean;
   targetAspectRatio?: string;
-  /** Generation purpose (IQ flow uses highlights) */
-  purpose?: "compact_video" | "highlights" | "full_video";
+  /** Generation purpose */
+  purpose?: "compact_video" | "highlights" | "full_video" | "episode_recap";
   /** Omitted or null = Auto. Otherwise 25 / 50 / 75 (% of source length). */
   targetPercent?: number | null;
   /** Min per-segment length in seconds */

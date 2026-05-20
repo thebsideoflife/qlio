@@ -42,7 +42,7 @@ export interface GenerateRequest {
   platform: string;
 }
 
-interface MicrodramaGeneratorProps {
+interface MicroseriesGeneratorProps {
   onGenerate: (request: GenerateRequest) => Promise<void>;
   isGenerating: boolean;
   generationStatus?: GenerationJob | null;
@@ -115,8 +115,13 @@ const FORMATS: Option[] = [
     value: "episode_recap",
     label: "Ep Recap",
     icon: Repeat,
-    tooltip: "Episode summary",
-    disabled: true,
+    tooltip: "Previously on... 4-6 beats, ~1-1.5 min",
+  },
+  {
+    value: "full_video",
+    label: "Full Video",
+    icon: LayoutGrid,
+    tooltip: "Split into chapters (1-3 min each)",
   },
   {
     value: "trailer",
@@ -124,12 +129,6 @@ const FORMATS: Option[] = [
     icon: PlayCircle,
     tooltip: "Promo preview",
     disabled: true,
-  },
-  {
-    value: "full_video",
-    label: "Full Video",
-    icon: LayoutGrid,
-    tooltip: "Split into chapters (1-3 min each)",
   },
   {
     value: "season_recap",
@@ -146,7 +145,7 @@ const SEGMENT_DURATION_DEFAULTS: Record<string, { min: number; max: number }> = 
   compact_video: { min: 60, max: 180 },
   full_video: { min: 60, max: 180 },
   trailer: { min: 60, max: 180 },
-  episode_recap: { min: 60, max: 180 },
+  episode_recap: { min: 10, max: 20 },
   season_recap: { min: 60, max: 180 },
 };
 
@@ -165,7 +164,7 @@ const DEFAULT_FORMAT = "compact_video";
 
 const RETAIN_ENABLED = false;
 
-export function MicrodramaGenerator({
+export function MicroseriesGenerator({
   onGenerate,
   isGenerating,
   generationStatus,
@@ -173,7 +172,7 @@ export function MicrodramaGenerator({
   autoFrameEnabled,
   onAutoFrameChange,
   onPlatformChange,
-}: MicrodramaGeneratorProps) {
+}: MicroseriesGeneratorProps) {
   const [userPrompt, setUserPrompt] = useState(initialUserPrompt || "");
 
   const [assetType, setAssetType] = useState(DEFAULT_ASSET_TYPE);
