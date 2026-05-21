@@ -151,6 +151,8 @@ infrastructure/layers/
 *.tfvars.json
 .terraform.lock.hcl
 .terraform.tfstate.lock.info
+*.plan.out
+plan.out
 
 # Backend Build Artifacts
 backend/dist/
