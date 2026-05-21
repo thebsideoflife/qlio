@@ -537,11 +537,11 @@ resource "aws_lambda_function" "analyze_framing" {
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.analyze_framing_zip.output_base64sha256
   timeout          = 900  # 15 minutes — batch framing can be slow
-  memory_size      = 1024 # FFmpeg + Gemini SDK needs more memory
+  memory_size      = 3008 # Max Lambda memory — FFmpeg cuts multiple long segments in parallel
   layers           = [aws_lambda_layer_version.ffmpeg.arn]
 
   ephemeral_storage {
-    size = 2048 # 2GB — for FFmpeg segment clips in /tmp
+    size = 4096 # 4GB — for FFmpeg segment clips in /tmp (long segments need space)
   }
 
   environment {

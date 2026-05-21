@@ -64,16 +64,27 @@ function scoreMicroseriesSegment(meta: Record<string, unknown>): number {
 
 /**
  * Score a segment for episode recap metadata.
+ * New schema: story_function (setup | escalation | pivot | payoff)
+ * Legacy schema: recap_importance (essential | helpful | skip)
  */
 function scoreRecapSegment(meta: Record<string, unknown>): number {
   let score = 0.5;
 
-  const importance = String(meta.recap_importance || "").toLowerCase();
-  if (importance === "essential") score += 0.35;
-  else if (importance === "helpful") score += 0.12;
-  else if (importance === "skip") score -= 0.35;
+  // New schema: story_function
+  const storyFunction = String(meta.story_function || "").toLowerCase();
+  if (storyFunction === "payoff") score += 0.3;
+  else if (storyFunction === "pivot") score += 0.25;
+  else if (storyFunction === "escalation") score += 0.15;
+  else if (storyFunction === "setup") score += 0.05;
+  // Legacy schema: recap_importance (backward compat for existing data)
+  else {
+    const importance = String(meta.recap_importance || "").toLowerCase();
+    if (importance === "essential") score += 0.35;
+    else if (importance === "helpful") score += 0.12;
+    else if (importance === "skip") score -= 0.35;
+  }
 
-  if (String(meta.recap_keep || "").toLowerCase() === "yes") score += 0.08;
+  if (String(meta.recap_keep || "").toLowerCase() === "yes") score += 0.1;
 
   return Math.max(0, Math.min(1, score));
 }
@@ -145,7 +156,7 @@ export function scoreSegment(
 ): number {
   const meta = metadata || {};
 
-  if (purpose === Purpose.EPISODE_RECAP || meta.recap_importance != null) {
+  if (purpose === Purpose.EPISODE_RECAP || meta.story_function != null || meta.recap_importance != null) {
     return scoreRecapSegment(meta);
   }
 

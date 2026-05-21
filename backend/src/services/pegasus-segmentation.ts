@@ -126,49 +126,58 @@ export function qlioMicroseriesSegmentDefinitionsForGeneration(opts: {
 
 /**
  * Episode recap segment definition — "previously on" style beats.
+ *
+ * Design goal: The selected beats should cut together into a cohesive mini-story,
+ * not just isolated "big moments." Think Game of Thrones recaps (surfaces the
+ * oath/betrayal/item that pays off in THIS episode) or Breaking Bad recaps
+ * (connects prior choices → upcoming consequences).
  */
 export function episodeRecapSegmentDefinitions(): TwelvelabsApi.SegmentDefinition[] {
   return [
     {
       id: "qlio_scene",
       description:
-        "Segment the episode for a 'previously on' recap (4-6 snappy beats, 60-90 seconds total). " +
-        "Select only beats essential to understand the current episode's plot: " +
-        "key reveals, character decisions, cliffhangers, and setup for this episode's conflict. " +
-        "Skip filler, comedy relief, and self-contained scenes that don't connect to ongoing arcs.",
+        "Create a 'Previously on...' recap: 4-6 beats (~60-90 seconds) that form a cohesive mini-story. " +
+        "The beats should CONNECT — each one sets up or pays off another. " +
+        "Include: turning points, confrontations, revelations, promises/threats that will matter. " +
+        "Skip: exposition dumps, travelogue, humor that doesn't advance plot, any beat that only makes sense with 2+ minutes of context.",
       fields: [
         {
           name: "title",
           type: "string",
           description:
-            "3-5 words: WHO does WHAT. A punchy recap beat headline. " +
-            "Example: 'Picard Refuses Surrender'. No dialogue quotes.",
+            "3-5 words: WHO does WHAT. Punchy headline for this beat. " +
+            "Examples: 'Jon Learns His Lineage', 'Walt Refuses the Money', 'Locke Opens the Hatch'. " +
+            "No dialogue quotes, no spoiler reveals.",
         },
         {
           name: "description",
           type: "string",
           description:
-            "7-10 words: One sentence explaining the beat's importance. " +
-            "Example: 'Picard defies Starfleet orders, setting up the season's central conflict.'",
+            "One sentence: what happens AND why it matters for the story. " +
+            "Example: 'Cersei refuses Ned's mercy, sealing both their fates.' " +
+            "Connect cause to effect.",
         },
         {
           name: "lead_characters",
           type: "array",
-          description: "Characters featured in this beat.",
+          description: "1-3 characters driving this beat.",
           items: { type: "string" },
         },
         {
-          name: "recap_importance",
+          name: "story_function",
           type: "string",
           description:
-            "How critical is this beat for understanding the story? essential (plot-critical), helpful (provides context), or skip (not needed for recap).",
-          enum: ["essential", "helpful", "skip"],
+            "What role does this beat play in the recap's mini-narrative? " +
+            "setup (establishes stakes/conflict), escalation (raises tension), pivot (changes direction), payoff (delivers on prior setup).",
+          enum: ["setup", "escalation", "pivot", "payoff"],
         },
         {
           name: "recap_keep",
           type: "string",
           description:
-            "Include in recap? 'yes' for at most 4-6 essential/helpful beats that fit 60-90s; 'no' for everything else.",
+            "Keep in the final recap? 'yes' ONLY for beats that: (1) connect to at least one other kept beat, AND (2) are essential or highly memorable. " +
+            "Mark exactly 4-6 beats 'yes'. All others 'no'.",
           enum: ["yes", "no"],
         },
       ],
@@ -198,9 +207,9 @@ export function episodeRecapSegmentDefinitionsForGeneration(opts: {
       : 75;
 
   parts.push(
-    "Think like a 'previously on' editor: what does the viewer NEED to remember?",
-    `The finished recap should total 60-90 seconds (target ~${recapTarget}s) — snappy beats only, not long scene blocks.`,
-    "Prefer exactly 4-6 short beats; mark recap_keep=yes only for beats that belong in that runtime.",
+    `Target runtime: ~${recapTarget}s (4-6 beats, each 10-20s).`,
+    "The kept beats should tell a STORY together — a viewer watching only the recap should feel narrative momentum, not a random highlight reel.",
+    "Imagine cutting these beats back-to-back: do they flow? Does beat 2 follow from beat 1? Does the last beat leave the viewer wanting more?",
   );
 
   const suffix = parts.length ? ` ${parts.join(" ")}` : "";
