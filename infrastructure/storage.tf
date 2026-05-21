@@ -2,6 +2,16 @@ resource "aws_s3_bucket" "media" {
   bucket = "${var.project_name}-media-${var.stage}"
 }
 
+# Block all public access - content is served via CloudFront signed URLs only
+resource "aws_s3_bucket_public_access_block" "media" {
+  bucket = aws_s3_bucket.media.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 resource "aws_s3_bucket_accelerate_configuration" "media" {
   bucket = aws_s3_bucket.media.id
   status = "Enabled"
