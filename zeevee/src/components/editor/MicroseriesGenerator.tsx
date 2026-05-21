@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 import type { LucideIcon } from "lucide-react";
 import type { IconType } from "react-icons";
 import type { GenerationJob } from "@/services/api";
+import type { GenerationMetadata } from "@/hooks/useProjectData";
 
 export interface GenerateRequest {
   userPrompt: string;
@@ -46,7 +47,8 @@ interface MicroseriesGeneratorProps {
   onGenerate: (request: GenerateRequest) => Promise<void>;
   isGenerating: boolean;
   generationStatus?: GenerationJob | null;
-  initialUserPrompt?: string;
+  /** Restored from project.metadata after load — not sent on every generate call */
+  savedInputs?: GenerationMetadata | null;
   autoFrameEnabled: boolean;
   onAutoFrameChange: (enabled: boolean) => void;
   onPlatformChange?: (platform: string) => void;
@@ -164,16 +166,24 @@ const DEFAULT_FORMAT = "compact_video";
 
 const RETAIN_ENABLED = false;
 
+function resolveSavedFormat(saved: GenerationMetadata): string {
+  const candidate = saved.format || saved.purpose;
+  if (candidate && candidate in SEGMENT_DURATION_DEFAULTS) {
+    return candidate;
+  }
+  return DEFAULT_FORMAT;
+}
+
 export function MicroseriesGenerator({
   onGenerate,
   isGenerating,
   generationStatus,
-  initialUserPrompt,
+  savedInputs,
   autoFrameEnabled,
   onAutoFrameChange,
   onPlatformChange,
 }: MicroseriesGeneratorProps) {
-  const [userPrompt, setUserPrompt] = useState(initialUserPrompt || "");
+  const [userPrompt, setUserPrompt] = useState("");
 
   const [assetType, setAssetType] = useState(DEFAULT_ASSET_TYPE);
   const [platform, setPlatform] = useState(DEFAULT_PLATFORM);
@@ -189,6 +199,56 @@ export function MicroseriesGenerator({
   const [maxDuration, setMaxDuration] = useState(
     SEGMENT_DURATION_DEFAULTS[DEFAULT_FORMAT].max,
   );
+
+  useEffect(() => {
+    if (!savedInputs) return;
+
+    setUserPrompt(savedInputs.userPrompt?.trim() || "");
+
+    const restoredFormat = resolveSavedFormat(savedInputs);
+    setFormat(restoredFormat);
+
+    const formatDefaults =
+      SEGMENT_DURATION_DEFAULTS[restoredFormat] ||
+      SEGMENT_DURATION_DEFAULTS.compact_video;
+    setMinDuration(
+      typeof savedInputs.minSegmentDuration === "number"
+        ? savedInputs.minSegmentDuration
+        : formatDefaults.min,
+    );
+    setMaxDuration(
+      typeof savedInputs.maxSegmentDuration === "number"
+        ? savedInputs.maxSegmentDuration
+        : formatDefaults.max,
+    );
+
+    if (
+      savedInputs.targetPercent != null &&
+      savedInputs.targetPercent > 0 &&
+      savedInputs.targetPercent <= 100
+    ) {
+      setTargetPercent(String(savedInputs.targetPercent));
+    } else {
+      setTargetPercent("auto");
+    }
+
+    if (
+      savedInputs.assetType &&
+      ASSET_TYPES.some((o) => o.value === savedInputs.assetType)
+    ) {
+      setAssetType(savedInputs.assetType);
+    }
+
+    if (
+      savedInputs.platform &&
+      PLATFORMS.some((o) => o.value === savedInputs.platform)
+    ) {
+      setPlatform(savedInputs.platform);
+      onPlatformChange?.(savedInputs.platform);
+    }
+    // Only restore when project metadata loads — not when parent callbacks change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedInputs]);
 
   // Whether we're in compact video mode
   const isCompactVideo = format === "compact_video";

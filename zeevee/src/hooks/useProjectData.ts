@@ -16,9 +16,16 @@ import {
 import { DEFAULT_CAPTION_SETTINGS } from "@/remotion/types";
 import type { CaptionWord } from "@/remotion/types";
 
-// Generation input metadata stored with project
+// Last generation inputs persisted on the project (written by generateSegments)
 export interface GenerationMetadata {
-  userPrompt?: string;
+  userPrompt?: string | null;
+  purpose?: string | null;
+  format?: string | null;
+  assetType?: string | null;
+  platform?: string | null;
+  minSegmentDuration?: number | null;
+  maxSegmentDuration?: number | null;
+  targetPercent?: number | null;
 }
 
 export function useProjectData(projectId: string | undefined) {
