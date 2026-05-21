@@ -107,7 +107,8 @@ data "aws_iam_policy_document" "lambda_policy" {
       aws_secretsmanager_secret.api_password.arn,
       aws_secretsmanager_secret.twelve_labs_signing_secret.arn,
       data.aws_secretsmanager_secret.anthropic_api_key.arn,
-      aws_secretsmanager_secret.gemini_api_key.arn
+      aws_secretsmanager_secret.gemini_api_key.arn,
+      aws_secretsmanager_secret.cloudfront_private_key.arn
     ]
   }
   statement {
@@ -301,8 +302,11 @@ resource "aws_lambda_function" "list_assets" {
 
   environment {
     variables = {
-      TABLE_NAME              = aws_dynamodb_table.assets.name
-      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
+      TABLE_NAME                       = aws_dynamodb_table.assets.name
+      API_PASSWORD_SECRET_ARN          = aws_secretsmanager_secret.api_password.arn
+      CLOUDFRONT_DOMAIN                = aws_cloudfront_distribution.media.domain_name
+      CLOUDFRONT_KEY_PAIR_ID           = aws_cloudfront_public_key.media.id
+      CLOUDFRONT_PRIVATE_KEY_SECRET_ARN = aws_secretsmanager_secret.cloudfront_private_key.arn
     }
   }
 }
@@ -324,8 +328,11 @@ resource "aws_lambda_function" "get_asset" {
 
   environment {
     variables = {
-      TABLE_NAME              = aws_dynamodb_table.assets.name
-      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
+      TABLE_NAME                       = aws_dynamodb_table.assets.name
+      API_PASSWORD_SECRET_ARN          = aws_secretsmanager_secret.api_password.arn
+      CLOUDFRONT_DOMAIN                = aws_cloudfront_distribution.media.domain_name
+      CLOUDFRONT_KEY_PAIR_ID           = aws_cloudfront_public_key.media.id
+      CLOUDFRONT_PRIVATE_KEY_SECRET_ARN = aws_secretsmanager_secret.cloudfront_private_key.arn
     }
   }
 }
@@ -422,10 +429,13 @@ resource "aws_lambda_function" "project_ops" {
 
   environment {
     variables = {
-      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
-      ASSETS_TABLE            = aws_dynamodb_table.assets.name
-      RENDER_JOBS_TABLE       = aws_dynamodb_table.render_jobs.name
-      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
+      PROJECTS_TABLE                   = aws_dynamodb_table.projects.name
+      ASSETS_TABLE                     = aws_dynamodb_table.assets.name
+      RENDER_JOBS_TABLE                = aws_dynamodb_table.render_jobs.name
+      API_PASSWORD_SECRET_ARN          = aws_secretsmanager_secret.api_password.arn
+      CLOUDFRONT_DOMAIN                = aws_cloudfront_distribution.media.domain_name
+      CLOUDFRONT_KEY_PAIR_ID           = aws_cloudfront_public_key.media.id
+      CLOUDFRONT_PRIVATE_KEY_SECRET_ARN = aws_secretsmanager_secret.cloudfront_private_key.arn
     }
   }
 }
@@ -537,11 +547,11 @@ resource "aws_lambda_function" "analyze_framing" {
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.analyze_framing_zip.output_base64sha256
   timeout          = 900  # 15 minutes — batch framing can be slow
-  memory_size      = 1024 # FFmpeg + Gemini SDK needs more memory
+  memory_size      = 3008 # Max Lambda memory — FFmpeg cuts multiple long segments in parallel
   layers           = [aws_lambda_layer_version.ffmpeg.arn]
 
   ephemeral_storage {
-    size = 2048 # 2GB — for FFmpeg segment clips in /tmp
+    size = 4096 # 4GB — for FFmpeg segment clips in /tmp (long segments need space)
   }
 
   environment {

@@ -40,7 +40,21 @@ const GEMINI_SECRET_ARN = process.env.GEMINI_SECRET_ARN!;
 const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 const FFMPEG_PATH = "/opt/bin/ffmpeg";
 
-const CONCURRENCY_LIMIT = 5;
+// Dynamic concurrency based on segment duration to avoid OOM
+const MAX_CONCURRENCY = 5;
+const LONG_SEGMENT_THRESHOLD_SEC = 120; // Segments > 2 min are "long"
+
+function getConcurrencyLimit(segments: SegmentDescriptor[]): number {
+  const maxDuration = Math.max(
+    ...segments.map((s) => s.endTime - s.startTime),
+  );
+  // Long segments (>2 min): limit to 2 parallel to avoid OOM
+  // Medium segments (1-2 min): limit to 3 parallel
+  // Short segments (<1 min): full concurrency
+  if (maxDuration > LONG_SEGMENT_THRESHOLD_SEC) return 2;
+  if (maxDuration > 60) return 3;
+  return MAX_CONCURRENCY;
+}
 
 // ============================================================================
 // TYPES
@@ -742,6 +756,19 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
     `[Framing] Executing job ${jobId}: ${segments.length} segments (target: ${targetAspectRatio})`,
   );
 
+  // Clean up any leftover files from previous runs to ensure clean slate
+  try {
+    const tmpFiles = fs.readdirSync("/tmp").filter((f) => f.startsWith("segment-"));
+    for (const file of tmpFiles) {
+      try {
+        fs.unlinkSync(`/tmp/${file}`);
+      } catch {}
+    }
+    if (tmpFiles.length > 0) {
+      console.log(`[Framing] Cleaned up ${tmpFiles.length} leftover files from /tmp`);
+    }
+  } catch {}
+
   try {
     // Verify this job is still the active one
     const check = await docClient.send(
@@ -754,7 +781,7 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
 
     await updateFramingJob(projectId, { status: "analyzing" });
 
-    // For 16:9, no AI needed
+    // For 16:9, no AI needed — just use fit framing
     if (targetAspectRatio === "16:9") {
       await writeFramingResults(
         projectId,
@@ -793,14 +820,18 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
     // Get Gemini client
     const client = await getGeminiClient();
 
-    // Process segments in parallel with concurrency limit
+    // Process segments in parallel with dynamic concurrency limit
     const allKeyframes = new Map<number, FramingKeyframe[]>();
     let completedCount = 0;
+    const concurrency = getConcurrencyLimit(segments);
+    console.log(
+      `[Framing] Using concurrency ${concurrency} (max segment: ${Math.max(...segments.map((s) => s.endTime - s.startTime)).toFixed(0)}s)`,
+    );
 
     const processWithLimit = async () => {
       const queue = segments.map((seg, i) => ({ seg, i }));
       const workers = Array.from(
-        { length: Math.min(CONCURRENCY_LIMIT, queue.length) },
+        { length: Math.min(concurrency, queue.length) },
         async () => {
           while (queue.length > 0) {
             const item = queue.shift()!;
@@ -817,9 +848,7 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
             allKeyframes.set(item.i, keyframes);
 
             completedCount++;
-            await updateFramingJob(projectId, {
-              completedCount,
-            });
+            await updateFramingJob(projectId, { completedCount });
           }
         },
       );

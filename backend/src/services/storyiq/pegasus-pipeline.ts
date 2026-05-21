@@ -476,9 +476,12 @@ function reasoningFromRow(meta: Record<string, unknown>): string {
     bits.push(`Role: ${role.replace(/_/g, " ")}.`);
   }
 
-  // Add recap importance if present
+  // Add story function if present (recap beats) — support both new and legacy schema
+  const storyFunction = typeof meta.story_function === "string" ? meta.story_function : "";
   const recapImportance = typeof meta.recap_importance === "string" ? meta.recap_importance : "";
-  if (recapImportance) {
+  if (storyFunction) {
+    bits.push(`Story role: ${storyFunction}.`);
+  } else if (recapImportance) {
     bits.push(`Recap: ${recapImportance}.`);
   }
 

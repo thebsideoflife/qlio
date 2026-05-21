@@ -503,7 +503,16 @@ async function executeGenerationJob(
         ExpressionAttributeNames: { "#seg": "segments", "#meta": "metadata" },
         ExpressionAttributeValues: {
           ":s": generatedSegments,
-          ":m": { userPrompt: userPrompt || null },
+          ":m": {
+            userPrompt: userPrompt || null,
+            purpose: purpose || null,
+            format: format || null,
+            assetType: assetType || null,
+            platform: platform || null,
+            minSegmentDuration: minSegmentDuration ?? null,
+            maxSegmentDuration: maxSegmentDuration ?? null,
+            targetPercent: targetPercent ?? null,
+          },
           ":u": new Date().toISOString(),
         },
       }),
