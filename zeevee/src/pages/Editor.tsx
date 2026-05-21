@@ -908,7 +908,7 @@ export default function Editor() {
                     onGenerate={handleGenerateSegments}
                     isGenerating={isGenerating}
                     generationStatus={generationStatus}
-                    initialUserPrompt={generationMetadata?.userPrompt}
+                    savedInputs={generationMetadata}
                     autoFrameEnabled={autoFrameEnabled}
                     onAutoFrameChange={setAutoFrameEnabled}
                     onPlatformChange={(platform) => {
