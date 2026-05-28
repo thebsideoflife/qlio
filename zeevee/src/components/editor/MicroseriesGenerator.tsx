@@ -266,7 +266,7 @@ export function MicroseriesGenerator({
   };
 
 
-  const maxLength = 500;
+  const maxLength = 8000;
   const remaining = maxLength - userPrompt.length;
 
   const handleGenerate = () => {
@@ -364,7 +364,7 @@ export function MicroseriesGenerator({
                 onKeyDown={(e) => e.stopPropagation()}
                 maxLength={maxLength}
                 placeholder="Any special instructions? (optional)"
-                className="w-full h-24 px-3 py-2.5 text-sm rounded-lg bg-card border-2 border-dashed border-border focus:border-blue-400 focus:border-solid focus:outline-none resize-none placeholder:text-muted-foreground/50"
+                className="w-full h-40 px-3 py-2.5 text-sm rounded-lg bg-card border-2 border-dashed border-border focus:border-blue-400 focus:border-solid focus:outline-none resize-y min-h-32 placeholder:text-muted-foreground/50"
               />
               {userPrompt.length > 0 && (
                 <div
