@@ -206,7 +206,7 @@ export interface GenerateMetadata {
   format?: string;
 }
 
-const MAX_USER_INSTRUCTIONS_LENGTH = 500;
+const MAX_USER_INSTRUCTIONS_LENGTH = 8000;
 
 /**
  * Map frontend request to StoryIQ goals.
