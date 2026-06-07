@@ -167,3 +167,5 @@ backfill-user-ids.sh
 
 # Local eval / scratch work
 evals/
+
+evaluations/
