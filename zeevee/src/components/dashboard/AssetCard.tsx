@@ -282,7 +282,7 @@ export function AssetCard({
     try {
       const defaultSelections = {
         type: "tv",
-        platform: "tiktok",
+        platform: "mobile",
         audience: { gender: "all", age: ["18-24"] },
         driver: "viewership",
         language: "english",
