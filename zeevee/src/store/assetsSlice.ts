@@ -157,9 +157,18 @@ export const assetsSlice = createSlice({
         state.loading = false;
         state.error = action.error.message || "Failed to fetch assets";
       })
-      // Slim polling - merge status updates, preserve videoUrls
+      // Slim polling - used for both initial load and background polling
+      .addCase(pollAssetStatuses.pending, (state) => {
+        // Only show loading spinner on initial load
+        if (!state.initialLoadDone) {
+          state.loading = true;
+        }
+      })
       .addCase(pollAssetStatuses.fulfilled, (state, action) => {
         const { statuses, fullAssets } = action.payload;
+
+        state.loading = false;
+        state.initialLoadDone = true;
 
         // Build maps for efficient lookup
         const statusMap = new Map(statuses.map((s) => [s.id, s]));
@@ -202,6 +211,13 @@ export const assetsSlice = createSlice({
         // Remove assets that no longer exist
         const currentIds = new Set(statuses.map((s) => s.id));
         state.items = state.items.filter((item) => currentIds.has(item.id));
+      })
+      .addCase(pollAssetStatuses.rejected, (state, action) => {
+        state.loading = false;
+        // Only set error on initial load failure
+        if (!state.initialLoadDone) {
+          state.error = action.error.message || "Failed to fetch assets";
+        }
       });
   },
 });

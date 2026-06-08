@@ -8,7 +8,6 @@ import { AssetCardSkeleton } from "@/components/dashboard/AssetCardSkeleton";
 import { CreateProjectModal } from "@/components/dashboard/CreateProjectModal";
 import { useDispatch, useSelector } from "react-redux";
 import {
-  fetchAssets,
   pollAssetStatuses,
   removeAsset,
   updateAsset,
@@ -39,9 +38,9 @@ export default function Dashboard() {
     [assets],
   );
 
-  // Initial full fetch (with presigned URLs)
+  // Initial load using slim endpoint (no presigned URLs needed for dashboard)
   useEffect(() => {
-    dispatch(fetchAssets());
+    dispatch(pollAssetStatuses());
   }, [dispatch]);
 
   // Slim polling while any asset is still processing
