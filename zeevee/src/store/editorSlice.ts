@@ -262,9 +262,21 @@ export const editorSlice = createSlice({
       state.projectTitle = action.payload;
       markEdited(state);
     },
+    setProjectTitleFromServer: (state, action: PayloadAction<string>) => {
+      state.projectTitle = action.payload;
+    },
     selectSegment: (state, action: PayloadAction<string | null>) => {
       state.selectedSegmentId = action.payload;
       state.selectedKeyframeId = null; // Reset keyframe selection when changing segments
+    },
+    updateSegmentTitle: (
+      state,
+      action: PayloadAction<{ id: string; title: string }>,
+    ) => {
+      const segment = state.segments.find((s) => s.id === action.payload.id);
+      if (!segment) return;
+      segment.title = action.payload.title;
+      markEdited(state);
     },
 
     // Segment editing with push behavior - adjacent segments contract when one expands
@@ -613,6 +625,37 @@ export const editorSlice = createSlice({
         markEdited(state);
       }
     },
+    applyFramingUpdates: (
+      state,
+      action: PayloadAction<{
+        updates: {
+          segmentId: string;
+          framing: SegmentFraming;
+          atStartTime: number;
+          atEndTime: number;
+        }[];
+      }>,
+    ) => {
+      let applied = false;
+      for (const {
+        segmentId,
+        framing,
+        atStartTime,
+        atEndTime,
+      } of action.payload.updates) {
+        const segment = state.segments.find((s) => s.id === segmentId);
+        if (!segment) continue;
+        if (
+          segment.startTime !== atStartTime ||
+          segment.endTime !== atEndTime
+        ) {
+          continue;
+        }
+        segment.framing = framing;
+        applied = true;
+      }
+      if (applied) markEdited(state);
+    },
     updateSegmentFraming: (
       state,
       action: PayloadAction<{
@@ -812,7 +855,9 @@ export const {
   setSegments,
   setProjectMetadata,
   updateProjectTitle,
+  setProjectTitleFromServer,
   selectSegment,
+  updateSegmentTitle,
   updateSegmentTime,
   finalizeSegmentEdit,
   splitSegment,
@@ -834,6 +879,7 @@ export const {
   setGlobalAspectRatio,
   setFramingEnabled,
   setSegmentFraming,
+  applyFramingUpdates,
   updateSegmentFraming,
   updateSegmentFocusX,
   applyFramingToAllSegments,
