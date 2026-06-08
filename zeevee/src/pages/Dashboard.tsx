@@ -77,7 +77,15 @@ export default function Dashboard() {
     sortedAssets.find((a) => a.id === spotlightAssetId) ||
     sortedAssets[0] ||
     null;
-  const otherAssets = sortedAssets.filter((a) => a.id !== spotlightAsset?.id);
+
+  const recentRankByAssetId = useMemo(() => {
+    const recent = getRecentAssets();
+    const ranked = Object.entries(recent)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 3)
+      .map(([id]) => id);
+    return new Map(ranked.map((id, index) => [id, index]));
+  }, [recencyVersion]);
 
   const handleCreateProject = (assetId: string) => {
     setSelectedAssetId(assetId);
@@ -137,24 +145,27 @@ export default function Dashboard() {
                 onDelete={handleDeleteAsset}
                 onUpdateAsset={handleUpdateAsset}
                 variant="spotlight"
+                isSelected
               />
             )}
           </div>
 
-          {/* Other Assets - Responsive Grid on the right */}
-          {otherAssets.length > 0 && (
+          {/* Assets - Responsive Grid on the right */}
+          {sortedAssets.length > 0 && (
             <div className="flex-1 min-w-0">
               <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-4">
-                Other Assets
+                Assets
               </h3>
               <div className="grid grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
-                {otherAssets.map((asset) => (
+                {sortedAssets.map((asset) => (
                   <div key={asset.id} className="transition-all rounded-xl">
                     <AssetCard
                       asset={asset}
                       onCreateProject={handleCreateProject}
                       onDelete={handleDeleteAsset}
                       variant="collapsed"
+                      isRecent={recentRankByAssetId.has(asset.id)}
+                      isSelected={asset.id === spotlightAsset?.id}
                       onSelect={() => {
                         touchAndReorder(asset.id);
                         setSpotlightAssetId(asset.id);
