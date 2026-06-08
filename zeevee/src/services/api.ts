@@ -535,7 +535,7 @@ export const pollGenerationStatus = async (
     pollIntervalMs?: number;
     maxWaitMs?: number;
   } = {},
-): Promise<{ segments: Segment[]; job: GenerationJob }> => {
+): Promise<{ segments: Segment[]; job: GenerationJob; title?: string }> => {
   const {
     onProgress,
     initialDelayMs = 30000, // Wait 30s before first poll
@@ -571,7 +571,11 @@ export const pollGenerationStatus = async (
     if (job.status === "completed") {
       // Only fetch full project when complete - need the segments
       const project = await getProject(projectId);
-      return { segments: project.segments || [], job: generationJob };
+      return {
+        segments: project.segments || [],
+        job: generationJob,
+        title: project.title,
+      };
     }
 
     if (job.status === "failed") {
@@ -730,6 +734,25 @@ export const startBatchFraming = async (
   const response = await axios.post(
     `${API_URL}/projects/${projectId}/analyze-framing`,
     { segments, targetAspectRatio },
+    { headers: getAuthHeaders() },
+  );
+  return response.data;
+};
+
+/**
+ * Start async framing analysis for a single segment.
+ * Poll getProjectJobStatus() for framingJob; results are written to segments in DB.
+ */
+export const startSegmentFraming = async (
+  projectId: string,
+  segmentId: string,
+  startTime: number,
+  endTime: number,
+  targetAspectRatio: "16:9" | "1:1" | "9:16" = "9:16",
+): Promise<StartBatchFramingResponse> => {
+  const response = await axios.post(
+    `${API_URL}/projects/${projectId}/segments/${segmentId}/analyze-framing`,
+    { startTime, endTime, targetAspectRatio },
     { headers: getAuthHeaders() },
   );
   return response.data;
