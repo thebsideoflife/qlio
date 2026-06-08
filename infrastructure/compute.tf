@@ -433,6 +433,7 @@ resource "aws_lambda_function" "project_ops" {
       ASSETS_TABLE                     = aws_dynamodb_table.assets.name
       RENDER_JOBS_TABLE                = aws_dynamodb_table.render_jobs.name
       API_PASSWORD_SECRET_ARN          = aws_secretsmanager_secret.api_password.arn
+      BUCKET_NAME                      = aws_s3_bucket.media.bucket
       CLOUDFRONT_DOMAIN                = aws_cloudfront_distribution.media.domain_name
       CLOUDFRONT_KEY_PAIR_ID           = aws_cloudfront_public_key.media.id
       CLOUDFRONT_PRIVATE_KEY_SECRET_ARN = aws_secretsmanager_secret.cloudfront_private_key.arn
@@ -459,6 +460,10 @@ resource "aws_lambda_function" "list_projects" {
     variables = {
       PROJECTS_TABLE          = aws_dynamodb_table.projects.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
+      BUCKET_NAME             = aws_s3_bucket.media.bucket
+      CLOUDFRONT_DOMAIN                = aws_cloudfront_distribution.media.domain_name
+      CLOUDFRONT_KEY_PAIR_ID           = aws_cloudfront_public_key.media.id
+      CLOUDFRONT_PRIVATE_KEY_SECRET_ARN = aws_secretsmanager_secret.cloudfront_private_key.arn
     }
   }
 }
