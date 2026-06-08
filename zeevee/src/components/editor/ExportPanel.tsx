@@ -153,7 +153,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   const [adMid, setAdMid] = useState(true);
   const [adPost, setAdPost] = useState(true);
   const [adVast, setAdVast] = useState(true);
-  const [adIab, setAdIab] = useState(false);
+  const [adIab, setAdIab] = useState(true);
 
   const cachedRenderMap = useMemo(() => {
     const map = new Map<string, SegmentRenderCache>();
@@ -270,7 +270,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     }
     return buildExportMetadataDocument({
       projectId,
-      projectTitle: projectTitle || "Untitled Microseries",
+      projectTitle: projectTitle || "Untitled",
       projectThumbnailUrl,
       segments,
       selectedSegmentIds,
@@ -491,7 +491,6 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     captionSettings,
     globalFraming,
     metadataEnabled,
-    jobId,
     buildMetadataDocument,
   ]);
 
@@ -884,11 +883,10 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                           <SlidersHorizontal className="h-3.5 w-3.5" />
                         </Button>
                       </PopoverTrigger>
-                      <PopoverContent
-                        align="end"
-                        className="w-72 space-y-4"
-                      >
-                        <p className="text-xs font-semibold">Include in export</p>
+                      <PopoverContent align="end" className="w-72 space-y-4">
+                        <p className="text-xs font-semibold">
+                          Include in export
+                        </p>
                         <OptionRow
                           id="meta-titles"
                           label="Titles"
@@ -1001,7 +999,9 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                 >
                   {metadataError && (
                     <div className="shrink-0 px-4 py-2 border-b border-border bg-destructive/5">
-                      <p className="text-xs text-destructive">{metadataError}</p>
+                      <p className="text-xs text-destructive">
+                        {metadataError}
+                      </p>
                     </div>
                   )}
                   <ScrollArea className="flex-1 min-h-0 max-h-[min(55dvh,28rem)] lg:max-h-none">
