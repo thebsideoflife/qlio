@@ -57,7 +57,13 @@ export interface ParsedSegmentMetadata {
   };
 }
 
-/** Fingerprint of segment time bounds only (cache survives export-option toggles). */
+/**
+ * Fingerprint of segment time bounds only (cache survives export-option toggles).
+ *
+ * IMPORTANT: This formula MUST match `zeevee/src/lib/segmentMetadataFingerprint.ts`.
+ * If you change it here, update the frontend too — mismatched hashes cause infinite
+ * request loops as each side thinks cached data is stale.
+ */
 export function computeSegmentMetadataFingerprint(
   startTime: number,
   endTime: number,

@@ -6,8 +6,8 @@
  * - Checks segment coverage requirements for different content purposes
  */
 
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { TwelveLabsWrapper } from "../twelvelabs";
+import { fetchTranscriptFromS3 } from "../../utils/transcript";
 import {
   type TranscriptSegment,
   type SegmentContent,
@@ -16,45 +16,6 @@ import {
   Purpose,
   type StoryIQTools,
 } from "./types";
-
-const s3Client = new S3Client({});
-
-// ============================================================================
-// S3 Transcript Fetching
-// ============================================================================
-
-/**
- * Parse S3 URI and fetch JSON content.
- */
-async function fetchTranscriptFromS3(
-  s3Uri: string
-): Promise<TranscriptSegment[]> {
-  if (!s3Uri || !s3Uri.startsWith("s3://")) {
-    throw new Error(`Invalid S3 URI: ${s3Uri}`);
-  }
-
-  const parts = s3Uri.replace("s3://", "").split("/");
-  const bucket = parts[0];
-  const key = parts.slice(1).join("/");
-
-  const command = new GetObjectCommand({ Bucket: bucket, Key: key });
-  const response = await s3Client.send(command);
-
-  const bodyString = await response.Body?.transformToString();
-  if (!bodyString) {
-    throw new Error("Empty response from S3");
-  }
-
-  const data = JSON.parse(bodyString);
-
-  // Transform to our format (S3 format may differ slightly)
-  return data.map((seg: any) => ({
-    startTime: seg.start ?? seg.startTime ?? 0,
-    endTime: seg.end ?? seg.endTime ?? 0,
-    text: seg.text ?? seg.value ?? "",
-    speaker: seg.speaker,
-  }));
-}
 
 // ============================================================================
 // Tool Factory

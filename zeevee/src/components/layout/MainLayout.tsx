@@ -13,7 +13,7 @@ import { ModeToggle } from "@/components/mode-toggle";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useDispatch, useSelector } from "react-redux";
-import { fetchAssets } from "@/store/assetsSlice";
+import { pollAssetStatuses } from "@/store/assetsSlice";
 import { updateProjectTitle } from "@/store/editorSlice";
 import type { RootState, AppDispatch } from "@/store/store";
 import { UploadWizard } from "@/components/upload/UploadWizard";
@@ -212,7 +212,7 @@ export function MainLayout({ children }: MainLayoutProps) {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => dispatch(fetchAssets())}
+                onClick={() => dispatch(pollAssetStatuses())}
               >
                 <RefreshCcw className="h-4 w-4" />
               </Button>

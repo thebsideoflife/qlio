@@ -35,6 +35,9 @@ import {
   computeProjectThumbnailFingerprint,
   ensureProjectCoverThumbnail,
 } from "../services/project-thumbnails";
+import { enrichSegmentDescriptions } from "../services/export-metadata-enrich";
+import { fetchTranscriptFromS3 } from "../utils/transcript";
+import type { TranscriptSegment } from "../services/storyiq/types";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient, {
@@ -361,6 +364,25 @@ async function executeExportMetadataJob(
         ? asset.s3VideoUrl.replace("s3://", "").split("/").slice(1).join("/")
         : undefined);
 
+    let transcript: TranscriptSegment[] = [];
+    if (asset.transcriptionUrl) {
+      try {
+        transcript = await fetchTranscriptFromS3(asset.transcriptionUrl);
+        console.log(
+          `[ExportMetadata] Loaded transcript (${transcript.length} segments) for enrichment`,
+        );
+      } catch (err) {
+        console.warn(
+          "[ExportMetadata] Transcript fetch failed, using Pegasus descriptions only:",
+          err,
+        );
+      }
+    }
+
+    const videoTitle =
+      (typeof project.title === "string" && project.title.trim()) ||
+      undefined;
+
     const generatedUpdates: StoredSegmentMetadata[] = [];
     const errors: Array<{ segmentId: string; error: string }> = [];
     const warnings: Array<{
@@ -390,11 +412,26 @@ async function executeExportMetadataJob(
         );
         if (!missingOptions) return;
 
-        const parsed: ParsedSegmentMetadata = await generateSegmentMetadata(
+        let parsed: ParsedSegmentMetadata = await generateSegmentMetadata(
           client,
           clip,
           missingOptions,
         );
+
+        if (
+          transcript.length > 0 &&
+          parsed.descriptions &&
+          missingOptions.includeDescriptions !== false
+        ) {
+          parsed = await enrichSegmentDescriptions({
+            pegasus: parsed,
+            transcript,
+            segmentStart: seg.startTime,
+            segmentEnd: seg.endTime,
+            videoTitle,
+            options: missingOptions,
+          });
+        }
 
         const contentHash = computeSegmentMetadataFingerprint(
           seg.startTime,
