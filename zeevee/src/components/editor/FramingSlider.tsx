@@ -1,3 +1,10 @@
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+} from "lucide-react";
+
 interface FramingSliderProps {
   orientation: "horizontal" | "vertical";
   value: number; // 0-1
@@ -51,6 +58,9 @@ export function FramingSlider({
     onChange(0.5);
   };
 
+  const trackSize = isHorizontal ? "w-48 h-5" : "w-5 h-48";
+  const handleInset = isHorizontal ? "top-1 bottom-1" : "left-1 right-1";
+
   return (
     <div
       className={
@@ -64,26 +74,38 @@ export function FramingSlider({
       } position\nDouble-click to center`}
     >
       <div
-        className={`bg-black/40 backdrop-blur-sm rounded-full relative hover:bg-black/50 transition-colors overflow-hidden shadow-lg ${
-          isHorizontal
-            ? "w-48 h-4 cursor-ew-resize"
-            : "w-4 h-48 cursor-ns-resize"
+        className={`relative rounded-full border border-zinc-600/90 bg-zinc-900/85 backdrop-blur-sm shadow-lg hover:border-zinc-500 transition-colors overflow-hidden ${trackSize} ${
+          isHorizontal ? "cursor-ew-resize" : "cursor-ns-resize"
         }`}
         onMouseDown={handleMouseDown}
         onDoubleClick={handleDoubleClick}
       >
+        {/* Inset groove — visible slot the handle travels in */}
+        <div className="absolute inset-[3px] rounded-full bg-black/50 shadow-[inset_0_1px_4px_rgba(0,0,0,0.55)] ring-1 ring-inset ring-white/10 pointer-events-none" />
+
+        {/* Direction hints at track ends */}
+        {isHorizontal ? (
+          <>
+            <ChevronLeft className="absolute left-0.5 top-1/2 -translate-y-1/2 h-3 w-3 text-zinc-500/90 pointer-events-none" />
+            <ChevronRight className="absolute right-0.5 top-1/2 -translate-y-1/2 h-3 w-3 text-zinc-500/90 pointer-events-none" />
+          </>
+        ) : (
+          <>
+            <ChevronUp className="absolute top-0.5 left-1/2 -translate-x-1/2 h-3 w-3 text-zinc-500/90 pointer-events-none" />
+            <ChevronDown className="absolute bottom-0.5 left-1/2 -translate-x-1/2 h-3 w-3 text-zinc-500/90 pointer-events-none" />
+          </>
+        )}
+
         {/* Center snap indicator line */}
         <div
-          className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white/50 ${
-            isHorizontal ? "w-px h-6" : "w-6 h-px"
+          className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white/40 pointer-events-none z-[1] ${
+            isHorizontal ? "w-px h-full" : "w-full h-px"
           }`}
         />
 
         {/* Proportional block - represents the viewport window */}
         <div
-          className={`absolute bg-white rounded-full shadow-md ${
-            isHorizontal ? "top-0.5 bottom-0.5" : "left-0.5 right-0.5"
-          }`}
+          className={`absolute z-10 rounded-full bg-white shadow-md border border-zinc-300/80 flex items-center justify-center overflow-hidden ${handleInset}`}
           style={
             isHorizontal
               ? {
@@ -97,7 +119,19 @@ export function FramingSlider({
                   transform: `translateY(-${value * 100}%)`,
                 }
           }
-        />
+        >
+          {isHorizontal ? (
+            <div className="flex items-center gap-px text-zinc-500 pointer-events-none">
+              <ChevronLeft className="h-2.5 w-2.5 shrink-0" strokeWidth={2.5} />
+              <ChevronRight className="h-2.5 w-2.5 shrink-0" strokeWidth={2.5} />
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-px text-zinc-500 pointer-events-none">
+              <ChevronUp className="h-2.5 w-2.5 shrink-0" strokeWidth={2.5} />
+              <ChevronDown className="h-2.5 w-2.5 shrink-0" strokeWidth={2.5} />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

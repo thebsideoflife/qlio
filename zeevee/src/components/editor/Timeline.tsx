@@ -1,9 +1,11 @@
 import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { flushSync } from "react-dom";
 import { useSelector, useDispatch } from "react-redux";
+import { useParams } from "react-router-dom";
 import type { RootState } from "@/store/store";
 import {
   selectSegment,
+  updateSegmentTitle,
   updateSegmentTime,
   finalizeSegmentEdit,
   splitSegment,
@@ -15,11 +17,19 @@ import {
   updateFramingKeyframe,
   addFramingKeyframe,
   removeFramingKeyframe,
+  applyFramingUpdates,
+  type Segment,
 } from "@/store/editorSlice";
 import type { FramingKeyframe } from "@/remotion/types";
 import { getEffectiveKeyframes } from "@/remotion/types";
 import { cn, formatSegmentLabel } from "@/lib/utils";
+import { EditableTitle } from "@/components/ui/editable-title";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   Scissors,
   Plus,
@@ -31,7 +41,15 @@ import {
   Play,
   Pause,
   Layers,
+  Focus,
+  ScanLine,
+  Loader2,
 } from "lucide-react";
+import {
+  getProject,
+  getProjectJobStatus,
+  startBatchFraming,
+} from "@/services/api";
 
 interface TimelineProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -39,7 +57,7 @@ interface TimelineProps {
   onPreviewModeChange: (preview: boolean) => void;
 }
 
-type DragMode = "playhead" | "left" | "right" | "keyframe" | null;
+type DragMode = "playhead" | "left" | "right" | "move" | "keyframe" | null;
 
 // Zoom: 1 = fit to container, higher = zoomed in
 const MIN_ZOOM = 1;
@@ -47,6 +65,32 @@ const MAX_ZOOM = 20;
 const DEFAULT_ZOOM = 1;
 // Frame step: 1/30th second ≈ 33.33ms (works well for 24/25/30fps content)
 const FRAME_STEP = 1 / 30;
+const FRAMING_POLL_MS = 10000;
+const FRAMING_MAX_MS = 600000;
+const MOVE_HOLD_MS = 175;
+
+type FramingSnapshot = {
+  id: string;
+  startTime: number;
+  endTime: number;
+};
+
+function ToolbarIconButton({
+  tooltip,
+  children,
+  ...props
+}: React.ComponentProps<typeof Button> & { tooltip: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex">
+          <Button {...props}>{children}</Button>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{tooltip}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 // Drag state stored in ref for immediate updates without re-render
 interface DragInfo {
@@ -67,8 +111,12 @@ export function Timeline({
   previewMode,
   onPreviewModeChange,
 }: TimelineProps) {
+  const { projectId } = useParams<{ projectId: string }>();
   const dispatch = useDispatch();
   const segments = useSelector((state: RootState) => state.editor.segments);
+  const globalFraming = useSelector(
+    (state: RootState) => state.editor.globalFraming,
+  );
   const selectedId = useSelector(
     (state: RootState) => state.editor.selectedSegmentId,
   );
@@ -91,6 +139,15 @@ export function Timeline({
   const programmaticScrollRef = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
   const dragRef = useRef<DragInfo | null>(null);
+  const moveHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingMoveRef = useRef<{
+    segmentId: string;
+    startX: number;
+    initialStart: number;
+    initialEnd: number;
+    mouseEvent: React.MouseEvent;
+    cleanupEarlyMouseUp: () => void;
+  } | null>(null);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   // "segment" = blue bar was clicked directly; "keyframe" = a framing block was clicked
   const [selectionMode, setSelectionMode] = useState<"segment" | "keyframe">(
@@ -106,6 +163,9 @@ export function Timeline({
   }, [selectedKeyframeId]);
   const [containerWidth, setContainerWidth] = useState(800);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [reframingMode, setReframingMode] = useState<"selected" | "all" | null>(
+    null,
+  );
   const showAllKeyframes = useSelector(
     (state: RootState) => state.editor.showKeyframes,
   );
@@ -518,6 +578,83 @@ export function Timeline({
     [clampTime, pxToTime, previewMode, previewTimeToRealTime, previewDuration],
   );
 
+  const clearPendingMove = useCallback(() => {
+    if (moveHoldTimerRef.current) {
+      clearTimeout(moveHoldTimerRef.current);
+      moveHoldTimerRef.current = null;
+    }
+    if (pendingMoveRef.current) {
+      pendingMoveRef.current.cleanupEarlyMouseUp();
+      pendingMoveRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearPendingMove(), [clearPendingMove]);
+
+  // Handle segment body move — click seeks; click-and-hold enters drag mode
+  const handleMoveMouseDown = (e: React.MouseEvent, segmentId: string) => {
+    if (previewMode) return;
+
+    e.stopPropagation();
+    e.preventDefault();
+    const segment = segments.find((s) => s.id === segmentId);
+    if (!segment) return;
+
+    clearPendingMove();
+
+    setSelectionMode("segment");
+    dispatch(selectSegment(segmentId));
+
+    const handleEarlyMouseUp = () => {
+      document.removeEventListener("mouseup", handleEarlyMouseUp);
+      if (!moveHoldTimerRef.current) return;
+
+      clearTimeout(moveHoldTimerRef.current);
+      moveHoldTimerRef.current = null;
+
+      const pending = pendingMoveRef.current;
+      pendingMoveRef.current = null;
+      if (!pending) return;
+
+      const time = getTimeFromClickEvent(pending.mouseEvent);
+      if (videoRef.current) {
+        videoRef.current.currentTime = time;
+      }
+      dispatch(setCurrentTime(time));
+    };
+
+    document.addEventListener("mouseup", handleEarlyMouseUp);
+
+    pendingMoveRef.current = {
+      segmentId,
+      startX: e.clientX,
+      initialStart: segment.startTime,
+      initialEnd: segment.endTime,
+      mouseEvent: e,
+      cleanupEarlyMouseUp: () => {
+        document.removeEventListener("mouseup", handleEarlyMouseUp);
+      },
+    };
+
+    moveHoldTimerRef.current = setTimeout(() => {
+      moveHoldTimerRef.current = null;
+      const pending = pendingMoveRef.current;
+      pendingMoveRef.current = null;
+      if (!pending) return;
+
+      pending.cleanupEarlyMouseUp();
+
+      dragRef.current = {
+        mode: "move",
+        segmentId: pending.segmentId,
+        startX: pending.startX,
+        initialStart: pending.initialStart,
+        initialEnd: pending.initialEnd,
+      };
+      setIsDragging(true);
+    }, MOVE_HOLD_MS);
+  };
+
   // Handle segment click - select AND seek to click position
   const handleSegmentClick = (e: React.MouseEvent, segmentId: string) => {
     e.stopPropagation();
@@ -620,12 +757,72 @@ export function Timeline({
             }),
           );
         });
+      } else if (drag.mode === "move" && drag.segmentId) {
+        const duration = drag.initialEnd - drag.initialStart;
+        let newStart = drag.initialStart + deltaTime;
+        let newEnd = drag.initialEnd + deltaTime;
+
+        const clampMoveBounds = () => {
+          if (newStart < 0) {
+            newStart = 0;
+            newEnd = duration;
+          } else if (newEnd > totalDuration) {
+            newEnd = totalDuration;
+            newStart = totalDuration - duration;
+          }
+        };
+
+        clampMoveBounds();
+
+        // Block at neighbors so updateSegmentTime push logic can't break duration
+        const sorted = [...segments].sort((a, b) => a.startTime - b.startTime);
+        const idx = sorted.findIndex((s) => s.id === drag.segmentId);
+        if (idx > 0) {
+          const prevEnd = sorted[idx - 1].endTime;
+          if (newStart < prevEnd) {
+            newStart = prevEnd;
+            newEnd = prevEnd + duration;
+          }
+        }
+        if (idx < sorted.length - 1) {
+          const nextStart = sorted[idx + 1].startTime;
+          if (newEnd > nextStart) {
+            newEnd = nextStart;
+            newStart = nextStart - duration;
+          }
+        }
+
+        clampMoveBounds();
+
+        flushSync(() => {
+          dispatch(
+            updateSegmentTime({
+              id: drag.segmentId!,
+              start: newStart,
+              end: newEnd,
+            }),
+          );
+        });
       }
     };
 
-    const handleMouseUp = () => {
+    const handleMouseUp = (e: MouseEvent) => {
       const drag = dragRef.current;
-      if (drag && (drag.mode === "left" || drag.mode === "right")) {
+      if (drag?.mode === "move" && drag.segmentId) {
+        const deltaX = e.clientX - drag.startX;
+        if (Math.abs(deltaX) <= SNAP_THRESHOLD_PX) {
+          flushSync(() => {
+            dispatch(
+              updateSegmentTime({
+                id: drag.segmentId!,
+                start: drag.initialStart,
+                end: drag.initialEnd,
+              }),
+            );
+          });
+        }
+        dispatch(finalizeSegmentEdit());
+      } else if (drag && (drag.mode === "left" || drag.mode === "right")) {
         dispatch(finalizeSegmentEdit());
       }
       // Keyframe drag just ends - changes were applied live via updateFramingKeyframe
@@ -673,6 +870,175 @@ export function Timeline({
     if (!seg?.framing) return false;
     return getEffectiveKeyframes(seg.framing).length > 1;
   }, [selectedKeyframeId, selectedId, segments]);
+
+  const pollFramingJob = useCallback(
+    async (activeProjectId: string, snapshot: FramingSnapshot[]) => {
+      const start = Date.now();
+
+      // First poll immediately to catch already-completed or already-failed jobs
+      const initialStatus = await getProjectJobStatus(activeProjectId);
+      const initialJob = initialStatus.framingJob;
+
+      // If no job exists, nothing to poll
+      if (!initialJob) {
+        console.log("[Framing] No framing job found to poll");
+        return;
+      }
+
+      // If job already completed, apply results immediately
+      if (initialJob.status === "completed") {
+        const project = await getProject(activeProjectId);
+        const serverById = new Map(
+          ((project.segments ?? []) as Segment[]).map((segment) => [
+            segment.id,
+            segment,
+          ]),
+        );
+        const updates = snapshot.flatMap((snap) => {
+          const server = serverById.get(snap.id);
+          if (!server?.framing) return [];
+          return [
+            {
+              segmentId: snap.id,
+              framing: {
+                ...server.framing,
+                aspectRatio: globalFraming.aspectRatio,
+              },
+              atStartTime: snap.startTime,
+              atEndTime: snap.endTime,
+            },
+          ];
+        });
+        if (updates.length > 0) {
+          dispatch(applyFramingUpdates({ updates }));
+        }
+        return;
+      }
+
+      // If job already failed (e.g., marked stale by getProjectJobStatus), throw
+      if (initialJob.status === "failed") {
+        throw new Error(initialJob.error || "Framing analysis failed");
+      }
+
+      // Poll until completion
+      while (Date.now() - start < FRAMING_MAX_MS) {
+        await new Promise((r) => setTimeout(r, FRAMING_POLL_MS));
+        const jobStatus = await getProjectJobStatus(activeProjectId);
+        const job = jobStatus.framingJob;
+        if (!job) break;
+        if (job.status === "completed") {
+          const project = await getProject(activeProjectId);
+          const serverById = new Map(
+            ((project.segments ?? []) as Segment[]).map((segment) => [
+              segment.id,
+              segment,
+            ]),
+          );
+          const updates = snapshot.flatMap((snap) => {
+            const server = serverById.get(snap.id);
+            if (!server?.framing) return [];
+            return [
+              {
+                segmentId: snap.id,
+                framing: {
+                  ...server.framing,
+                  aspectRatio: globalFraming.aspectRatio,
+                },
+                atStartTime: snap.startTime,
+                atEndTime: snap.endTime,
+              },
+            ];
+          });
+          if (updates.length > 0) {
+            dispatch(applyFramingUpdates({ updates }));
+          }
+          return;
+        }
+        if (job.status === "failed") {
+          throw new Error(job.error || "Framing analysis failed");
+        }
+      }
+      throw new Error("Framing analysis timed out");
+    },
+    [dispatch, globalFraming.aspectRatio],
+  );
+
+  const runFramingJob = useCallback(
+    async (snapshot: FramingSnapshot[], mode: "selected" | "all") => {
+      if (!projectId || snapshot.length === 0 || reframingMode) return;
+
+      setReframingMode(mode);
+      try {
+        // Check if there's already a job running first
+        const existingStatus = await getProjectJobStatus(projectId);
+        const existingJob = existingStatus.framingJob;
+
+        if (
+          existingJob &&
+          (existingJob.status === "pending" ||
+            existingJob.status === "analyzing")
+        ) {
+          // A job is already running — poll it instead of starting a new one
+          console.log(`[Framing] Joining existing job ${existingJob.jobId}`);
+          await pollFramingJob(projectId, snapshot);
+          return;
+        }
+
+        await startBatchFraming(projectId, snapshot, globalFraming.aspectRatio);
+        await pollFramingJob(projectId, snapshot);
+      } catch (error: unknown) {
+        // Handle 409 Conflict — a job started between our check and request
+        const axiosError = error as { response?: { status?: number } };
+        if (axiosError.response?.status === 409) {
+          console.log("[Framing] Got 409, polling existing job");
+          try {
+            await pollFramingJob(projectId, snapshot);
+            return;
+          } catch (pollError) {
+            console.error("Failed to poll existing job:", pollError);
+          }
+        }
+
+        console.error("Failed to reframe segments:", error);
+        const message =
+          error instanceof Error
+            ? error.message
+            : mode === "selected"
+              ? "Failed to reframe segment. Please try again."
+              : "Failed to reframe segments. Please try again.";
+        alert(message);
+      } finally {
+        setReframingMode(null);
+      }
+    },
+    [projectId, reframingMode, globalFraming.aspectRatio, pollFramingJob],
+  );
+
+  const handleReframeSelected = useCallback(async () => {
+    if (!selectedId) return;
+    const segment = segments.find((s) => s.id === selectedId);
+    if (!segment) return;
+
+    await runFramingJob(
+      [
+        {
+          id: segment.id,
+          startTime: segment.startTime,
+          endTime: segment.endTime,
+        },
+      ],
+      "selected",
+    );
+  }, [selectedId, segments, runFramingJob]);
+
+  const handleReframeAll = useCallback(async () => {
+    const snapshot = segments.map((s) => ({
+      id: s.id,
+      startTime: s.startTime,
+      endTime: s.endTime,
+    }));
+    await runFramingJob(snapshot, "all");
+  }, [segments, runFramingJob]);
 
   const handleDelete = useCallback(() => {
     if (
@@ -968,67 +1334,95 @@ export function Timeline({
     return markers;
   }, [previewMode, previewDuration, totalDuration, zoom, timeToPx]);
 
-  // Display zoom as percentage where 1x = 0%, max = 100%
-  const zoomPercent = Math.round(
-    ((zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)) * 100,
-  );
+  const zoomLabel =
+    zoom >= 10 ? `${Math.round(zoom)}×` : `${parseFloat(zoom.toFixed(1))}×`;
 
   return (
     <div ref={containerRef} className="w-full h-full flex flex-col select-none">
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-3 py-2 shrink-0">
-        <Button
+        <ToolbarIconButton
           size="sm"
           variant="outline"
           onClick={handleSplit}
           disabled={!canSplit}
           className="h-9 w-9 p-0"
-          title="Split segment at playhead"
+          tooltip="Split segment at playhead"
         >
           <Scissors className="h-4 w-4" />
-        </Button>
+        </ToolbarIconButton>
         {!previewMode && (
-          <Button
+          <ToolbarIconButton
             size="sm"
             variant="outline"
             onClick={handleAdd}
             disabled={!canAdd}
             className="h-9 w-9 p-0"
-            title="Add segment at playhead"
+            tooltip="Add segment at playhead"
           >
             <Plus className="h-4 w-4" />
-          </Button>
+          </ToolbarIconButton>
         )}
 
         <div className="h-5 w-px bg-border mx-1" />
+        <ToolbarIconButton
+          size="sm"
+          variant="outline"
+          onClick={handleReframeSelected}
+          disabled={!selectedId || !!reframingMode}
+          className="h-9 w-9 p-0"
+          tooltip="Reframe selected segment"
+        >
+          {reframingMode === "selected" ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Focus className="h-4 w-4" />
+          )}
+        </ToolbarIconButton>
+        <ToolbarIconButton
+          size="sm"
+          variant="outline"
+          onClick={handleReframeAll}
+          disabled={segments.length === 0 || !!reframingMode}
+          className="h-9 w-9 p-0"
+          tooltip="Reframe all segments"
+        >
+          {reframingMode === "all" ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <ScanLine className="h-4 w-4" />
+          )}
+        </ToolbarIconButton>
 
-        <Button
+        <div className="h-5 w-px bg-border mx-1" />
+
+        <ToolbarIconButton
           size="sm"
           variant="outline"
           onClick={handleZoomOut}
           disabled={zoom <= MIN_ZOOM}
           className="h-9 w-9 p-0"
-          title="Zoom out"
+          tooltip="Zoom out"
         >
           <ZoomOut className="h-4 w-4" />
-        </Button>
-        <span className="text-xs text-muted-foreground font-semibold w-9 text-center tabular-nums">
-          {zoomPercent}%
+        </ToolbarIconButton>
+        <span className="text-xs text-muted-foreground font-semibold min-w-[2.25rem] text-center tabular-nums">
+          {zoomLabel}
         </span>
-        <Button
+        <ToolbarIconButton
           size="sm"
           variant="outline"
           onClick={handleZoomIn}
           disabled={zoom >= MAX_ZOOM}
           className="h-9 w-9 p-0"
-          title="Zoom in"
+          tooltip="Zoom in"
         >
           <ZoomIn className="h-4 w-4" />
-        </Button>
+        </ToolbarIconButton>
 
         {/* Centered playback controls */}
         <div className="flex-1 flex items-center justify-center gap-3">
-          <Button
+          <ToolbarIconButton
             size="sm"
             onClick={() => {
               const video = videoRef.current;
@@ -1041,48 +1435,48 @@ export function Timeline({
               }
             }}
             className="h-9 w-9 p-0"
-            title={isPlaying ? "Pause (Space)" : "Play (Space)"}
+            tooltip={isPlaying ? "Pause (Space)" : "Play (Space)"}
           >
             {isPlaying ? (
               <Pause className="h-4 w-4" />
             ) : (
               <Play className="h-4 w-4 ml-0.5" />
             )}
-          </Button>
+          </ToolbarIconButton>
           <span className="text-sm text-foreground font-mono font-bold tabular-nums">
             {formatTime(effectiveCurrentTime)} / {formatTime(effectiveDuration)}
           </span>
         </div>
 
-        <Button
+        <ToolbarIconButton
           size="sm"
           variant={showAllKeyframes ? "default" : "outline"}
           onClick={() => dispatch(toggleShowKeyframes())}
           className="h-9 w-9 p-0"
-          title={
+          tooltip={
             showAllKeyframes
               ? "Show selected keyframes only"
               : "Show all keyframes"
           }
         >
           <Layers className="h-4 w-4" />
-        </Button>
+        </ToolbarIconButton>
 
-        <Button
+        <ToolbarIconButton
           size="sm"
           variant={previewMode ? "default" : "outline"}
           onClick={() => onPreviewModeChange(!previewMode)}
           className="h-9 w-9 p-0"
-          title={previewMode ? "Exit preview mode" : "Preview final video"}
+          tooltip={previewMode ? "Exit preview mode" : "Preview final video"}
         >
           {previewMode ? (
             <EyeOff className="h-4 w-4" />
           ) : (
             <Eye className="h-4 w-4" />
           )}
-        </Button>
+        </ToolbarIconButton>
 
-        <Button
+        <ToolbarIconButton
           size="sm"
           variant="outline"
           onClick={handleDelete}
@@ -1090,14 +1484,14 @@ export function Timeline({
             selectionMode === "keyframe" ? !canDeleteKeyframe : !selectedId
           }
           className="h-9 w-9 p-0 text-red-500 hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/50 disabled:opacity-30"
-          title={
+          tooltip={
             selectionMode === "keyframe"
               ? "Delete framing keyframe"
               : "Delete selected segment"
           }
         >
           <Trash2 className="h-4 w-4" />
-        </Button>
+        </ToolbarIconButton>
       </div>
 
       {/* Timeline track */}
@@ -1313,32 +1707,38 @@ export function Timeline({
                           const centerPx =
                             (nextT / segDuration) * laneWidth - 4;
                           return (
-                            <div
-                              className="absolute z-20 group cursor-pointer"
-                              style={{
-                                left: `${laneLeft + centerPx}px`,
-                                transform: "translateX(-50%)",
-                                width: "14px",
-                                top: "-14px",
-                                height: "14px",
-                              }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                dispatch(
-                                  removeFramingKeyframe({
-                                    segmentId: seg.id,
-                                    keyframeId: selKf.id,
-                                  }),
-                                );
-                              }}
-                              title="Delete framing keyframe"
-                            >
-                              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-zinc-800 border border-red-500/60 group-hover:border-red-400 flex items-center justify-center transition-colors">
-                                <span className="text-[9px] font-bold text-red-400 group-hover:text-red-300 leading-none">
-                                  x
-                                </span>
-                              </div>
-                            </div>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div
+                                  className="absolute z-20 group cursor-pointer"
+                                  style={{
+                                    left: `${laneLeft + centerPx}px`,
+                                    transform: "translateX(-50%)",
+                                    width: "14px",
+                                    top: "-14px",
+                                    height: "14px",
+                                  }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    dispatch(
+                                      removeFramingKeyframe({
+                                        segmentId: seg.id,
+                                        keyframeId: selKf.id,
+                                      }),
+                                    );
+                                  }}
+                                >
+                                  <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-card dark:bg-zinc-800 border border-red-500/60 group-hover:border-red-400 flex items-center justify-center transition-colors shadow-sm">
+                                    <span className="text-[9px] font-bold text-red-500 dark:text-red-400 group-hover:text-red-600 dark:group-hover:text-red-300 leading-none">
+                                      x
+                                    </span>
+                                  </div>
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">
+                                Delete framing keyframe
+                              </TooltipContent>
+                            </Tooltip>
                           );
                         })()}
 
@@ -1360,43 +1760,49 @@ export function Timeline({
                             (timeInSeg / segDuration) * laneWidth + 1;
 
                           return (
-                            <div
-                              className="absolute top-0 bottom-0 z-20 group cursor-pointer"
-                              style={{
-                                left: `${laneLeft + pxPos}px`,
-                                transform: "translateX(-50%)",
-                                width: "14px",
-                              }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const sourceKf =
-                                  [...sortedKfs]
-                                    .reverse()
-                                    .find((k) => k.time <= timeInSeg) ||
-                                  sortedKfs[0];
-                                dispatch(
-                                  addFramingKeyframe({
-                                    segmentId: seg.id,
-                                    keyframe: {
-                                      id: crypto.randomUUID(),
-                                      time: rounded,
-                                      focusX: sourceKf.focusX,
-                                      focusY: sourceKf.focusY,
-                                      zoom: sourceKf.zoom,
-                                      isAiGenerated: false,
-                                    },
-                                  }),
-                                );
-                              }}
-                              title="Split framing here"
-                            >
-                              <div className="absolute left-1/2 top-0 bottom-0 w-px -translate-x-1/2 bg-red-500/50 group-hover:bg-red-500" />
-                              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-zinc-800 border border-red-500/60 group-hover:border-red-400 flex items-center justify-center transition-colors">
-                                <span className="text-[9px] font-bold text-red-400 group-hover:text-red-300 leading-none">
-                                  +
-                                </span>
-                              </div>
-                            </div>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div
+                                  className="absolute top-0 bottom-0 z-20 group cursor-pointer"
+                                  style={{
+                                    left: `${laneLeft + pxPos}px`,
+                                    transform: "translateX(-50%)",
+                                    width: "14px",
+                                  }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const sourceKf =
+                                      [...sortedKfs]
+                                        .reverse()
+                                        .find((k) => k.time <= timeInSeg) ||
+                                      sortedKfs[0];
+                                    dispatch(
+                                      addFramingKeyframe({
+                                        segmentId: seg.id,
+                                        keyframe: {
+                                          id: crypto.randomUUID(),
+                                          time: rounded,
+                                          focusX: sourceKf.focusX,
+                                          focusY: sourceKf.focusY,
+                                          zoom: sourceKf.zoom,
+                                          isAiGenerated: false,
+                                        },
+                                      }),
+                                    );
+                                  }}
+                                >
+                                  <div className="absolute left-1/2 top-0 bottom-0 w-px -translate-x-1/2 bg-red-500/50 group-hover:bg-red-500" />
+                                  <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-card dark:bg-zinc-800 border border-red-500/60 group-hover:border-red-400 flex items-center justify-center transition-colors shadow-sm">
+                                    <span className="text-[9px] font-bold text-red-500 dark:text-red-400 group-hover:text-red-600 dark:group-hover:text-red-300 leading-none">
+                                      +
+                                    </span>
+                                  </div>
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">
+                                Split framing here
+                              </TooltipContent>
+                            </Tooltip>
                           );
                         })()}
                     </div>
@@ -1408,14 +1814,14 @@ export function Timeline({
 
           {/* Track */}
           <div
-            className="relative flex-1 rounded cursor-pointer min-h-0 bg-zinc-800/50"
+            className="relative flex-1 rounded cursor-pointer min-h-0 bg-secondary/70 dark:bg-zinc-800/50 border border-border/50"
             onClick={handleTrackClick}
           >
             {/* Time tick marks */}
             {timeMarkers.map(({ time, px }) => (
               <div
                 key={time}
-                className="absolute top-0 bottom-0 border-l border-white/5 pointer-events-none"
+                className="absolute top-0 bottom-0 border-l border-border/40 dark:border-white/5 pointer-events-none"
                 style={{ left: `${px}px` }}
               />
             ))}
@@ -1443,28 +1849,57 @@ export function Timeline({
                   )}
                   style={{ left: `${left}px`, width: `${width}px` }}
                   onClick={(e) => handleSegmentClick(e, segment.id)}
-                  title={formatSegmentLabel(segmentIndex + 1, segment.title)}
                 >
                   {!previewMode && (
                     <>
                       <div
-                        className="absolute left-0 top-0 bottom-0 w-1/2 cursor-ew-resize z-10"
+                        className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize z-40"
                         onMouseDown={(e) =>
                           handleResizeMouseDown(e, segment.id, "left")
                         }
                       />
                       <div
-                        className="absolute right-0 top-0 bottom-0 w-1/2 cursor-ew-resize z-10"
+                        className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize z-40"
                         onMouseDown={(e) =>
                           handleResizeMouseDown(e, segment.id, "right")
                         }
+                      />
+                      <div
+                        className={cn(
+                          "absolute top-0 bottom-0 left-2 right-2 z-10",
+                          isDragging && dragRef.current?.mode === "move"
+                            ? "cursor-grabbing"
+                            : "cursor-grab",
+                        )}
+                        onMouseDown={(e) => handleMoveMouseDown(e, segment.id)}
+                        onClick={(e) => e.stopPropagation()}
                       />
                     </>
                   )}
 
                   {width > 30 && (
-                    <div className="px-1.5 py-0.5 text-[10px] text-white font-semibold truncate pointer-events-none">
-                      {formatSegmentLabel(segmentIndex + 1, segment.title)}
+                    <div className="absolute top-0 left-2 z-30 max-w-[calc(100%-1rem)] pointer-events-none">
+                      <EditableTitle
+                        title={formatSegmentLabel(
+                          segmentIndex + 1,
+                          segment.title,
+                        )}
+                        onSave={(newTitle) => {
+                          const clean = newTitle
+                            .replace(/^\d+\.\s*/, "")
+                            .trim();
+                          if (clean) {
+                            dispatch(
+                              updateSegmentTitle({
+                                id: segment.id,
+                                title: clean,
+                              }),
+                            );
+                          }
+                        }}
+                        className="text-[10px] text-white font-semibold max-w-full pointer-events-auto"
+                        inputClassName="h-5 text-[10px] font-semibold text-foreground px-1"
+                      />
                     </div>
                   )}
                   {width > 60 && (

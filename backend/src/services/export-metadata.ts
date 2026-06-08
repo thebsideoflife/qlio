@@ -87,7 +87,19 @@ function requestedDescriptionLengths(
 export function computeMissingMetadataOptions(
   cached: CachedSegmentFields | undefined,
   options: ExportMetadataOptions & { includeThumbnails?: boolean },
+  startTime?: number,
+  endTime?: number,
 ): (ExportMetadataOptions & { includeThumbnails: boolean }) | null {
+  if (startTime !== undefined && endTime !== undefined) {
+    const boundsHash = computeSegmentMetadataFingerprint(startTime, endTime);
+    if (!cached || cached.contentHash !== boundsHash) {
+      return {
+        ...options,
+        includeThumbnails: options.includeThumbnails !== false,
+      };
+    }
+  }
+
   const missing: ExportMetadataOptions & { includeThumbnails: boolean } = {
     includeThumbnails: false,
   };
@@ -146,9 +158,7 @@ export function isSegmentMetadataIncomplete(
   endTime: number,
   options: ExportMetadataOptions & { includeThumbnails?: boolean },
 ): boolean {
-  const boundsHash = computeSegmentMetadataFingerprint(startTime, endTime);
-  if (!cached || cached.contentHash !== boundsHash) return true;
-  return computeMissingMetadataOptions(cached, options) !== null;
+  return computeMissingMetadataOptions(cached, options, startTime, endTime) !== null;
 }
 
 export function mergeSegmentMetadataEntry<

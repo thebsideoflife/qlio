@@ -5,7 +5,6 @@ import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
@@ -78,24 +77,33 @@ const ASSET_TYPES: Option[] = [
 const PLATFORMS: Option[] = [
   { value: "mobile", label: "Mobile", icon: Smartphone, tooltip: "Mobile app" },
   { value: "tv", label: "Smart TV", icon: Tv, tooltip: "Connected TV" },
-  { value: "tiktok", label: "TikTok", icon: FaTiktok, tooltip: "TikTok" },
+  {
+    value: "tiktok",
+    label: "TikTok",
+    icon: FaTiktok,
+    tooltip: "TikTok",
+    disabled: true,
+  },
   {
     value: "ig",
     label: "Reels",
     icon: FaInstagram,
     tooltip: "Instagram Reels",
+    disabled: true,
   },
   {
     value: "shorts",
     label: "Shorts",
     icon: SiYoutubeshorts,
     tooltip: "YouTube Shorts",
+    disabled: true,
   },
   {
     value: "facebook",
     label: "Facebook",
     icon: FaFacebook,
     tooltip: "Facebook",
+    disabled: true,
   },
 ];
 
@@ -169,7 +177,10 @@ const RETAIN_ENABLED = false;
 function resolveSavedFormat(saved: GenerationMetadata): string {
   const candidate = saved.format || saved.purpose;
   if (candidate && candidate in SEGMENT_DURATION_DEFAULTS) {
-    return candidate;
+    const option = FORMATS.find((o) => o.value === candidate);
+    if (option && !option.disabled) {
+      return candidate;
+    }
   }
   return DEFAULT_FORMAT;
 }
@@ -285,8 +296,7 @@ export function MicroseriesGenerator({
   };
 
   return (
-    <TooltipProvider delayDuration={300}>
-      <div className="flex flex-col h-full bg-background">
+    <div className="flex flex-col h-full bg-background">
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-3 border-b bg-muted/50">
           <div className="p-1.5 rounded-md bg-blue-500/10">
@@ -432,7 +442,6 @@ export function MicroseriesGenerator({
           )}
         </div>
       </div>
-    </TooltipProvider>
   );
 }
 
@@ -485,23 +494,33 @@ function DemoOptionGrid({
                 }}
                 className={cn(
                   "flex flex-col items-center gap-1 p-2.5 rounded-lg border-2 transition-all",
-                  isDisabled && "opacity-50 cursor-not-allowed",
-                  isSelected
-                    ? "bg-blue-600 border-blue-600 text-white shadow-md"
-                    : "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30",
+                  isDisabled && "cursor-not-allowed",
+                  isDisabled && !isSelected && "opacity-50",
+                  isSelected && !isDisabled &&
+                    "bg-blue-600 border-blue-600 text-white shadow-md",
+                  isSelected && isDisabled &&
+                    "bg-blue-100 border-blue-300 text-blue-800 dark:bg-blue-950/60 dark:border-blue-700 dark:text-blue-300",
+                  !isSelected &&
+                    "bg-card border-border hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30",
                   isDisabled && "hover:border-border hover:bg-card",
                 )}
               >
                 <opt.icon
                   className={cn(
                     "h-5 w-5",
-                    isSelected ? "text-white" : "text-muted-foreground",
+                    isSelected && !isDisabled && "text-white",
+                    isSelected && isDisabled &&
+                      "text-blue-700 dark:text-blue-300",
+                    !isSelected && "text-muted-foreground",
                   )}
                 />
                 <span
                   className={cn(
                     "text-[10px] font-semibold leading-tight text-center",
-                    isSelected ? "text-white" : "text-foreground",
+                    isSelected && !isDisabled && "text-white",
+                    isSelected && isDisabled &&
+                      "text-blue-800 dark:text-blue-300",
+                    !isSelected && "text-foreground",
                   )}
                 >
                   {opt.label}

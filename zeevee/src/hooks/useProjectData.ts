@@ -117,7 +117,7 @@ export function useProjectData(projectId: string | undefined) {
 
       dispatch(
         setProjectMetadata({
-          title: project.title || "Untitled Microseries",
+          title: project.title || "Untitled",
           assetName:
             project.asset?.originalName ||
             project.asset?.title ||

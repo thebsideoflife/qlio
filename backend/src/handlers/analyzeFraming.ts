@@ -570,7 +570,7 @@ async function updateFramingJob(
 }
 
 // ============================================================================
-// SINGLE SEGMENT HANDLER (synchronous)
+// SINGLE SEGMENT HANDLER — async via the shared framingJob system
 // ============================================================================
 
 async function handleSingleSegment(
@@ -581,6 +581,9 @@ async function handleSingleSegment(
   const startTime = body.startTime as number;
   const endTime = body.endTime as number;
 
+  if (!segmentId) {
+    return errorResponse(400, "Missing segmentId");
+  }
   if (typeof body.startTime !== "number" || typeof body.endTime !== "number") {
     return errorResponse(400, "Missing or invalid startTime/endTime");
   }
@@ -588,45 +591,9 @@ async function handleSingleSegment(
     return errorResponse(400, "endTime must be greater than startTime");
   }
 
-  const { asset } = await getAssetRecord(projectId);
-  const segmentDuration = endTime - startTime;
-  const s3Key = await getAnnotatedKey(asset.key);
-
-  const client = await getGeminiClient();
-  let keyframes: FramingKeyframe[];
-  let legacyFraming: FramingResult;
-
-  try {
-    const clipPath = `/tmp/single-segment.mp4`;
-    await cutSegmentClip(s3Key, startTime, segmentDuration, clipPath);
-    const fileUri = await uploadToGemini(clipPath);
-    keyframes = await analyzeSegmentWithGemini(
-      client,
-      fileUri,
-      segmentDuration,
-    );
-    legacyFraming = keyframesToLegacyResult(keyframes);
-    try {
-      fs.unlinkSync(clipPath);
-    } catch {}
-  } catch (err) {
-    console.error("[Framing] AI analysis failed:", err);
-    keyframes = [makeFallbackKeyframe()];
-    legacyFraming = {
-      mode: "fit",
-      focusX: 0.5,
-      focusY: 0.5,
-      aiReasoning: "AI analysis unavailable",
-      isAiGenerated: false,
-    };
-  }
-
-  return successResponse({
-    segmentId: segmentId || null,
-    startTime,
-    endTime,
-    keyframes,
-    framing: legacyFraming,
+  return handleStartBatch(projectId, {
+    segments: [{ id: segmentId, startTime, endTime }],
+    targetAspectRatio: body.targetAspectRatio,
   });
 }
 

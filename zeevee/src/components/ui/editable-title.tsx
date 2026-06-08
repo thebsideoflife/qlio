@@ -50,6 +50,7 @@ export function EditableTitle({
       <Input
         ref={inputRef}
         value={value}
+        size={Math.min(Math.max(value.length, 4), 48)}
         onChange={(e) => setValue(e.target.value)}
         onBlur={save}
         onKeyDown={(e) => {
@@ -60,7 +61,12 @@ export function EditableTitle({
           }
         }}
         onClick={(e) => e.stopPropagation()}
-        className={cn("h-8 text-sm", inputClassName)}
+        onMouseDown={(e) => e.stopPropagation()}
+        className={cn(
+          "pointer-events-auto h-auto min-h-0 w-auto max-w-full px-1 py-0 text-sm",
+          "focus-visible:ring-1 focus-visible:ring-offset-0",
+          inputClassName,
+        )}
       />
     );
   }
@@ -71,6 +77,7 @@ export function EditableTitle({
         "cursor-pointer truncate group/title inline-flex items-center gap-1",
         className
       )}
+      onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();
         setIsEditing(true);

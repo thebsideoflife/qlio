@@ -14,6 +14,10 @@ import { randomUUID } from "crypto";
 import { checkAuth } from "../utils/auth";
 import { createTwelveLabsWrapper } from "../services/twelvelabs";
 import { generateWithStoryIQ, mapMetadataToGoals } from "../services/storyiq";
+import {
+  deriveProjectTitleFromSegments,
+  isDefaultProjectTitle,
+} from "../utils/projectTitle";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -494,13 +498,21 @@ async function executeGenerationJob(
     // Sort segments chronologically
     generatedSegments.sort((a, b) => a.startTime - b.startTime);
 
+    const autoTitle = deriveProjectTitleFromSegments(generatedSegments);
+    const shouldAutoName =
+      autoTitle != null && isDefaultProjectTitle(project.title);
+
     // Write segments to DB first (without marking completed yet)
     await docClient.send(
       new UpdateCommand({
         TableName: PROJECTS_TABLE,
         Key: { projectId },
-        UpdateExpression: `set #seg = :s, #meta = :m, updatedAt = :u`,
-        ExpressionAttributeNames: { "#seg": "segments", "#meta": "metadata" },
+        UpdateExpression: shouldAutoName
+          ? `set #seg = :s, #meta = :m, #title = :title, updatedAt = :u`
+          : `set #seg = :s, #meta = :m, updatedAt = :u`,
+        ExpressionAttributeNames: shouldAutoName
+          ? { "#seg": "segments", "#meta": "metadata", "#title": "title" }
+          : { "#seg": "segments", "#meta": "metadata" },
         ExpressionAttributeValues: {
           ":s": generatedSegments,
           ":m": {
@@ -513,10 +525,15 @@ async function executeGenerationJob(
             maxSegmentDuration: maxSegmentDuration ?? null,
             targetPercent: targetPercent ?? null,
           },
+          ...(shouldAutoName ? { ":title": autoTitle } : {}),
           ":u": new Date().toISOString(),
         },
       }),
     );
+
+    if (shouldAutoName) {
+      console.log(`[generateSegments] Auto-named project: "${autoTitle}"`);
+    }
 
     // If auto-framing requested, start the framing job BEFORE marking generation
     // as completed — this guarantees framingJob exists in DynamoDB when the

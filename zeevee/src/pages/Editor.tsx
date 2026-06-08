@@ -7,6 +7,7 @@ import {
 import { CaptionOverlay } from "@/components/editor/CaptionOverlay";
 import { CaptionEditor } from "@/components/editor/CaptionEditor";
 import { FramingSlider } from "@/components/editor/FramingSlider";
+import { PhonePreviewFrame } from "@/components/editor/PhonePreviewFrame";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
@@ -16,6 +17,7 @@ import {
   setDuration,
   setSegments,
   setProjectId,
+  setProjectTitleFromServer,
   resetEditor,
   updateFramingKeyframe,
   updateCaptionWord,
@@ -49,6 +51,10 @@ function platformToAspectRatio(platform: string): AspectRatio {
   if (platform === "tv") return "16:9";
   return "9:16";
 }
+
+// Max digital punch-in used when the target aspect matches the 16:9 source
+// (no crop headroom, so zoom acts as a digital zoom instead).
+const MAX_DIGITAL_ZOOM = 2;
 
 export default function Editor() {
   const { projectId } = useParams();
@@ -110,6 +116,7 @@ export default function Editor() {
     framingJob,
     loading,
   } = useProjectData(projectId);
+
   // Seamless playback only in preview mode
   useSeamlessPlayback(videoRef, previewMode ? segments : []);
 
@@ -260,6 +267,7 @@ export default function Editor() {
   };
 
   const aspectRatioValue = getAspectRatioValue(globalFraming.aspectRatio);
+  const isMobilePreview = globalFraming.aspectRatio === "9:16";
 
   // Set projectId in Redux for sync middleware
   // Also reset local state when switching projects (prevents stale state from previous project)
@@ -324,6 +332,10 @@ export default function Editor() {
         }
         if (result.segments.length > 0) {
           dispatch(setSegments(result.segments));
+          if (result.title) {
+            dispatch(setProjectTitleFromServer(result.title));
+          }
+          setPreviewMode(true);
           console.log(
             `[Editor] Generation complete (resumed): ${result.segments.length} segments`,
           );
@@ -399,14 +411,17 @@ export default function Editor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- isGenerating intentionally omitted to prevent re-triggering when it changes
   }, [projectId, generationJob, loading, dispatch]);
 
-  // Resume framing poll if there's an in-progress framing job (e.g., after page refresh)
-  // Uses slim job status endpoint for polling, fetches full project only on completion
+  // Resume framing poll if there's an in-progress framing job (e.g., after page refresh).
+  // One resume per project — active reframes started in-session are polled by Timeline.
+  const framingResumeProjectRef = useRef<string | null>(null);
   useEffect(() => {
     if (!projectId || !framingJob || loading) return;
+    if (framingResumeProjectRef.current === projectId) return;
     if (framingJob.status !== "pending" && framingJob.status !== "analyzing")
       return;
     if (isGenerating) return; // generation flow will handle it
 
+    framingResumeProjectRef.current = projectId;
     const startingProjectId = projectId;
     let cancelled = false;
 
@@ -580,7 +595,11 @@ export default function Editor() {
 
       if (result.segments.length > 0) {
         dispatch(setSegments(result.segments));
+        if (result.title) {
+          dispatch(setProjectTitleFromServer(result.title));
+        }
         dispatch(selectSegment(result.segments[0].id));
+        setPreviewMode(true);
         console.log(
           `[Editor] Generation complete: ${result.segments.length} segments`,
         );
@@ -643,13 +662,13 @@ export default function Editor() {
 
   if (loading) {
     return (
-      <div className="flex h-[calc(100vh-4rem)]">
+      <div className="flex h-[calc(100vh-4rem)] min-h-0 overflow-hidden">
         {/* Left: Video & Timeline skeleton */}
-        <div className="flex-1 flex flex-col min-w-0 bg-background border-r">
-          <div className="flex-1 bg-black flex items-center justify-center">
-            <Skeleton className="w-[80%] aspect-video bg-muted/20" />
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-background border-r">
+          <div className="flex-1 min-h-0 overflow-hidden bg-muted flex items-center justify-center">
+            <Skeleton className="w-[80%] aspect-video" />
           </div>
-          <div className="h-32 border-t bg-card p-2">
+          <div className="shrink-0 h-32 border-t bg-card p-2">
             <Skeleton className="w-full h-full" />
           </div>
         </div>
@@ -665,41 +684,39 @@ export default function Editor() {
     );
   }
 
-  return (
-    <div className="flex h-[calc(100vh-4rem)]">
-      {/* Left: Video & Timeline */}
-      <div className="flex-1 flex flex-col min-w-0 bg-background">
-        {/* Video Player with Caption Overlay */}
-        <div
-          className="flex-1 bg-zinc-950 relative flex items-center justify-center min-h-0 p-4 gap-4"
-          onClick={handleBackgroundClick}
-        >
-          {videoUrl ? (
-            /* Framing Preview - aspect ratio container with draggable video */
-            <div
+  const framingPreview = videoUrl ? (
+    <div
               ref={framingContainerRef}
               className={cn(
-                "relative overflow-hidden bg-black rounded-2xl select-none shadow-2xl shadow-black/50",
+                "relative overflow-hidden bg-black select-none",
+                isMobilePreview
+                  ? "rounded-[1.35rem] shadow-none"
+                  : "rounded-2xl shadow-2xl shadow-black/50",
                 isDragging
-                  ? "cursor-grabbing ring-4 ring-blue-500 ring-offset-4 ring-offset-zinc-950"
+                  ? "cursor-grabbing ring-4 ring-blue-500 ring-offset-4 ring-offset-background"
                   : displayZoom > 0
-                    ? "cursor-grab ring-2 ring-zinc-600 hover:ring-zinc-500"
-                    : "cursor-pointer ring-2 ring-zinc-700",
+                    ? "cursor-grab ring-2 ring-border hover:ring-muted-foreground/50"
+                    : "cursor-pointer ring-2 ring-border",
               )}
               style={{
                 aspectRatio: aspectRatioValue,
-                maxHeight: aspectRatioValue < 1 ? "100%" : "90%",
-                maxWidth: aspectRatioValue >= 1 ? "100%" : "90%",
+                ...(isMobilePreview
+                  ? {
+                      height: "100%",
+                      width: "auto",
+                      maxHeight: "100%",
+                      maxWidth: "100%",
+                    }
+                  : {
+                      maxHeight: aspectRatioValue < 1 ? "100%" : "90%",
+                      maxWidth: aspectRatioValue >= 1 ? "100%" : "90%",
+                    }),
               }}
               onMouseDown={
-                displayZoom > 0
-                  ? handleFramingMouseDown
-                  : undefined
+                displayZoom > 0 ? handleFramingMouseDown : undefined
               }
               onClick={
-                displayZoom > 0
-                  ? handleFramingClick
-                  : handleVideoClick
+                displayZoom > 0 ? handleFramingClick : handleVideoClick
               }
             >
               <video
@@ -715,22 +732,28 @@ export default function Editor() {
                       objectPosition: "center center",
                     };
                   }
-                  // Continuous zoom: scale a contained video toward (and beyond) cover size
                   const sourceAspect = 16 / 9;
-                  const scaleCover = Math.max(
-                    aspectRatioValue / sourceAspect,
-                    sourceAspect / aspectRatioValue,
-                  );
+                  // When the target matches the 16:9 source there is no crop
+                  // headroom, so allow a digital punch-in instead of a no-op.
+                  const matchesSource =
+                    Math.abs(aspectRatioValue - sourceAspect) < 0.01;
+                  const scaleCover = matchesSource
+                    ? MAX_DIGITAL_ZOOM
+                    : Math.max(
+                        aspectRatioValue / sourceAspect,
+                        sourceAspect / aspectRatioValue,
+                      );
                   const scale = 1 + displayZoom * (scaleCover - 1);
                   const videoAspectInContainer =
                     sourceAspect / aspectRatioValue;
                   const offsetX =
-                    videoAspectInContainer > 1
+                    videoAspectInContainer >= 1
                       ? ((-(displayFocusX - 0.5) * (scale - 1)) / scale) * 100
                       : 0;
                   const offsetY =
                     videoAspectInContainer <= 1
-                      ? ((-(displayFocusY - 0.5) * (scale - 1)) / scale) * 100
+                      ? ((-(displayFocusY - 0.5) * (scale - 1)) / scale) *
+                        100
                       : 0;
                   return {
                     width: "100%",
@@ -745,36 +768,31 @@ export default function Editor() {
                 }
               />
 
-              {/* Overlay Controls - Top Right (when cropping is active) */}
-              {displayZoom > 0 && (
-                <div className="absolute top-3 right-3 flex items-center gap-2">
-                  {/* Zoom slider */}
-                  <div
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900/80 backdrop-blur-sm border border-zinc-700"
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <Maximize2 className="h-3.5 w-3.5 text-zinc-400" />
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={displayZoom}
-                      onChange={(e) => {
-                        updateFramingValue({
-                          zoom: parseFloat(e.target.value),
-                        });
-                      }}
-                      className="w-20 h-1 accent-blue-500 cursor-pointer"
-                      title={`Zoom: ${Math.round(displayZoom * 100)}%`}
-                    />
-                    <Crop className="h-3.5 w-3.5 text-zinc-400" />
-                  </div>
+              <div className="absolute top-3 right-3 flex items-center gap-2">
+                <div
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900/80 backdrop-blur-sm border border-zinc-700"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <Maximize2 className="h-3.5 w-3.5 text-zinc-400" />
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={displayZoom}
+                    onChange={(e) => {
+                      updateFramingValue({
+                        zoom: parseFloat(e.target.value),
+                      });
+                    }}
+                    className="w-20 h-1 accent-blue-500 cursor-pointer"
+                    title={`Zoom: ${Math.round(displayZoom * 100)}%`}
+                  />
+                  <Crop className="h-3.5 w-3.5 text-zinc-400" />
                 </div>
-              )}
+              </div>
 
-              {/* Drag hint overlay — always visible when cropping is active */}
               {displayZoom > 0 && !isDragging && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
                   <span className="text-white text-sm font-medium px-3 py-1.5 bg-black/70 rounded-full backdrop-blur-sm">
@@ -783,20 +801,24 @@ export default function Editor() {
                 </div>
               )}
 
-              {/* Position sliders - visible whenever zoom > 0 */}
               {displayZoom > 0 && (
                 <>
-                  {/* Vertical slider for landscape */}
                   {globalFraming.aspectRatio === "16:9" && (
-                    <FramingSlider
-                      orientation="vertical"
-                      value={displayFocusY}
-                      aspectRatio={1 / aspectRatioValue}
-                      onChange={(y) => updateFramingValue({ focusY: y })}
-                    />
+                    <>
+                      <FramingSlider
+                        orientation="vertical"
+                        value={displayFocusY}
+                        aspectRatio={1 / MAX_DIGITAL_ZOOM}
+                        onChange={(y) => updateFramingValue({ focusY: y })}
+                      />
+                      <FramingSlider
+                        orientation="horizontal"
+                        value={displayFocusX}
+                        aspectRatio={1 / MAX_DIGITAL_ZOOM}
+                        onChange={(x) => updateFramingValue({ focusX: x })}
+                      />
+                    </>
                   )}
-
-                  {/* Horizontal slider for portrait and square */}
                   {(globalFraming.aspectRatio === "9:16" ||
                     globalFraming.aspectRatio === "1:1") && (
                     <FramingSlider
@@ -814,14 +836,31 @@ export default function Editor() {
               )}
 
               <CaptionOverlay currentTime={currentTime} />
-            </div>
+    </div>
+  ) : null;
+
+  return (
+    <div className="flex h-[calc(100vh-4rem)] min-h-0 overflow-hidden">
+      {/* Left: Video & Timeline */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-background">
+        {/* Video Player with Caption Overlay */}
+        <div
+          className="flex-1 min-h-0 bg-muted relative flex items-center justify-center p-4"
+          onClick={handleBackgroundClick}
+        >
+          {framingPreview ? (
+            isMobilePreview ? (
+              <PhonePreviewFrame>{framingPreview}</PhonePreviewFrame>
+            ) : (
+              framingPreview
+            )
           ) : (
-            <div className="text-white">Loading Video...</div>
+            <div className="text-muted-foreground font-medium">Loading Video...</div>
           )}
         </div>
 
         {/* Timeline */}
-        <div className="border-t border-border bg-card">
+        <div className="shrink-0 border-t border-border bg-card">
           <div className="h-40">
             <Timeline
               videoRef={videoRef}
@@ -875,7 +914,7 @@ export default function Editor() {
                   {
                     id: "captions" as const,
                     icon: Captions,
-                    label: "Caps",
+                    label: "Captions",
                     tooltip: "Caption settings",
                   },
                   {
@@ -1172,7 +1211,7 @@ function TranscriptPanel({
                     className={cn(
                       "text-[11px] font-mono font-bold px-2 py-1 rounded-md",
                       isChunkActive
-                        ? "bg-blue-500/20 text-blue-400"
+                        ? "bg-blue-500/15 text-blue-700 dark:text-blue-400"
                         : "bg-muted text-muted-foreground",
                     )}
                   >
@@ -1183,7 +1222,7 @@ function TranscriptPanel({
                     className={cn(
                       "text-[11px] font-mono font-bold px-2 py-1 rounded-md",
                       isChunkActive
-                        ? "bg-blue-500/20 text-blue-400"
+                        ? "bg-blue-500/15 text-blue-700 dark:text-blue-400"
                         : "bg-muted text-muted-foreground",
                     )}
                   >

@@ -46,6 +46,8 @@ interface AssetCardProps {
   onUpdateAsset?: (assetId: string, updates: Partial<Asset>) => void;
   variant?: "spotlight" | "collapsed";
   onSelect?: () => void;
+  isRecent?: boolean;
+  isSelected?: boolean;
 }
 
 interface Project {
@@ -136,6 +138,8 @@ export function AssetCard({
   onUpdateAsset,
   variant = "spotlight",
   onSelect,
+  isRecent = false,
+  isSelected = false,
 }: AssetCardProps) {
   const navigate = useNavigate();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -328,7 +332,10 @@ export function AssetCard({
       <div
         ref={cardRef}
         className={cn(
-          "rounded-xl overflow-hidden bg-card border-2 border-border cursor-pointer transition-all duration-200 hover:border-blue-500/50 hover:shadow-lg",
+          "rounded-xl overflow-hidden bg-card border-2 cursor-pointer transition-all duration-200 hover:border-blue-500/50 hover:shadow-lg",
+          isSelected
+            ? "border-blue-500 shadow-lg shadow-blue-500/20"
+            : "border-border",
           "group",
         )}
         onClick={onSelect}
@@ -341,6 +348,13 @@ export function AssetCard({
             className="h-full w-full transition-transform duration-500 group-hover:scale-105"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent" />
+          {(isSelected || isRecent) && (
+            <div className="absolute top-2 right-2">
+              <Badge className="bg-blue-600/90 text-white border-0 text-[10px] px-2 py-0.5 font-semibold backdrop-blur-sm">
+                {isSelected ? "Selected" : "Recent"}
+              </Badge>
+            </div>
+          )}
           {/* Status badge */}
           {(asset.status === "uploading" ||
             ((asset.status === "processing" || asset.status === "indexing") &&
@@ -369,7 +383,12 @@ export function AssetCard({
   // Spotlight variant - full featured card
   return (
     <>
-      <div className="rounded-xl overflow-hidden bg-card border-2 border-border shadow-2xl">
+      <div
+        className={cn(
+          "rounded-xl overflow-hidden bg-card border-2 shadow-2xl",
+          isSelected ? "border-blue-500" : "border-border",
+        )}
+      >
         {/* Hero Section - 16:9 landscape */}
         <div className="relative aspect-video w-full overflow-hidden group">
           <CoverImage
@@ -380,6 +399,14 @@ export function AssetCard({
           />
           {/* Gradient overlay */}
           <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent" />
+
+          {isSelected && (
+            <div className="absolute top-3 right-3 z-10">
+              <Badge className="bg-blue-600 text-white border-0 backdrop-blur-md text-xs px-2.5 py-1 font-semibold">
+                Selected
+              </Badge>
+            </div>
+          )}
 
           {/* Status badge */}
           <div className="absolute top-3 left-3 z-10">
@@ -554,7 +581,7 @@ export function AssetCard({
                               {index + 1}.
                             </span>
                             <EditableTitle
-                              title={project.title || "Untitled Microseries"}
+                              title={project.title || "Untitled"}
                               onSave={(newTitle) =>
                                 handleUpdateProjectTitle(project.projectId, newTitle)
                               }

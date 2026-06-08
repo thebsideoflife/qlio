@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Provider } from "react-redux";
 import { store } from "./store/store";
+import { TooltipProvider } from "./components/ui/tooltip";
 import { MainLayout } from "./components/layout/MainLayout";
 import Dashboard from "./pages/Dashboard";
 import Editor from "./pages/Editor";
@@ -11,7 +12,8 @@ import { RequireAuth } from "./components/RequireAuth";
 function App() {
   return (
     <Provider store={store}>
-      <BrowserRouter>
+      <TooltipProvider>
+        <BrowserRouter>
         <Routes>
           <Route path="/signin" element={<SignIn />} />
           <Route
@@ -45,7 +47,8 @@ function App() {
             }
           />
         </Routes>
-      </BrowserRouter>
+        </BrowserRouter>
+      </TooltipProvider>
     </Provider>
   );
 }

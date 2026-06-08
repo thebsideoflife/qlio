@@ -60,13 +60,21 @@ export const AutoFramedVideo: React.FC<AutoFramedVideoProps> = ({
 
   // Source video is assumed 16:9. We compute contain/cover sizes directly.
   const sourceAspect = 16 / 9;
+  // Max digital punch-in used when the target aspect matches the source.
+  const MAX_DIGITAL_ZOOM = 2;
 
   // containSize: video scaled to fit entirely within container (letterboxed)
   // coverSize: video scaled to fill container completely (cropped)
   const containScale =
     Math.min(containerW, containerH * sourceAspect) / sourceAspect;
-  const coverScale =
+  const rawCoverScale =
     Math.max(containerW, containerH * sourceAspect) / sourceAspect;
+  // When target aspect matches the source there is no crop headroom, so allow
+  // a digital punch-in (zoom acts as a digital zoom) to keep zoom/shift useful.
+  const matchesSource = rawCoverScale - containScale < containScale * 0.01;
+  const coverScale = matchesSource
+    ? containScale * MAX_DIGITAL_ZOOM
+    : rawCoverScale;
   // containW/H and coverW/H are the video pixel dimensions at each scale
   const containW = containScale * sourceAspect;
   const containH = containScale;
@@ -95,8 +103,9 @@ export const AutoFramedVideo: React.FC<AutoFramedVideoProps> = ({
     );
   }
 
-  if (zoom >= 1) {
-    // Pure crop mode — use simple CSS cover for best quality
+  if (zoom >= 1 && !matchesSource) {
+    // Pure crop mode — use simple CSS cover for best quality.
+    // Skipped when target matches source so the digital punch-in (below) applies.
     const videoStyle: React.CSSProperties = {
       width: "100%",
       height: "100%",
