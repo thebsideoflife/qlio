@@ -42,7 +42,13 @@ function djb2Hex(str: string): string {
   return (h >>> 0).toString(16);
 }
 
-/** Fingerprint of segment time bounds only (cache survives export-option toggles). */
+/**
+ * Fingerprint of segment time bounds only (cache survives export-option toggles).
+ *
+ * IMPORTANT: This formula MUST match `backend/src/services/export-metadata.ts`.
+ * If you change it here, update the backend too — mismatched hashes cause infinite
+ * request loops as each side thinks cached data is stale.
+ */
 export function computeSegmentMetadataFingerprint(
   startTime: number,
   endTime: number,
