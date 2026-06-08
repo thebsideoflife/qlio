@@ -138,12 +138,12 @@ export function MainLayout({ children }: MainLayoutProps) {
 
                   {projectIdFromPath && (
                     <EditableTitle
-                      title={projectTitle || "Untitled Microseries"}
+                      title={projectTitle || "Untitled"}
                       onSave={(newTitle) =>
                         dispatch(updateProjectTitle(newTitle))
                       }
-                      className="font-bold underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 hover:bg-muted/50 px-1.5 py-0.5 rounded truncate max-w-[140px] sm:max-w-none"
-                      inputClassName="h-7 w-48 px-2 py-0 text-sm font-bold border-border focus-visible:ring-1"
+                      className="font-bold underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 hover:bg-muted/50 px-1 py-0 rounded truncate max-w-[140px] sm:max-w-none"
+                      inputClassName="h-7 px-1.5 py-0 text-sm font-bold border-border focus-visible:ring-1"
                     />
                   )}
                 </div>
