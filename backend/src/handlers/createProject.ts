@@ -7,6 +7,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "crypto";
 import { checkAuth } from "../utils/auth";
+import { defaultProjectTitle } from "../utils/projectTitle";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -91,8 +92,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     const projectId = randomUUID();
     const createdAt = new Date().toISOString();
 
-    // Distinct Project Title (Timestamp based for now to avoid collision with Asset Name)
-    const projectTitle = `Microseries ${new Date().toLocaleString()}`;
+    const projectTitle = defaultProjectTitle();
 
     // 5. Create Project with Segments
     await docClient.send(
