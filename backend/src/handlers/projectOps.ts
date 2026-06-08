@@ -5,7 +5,17 @@ import {
   GetCommand,
   DeleteCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
+} from "@aws-sdk/client-s3";
+import type {
+  StoredSegmentMetadata,
+  SegmentMetadataResponse,
+} from "../types/segment-metadata";
+import { pruneSegmentMetadata } from "../services/export-metadata";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { checkAuth } from "../utils/auth";
 import { presignS3Uri } from "../utils/s3";
@@ -16,6 +26,8 @@ const s3Client = new S3Client({});
 
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
+const BUCKET_NAME = process.env.BUCKET_NAME;
+const PRESIGN_TTL_SEC = 43_200;
 
 // Segment render info stored directly on project
 interface StoredSegmentRender {
@@ -25,6 +37,41 @@ interface StoredSegmentRender {
   key: string;
   renderedAt: string;
   contentHash?: string;
+}
+
+async function deleteProjectThumbnails(projectId: string): Promise<void> {
+  if (!BUCKET_NAME) return;
+  const prefix = `thumbnails/projects/${projectId}/`;
+  let continuationToken: string | undefined;
+
+  do {
+    const list = await s3Client.send(
+      new ListObjectsV2Command({
+        Bucket: BUCKET_NAME,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }),
+    );
+    const keys = (list.Contents ?? [])
+      .map((o) => o.Key)
+      .filter((k): k is string => !!k);
+    if (keys.length > 0) {
+      await s3Client.send(
+        new DeleteObjectsCommand({
+          Bucket: BUCKET_NAME,
+          Delete: { Objects: keys.map((Key) => ({ Key })) },
+        }),
+      );
+    }
+    continuationToken = list.IsTruncated
+      ? list.NextContinuationToken
+      : undefined;
+  } while (continuationToken);
+}
+
+async function signMediaKey(key: string | undefined): Promise<string | null> {
+  if (!key || !BUCKET_NAME) return null;
+  return presignS3Uri(`s3://${BUCKET_NAME}/${key}`, PRESIGN_TTL_SEC);
 }
 
 export const handler: APIGatewayProxyHandler = async (event) => {
@@ -50,6 +97,12 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       (event as any).requestContext?.http?.method || event.httpMethod;
 
     if (method === "DELETE") {
+      try {
+        await deleteProjectThumbnails(projectId);
+      } catch (e) {
+        console.error(`Failed to delete thumbnails for ${projectId}:`, e);
+      }
+
       await docClient.send(
         new DeleteCommand({
           TableName: PROJECTS_TABLE,
@@ -160,11 +213,46 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       }
     }
 
-    // Combine data
+    // 6. Sign export metadata thumbnail URLs (drop rows for deleted segments)
+    const validSegmentIds = new Set(
+      ((project.segments || []) as Array<{ id: string }>).map((s) => s.id),
+    );
+    const storedMetadata = pruneSegmentMetadata(
+      (project.segmentMetadata || []) as StoredSegmentMetadata[],
+      validSegmentIds,
+    );
+
+    let segmentMetadataPublic: SegmentMetadataResponse[] | null = null;
+    if (storedMetadata.length > 0) {
+      segmentMetadataPublic = await Promise.all(
+        storedMetadata.map(async (meta) => {
+          const { thumbnailKey: _tk, ...rest } = meta;
+          return {
+            ...rest,
+            thumbnailUrl: await signMediaKey(meta.thumbnailKey),
+          };
+        }),
+      );
+    }
+
+    const thumbnailUrl = await signMediaKey(project.thumbnailKey);
+
+    const {
+      thumbnailKey: _projectThumbKey,
+      thumbnailContentHash: _thumbHash,
+      thumbnailLockUntil: _thumbLock,
+      posterKey: _posterKey,
+      exportMetadataJob: _exportMetadataJob,
+      segmentMetadata: _segmentMetadata,
+      ...projectPublic
+    } = project;
+
     const responseData = {
-      ...project,
+      ...projectPublic,
       asset,
       lastRenderDownloads,
+      segmentMetadata: segmentMetadataPublic ?? [],
+      thumbnailUrl,
     };
 
     return {
