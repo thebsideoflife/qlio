@@ -385,6 +385,8 @@ async function executeExportMetadataJob(
         const missingOptions = computeMissingMetadataOptions(
           existing,
           fpOptions,
+          seg.startTime,
+          seg.endTime,
         );
         if (!missingOptions) return;
 
