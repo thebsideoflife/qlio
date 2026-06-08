@@ -1,7 +1,18 @@
-import { useState, useEffect, useCallback, useMemo, type ReactNode } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  type ReactNode,
+} from "react";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
-import { setLastSegmentRenders } from "@/store/editorSlice";
+import {
+  setLastSegmentRenders,
+  setSegmentMetadata,
+  setProjectThumbnailUrl,
+} from "@/store/editorSlice";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -13,6 +24,9 @@ import {
   startRender,
   getRenderStatus,
   getProjectJobStatus,
+  generateExportMetadata,
+  pollExportMetadataStatus,
+  type GenerateExportMetadataResponse,
   type SegmentDownload,
 } from "@/services/api";
 import {
@@ -22,13 +36,28 @@ import {
   XCircle,
   Save,
   RefreshCw,
+  SlidersHorizontal,
 } from "lucide-react";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { cn, formatSegmentLabel } from "@/lib/utils";
 import {
   computeSegmentRenderFingerprint,
   isSegmentRenderStale,
   type SegmentRenderCache,
 } from "@/lib/segmentRenderFingerprint";
+import {
+  isSegmentMetadataStale,
+  type SegmentMetadataCache,
+} from "@/lib/segmentMetadataFingerprint";
+import {
+  buildExportMetadataDocument,
+  downloadExportMetadataJson,
+  normalizeContentAdvisory,
+} from "@/lib/exportMetadataJson";
 
 interface ExportPanelProps {
   projectId: string;
@@ -66,6 +95,15 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   const lastSegmentRenders = useSelector(
     (state: RootState) => state.editor.lastSegmentRenders,
   );
+  const segmentMetadata = useSelector(
+    (state: RootState) => state.editor.segmentMetadata,
+  );
+  const projectTitle = useSelector(
+    (state: RootState) => state.editor.projectTitle,
+  );
+  const projectThumbnailUrl = useSelector(
+    (state: RootState) => state.editor.projectThumbnailUrl,
+  );
 
   const [status, setStatus] = useState<RenderStatus>("idle");
   const [progress, setProgress] = useState(0);
@@ -80,16 +118,28 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   );
   const [renderingSegmentCount, setRenderingSegmentCount] = useState(0);
 
-  // Metadata options (UI state — backend wiring TBD)
+  const [metadataLoading, setMetadataLoading] = useState(false);
+  const [metadataError, setMetadataError] = useState<string | null>(null);
+  const [metadataSegmentErrors, setMetadataSegmentErrors] = useState<
+    Map<string, string>
+  >(() => new Map());
+  const [metadataSegmentWarnings, setMetadataSegmentWarnings] = useState<
+    Map<string, string>
+  >(() => new Map());
+  const metadataInFlightRef = useRef(false);
+  const [metadataResumeChecked, setMetadataResumeChecked] = useState(false);
+  const segmentMetadataRef = useRef(segmentMetadata);
+  segmentMetadataRef.current = segmentMetadata;
+  const lastMetadataDownloadJobRef = useRef<string | null>(null);
+
   const [metadataEnabled, setMetadataEnabled] = useState(true);
   const [includeTitles, setIncludeTitles] = useState(true);
   const [includeDescriptions, setIncludeDescriptions] = useState(true);
   const [descriptionLengths, setDescriptionLengths] = useState<
     Set<DescriptionLength>
-  >(() => new Set(["short", "two_sentences", "paragraph"]));
+  >(() => new Set(["short"]));
   const [includeThumbnails, setIncludeThumbnails] = useState(true);
-  const [includePosterArt, setIncludePosterArt] = useState(false);
-  const [descriptiveTab, setDescriptiveTab] = useState(false);
+  const [descriptiveTab, setDescriptiveTab] = useState(true);
   const [contentAdvisory, setContentAdvisory] = useState(true);
   const [mood, setMood] = useState(true);
   const [theme, setTheme] = useState(true);
@@ -115,6 +165,158 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     return map;
   }, [lastSegmentRenders]);
 
+  const cachedMetadataMap = useMemo(() => {
+    const map = new Map<string, SegmentMetadataCache>();
+    if (segmentMetadata) {
+      for (const meta of segmentMetadata) {
+        map.set(meta.segmentId, meta);
+      }
+    }
+    return map;
+  }, [segmentMetadata]);
+
+  const metadataOptions = useMemo(
+    () => ({
+      includeTitles,
+      includeDescriptions,
+      descriptionLengths: Array.from(descriptionLengths),
+      descriptiveTags: descriptiveTab
+        ? {
+            contentAdvisory,
+            mood,
+            theme,
+            tone,
+          }
+        : undefined,
+      includeThumbnails,
+    }),
+    [
+      includeTitles,
+      includeDescriptions,
+      descriptionLengths,
+      descriptiveTab,
+      contentAdvisory,
+      mood,
+      theme,
+      tone,
+      includeThumbnails,
+    ],
+  );
+
+  const staleMetadataSegmentIds = useMemo(() => {
+    if (!metadataEnabled) return [];
+    return segments
+      .filter((seg) => selectedSegmentIds.has(seg.id))
+      .filter((seg) => {
+        return isSegmentMetadataStale(
+          cachedMetadataMap.get(seg.id),
+          seg.startTime,
+          seg.endTime,
+          metadataOptions,
+        );
+      })
+      .map((s) => s.id);
+  }, [
+    segments,
+    selectedSegmentIds,
+    cachedMetadataMap,
+    metadataEnabled,
+    metadataOptions,
+  ]);
+
+  const staleMetadataKey = staleMetadataSegmentIds.join(",");
+
+  const applyMetadataResult = useCallback(
+    (result: GenerateExportMetadataResponse) => {
+      const merged = new Map(
+        (segmentMetadataRef.current || []).map((m) => [m.segmentId, m]),
+      );
+      for (const seg of result.segments) {
+        merged.set(seg.segmentId, seg);
+      }
+      dispatch(setSegmentMetadata(Array.from(merged.values())));
+
+      if (result.projectThumbnailUrl) {
+        dispatch(setProjectThumbnailUrl(result.projectThumbnailUrl));
+      }
+
+      if (result.errors?.length) {
+        setMetadataSegmentErrors(
+          new Map(result.errors.map((e) => [e.segmentId, e.error])),
+        );
+        setMetadataError(
+          `${result.errors.length} scene(s) failed metadata generation.`,
+        );
+      } else {
+        setMetadataSegmentErrors(new Map());
+        setMetadataError(null);
+      }
+
+      if (result.warnings?.length) {
+        setMetadataSegmentWarnings(
+          new Map(result.warnings.map((w) => [w.segmentId, w.message])),
+        );
+      } else {
+        setMetadataSegmentWarnings(new Map());
+      }
+    },
+    [dispatch],
+  );
+
+  const buildMetadataDocument = useCallback(() => {
+    const metaMap = new Map<string, SegmentMetadataCache>();
+    for (const m of segmentMetadataRef.current || []) {
+      metaMap.set(m.segmentId, m);
+    }
+    return buildExportMetadataDocument({
+      projectId,
+      projectTitle: projectTitle || "Untitled Microseries",
+      projectThumbnailUrl,
+      segments,
+      selectedSegmentIds,
+      metadataBySegmentId: metaMap,
+      options: metadataOptions,
+    });
+  }, [
+    projectId,
+    projectTitle,
+    projectThumbnailUrl,
+    segments,
+    selectedSegmentIds,
+    metadataOptions,
+  ]);
+
+  const handleDownloadMetadataJson = useCallback(() => {
+    downloadExportMetadataJson(buildMetadataDocument());
+  }, [buildMetadataDocument]);
+
+  const runMetadataGeneration = useCallback(
+    async (segmentIds: string[]) => {
+      if (segmentIds.length === 0 || metadataInFlightRef.current) return;
+
+      metadataInFlightRef.current = true;
+      setMetadataLoading(true);
+      setMetadataError(null);
+
+      try {
+        const result = await generateExportMetadata(projectId, {
+          segmentIds,
+          options: metadataOptions,
+        });
+        applyMetadataResult(result);
+      } catch (err: unknown) {
+        const apiError = err as { response?: { data?: { error?: string } } };
+        setMetadataError(
+          apiError.response?.data?.error || "Failed to generate metadata",
+        );
+      } finally {
+        metadataInFlightRef.current = false;
+        setMetadataLoading(false);
+      }
+    },
+    [projectId, metadataOptions, applyMetadataResult],
+  );
+
   const isProcessing = status === "starting" || status === "rendering";
   const hasAnySelection = selectedSegmentIds.size > 0;
   const someRendered = segments.some((s) => {
@@ -134,20 +336,74 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  // Resume active render job on mount
+  // Resume active render + export-metadata jobs on mount
   useEffect(() => {
+    let cancelled = false;
+    setMetadataResumeChecked(false);
+
     (async () => {
       try {
         const jobStatus = await getProjectJobStatus(projectId);
+        if (cancelled) return;
+
         if (jobStatus.activeRenderJobId) {
           setJobId(jobStatus.activeRenderJobId);
           setStatus("rendering");
         }
+
+        const metaJob = jobStatus.exportMetadataJob;
+        if (
+          metaJob &&
+          (metaJob.status === "pending" || metaJob.status === "generating")
+        ) {
+          metadataInFlightRef.current = true;
+          setMetadataLoading(true);
+          try {
+            const result = await pollExportMetadataStatus(projectId);
+            if (!cancelled) applyMetadataResult(result);
+          } catch (err: unknown) {
+            if (!cancelled) {
+              const apiError = err as {
+                response?: { data?: { error?: string } };
+              };
+              setMetadataError(
+                apiError.response?.data?.error ||
+                  "Failed to resume metadata generation",
+              );
+            }
+          } finally {
+            if (!cancelled) {
+              metadataInFlightRef.current = false;
+              setMetadataLoading(false);
+            }
+          }
+        }
       } catch {
         // Non-fatal
+      } finally {
+        if (!cancelled) setMetadataResumeChecked(true);
       }
     })();
-  }, [projectId]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, applyMetadataResult]);
+
+  // Auto-generate stale metadata when the panel opens or options/selection change
+  useEffect(() => {
+    if (!metadataResumeChecked || !metadataEnabled) return;
+    if (staleMetadataSegmentIds.length === 0) return;
+    if (metadataInFlightRef.current || metadataLoading) return;
+    runMetadataGeneration(staleMetadataSegmentIds);
+  }, [
+    metadataResumeChecked,
+    metadataEnabled,
+    staleMetadataKey,
+    metadataLoading,
+    runMetadataGeneration,
+    staleMetadataSegmentIds,
+  ]);
 
   useEffect(() => {
     if (!jobId || status === "completed" || status === "failed") return;
@@ -195,6 +451,15 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
 
             dispatch(setLastSegmentRenders(Array.from(mergedMap.values())));
           }
+
+          if (
+            metadataEnabled &&
+            jobId &&
+            lastMetadataDownloadJobRef.current !== jobId
+          ) {
+            lastMetadataDownloadJobRef.current = jobId;
+            downloadExportMetadataJson(buildMetadataDocument());
+          }
           return;
         } else if (result.status === "failed") {
           setStatus("failed");
@@ -225,6 +490,9 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     segments,
     captionSettings,
     globalFraming,
+    metadataEnabled,
+    jobId,
+    buildMetadataDocument,
   ]);
 
   const handleStartRender = useCallback(async () => {
@@ -298,18 +566,21 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     onDone?.();
   }, [onDone]);
 
-  const toggleSegment = useCallback((segmentId: string) => {
-    if (isProcessing) return;
-    setSelectedSegmentIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(segmentId)) {
-        next.delete(segmentId);
-      } else {
-        next.add(segmentId);
-      }
-      return next;
-    });
-  }, [isProcessing]);
+  const toggleSegment = useCallback(
+    (segmentId: string) => {
+      if (isProcessing) return;
+      setSelectedSegmentIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(segmentId)) {
+          next.delete(segmentId);
+        } else {
+          next.add(segmentId);
+        }
+        return next;
+      });
+    },
+    [isProcessing],
+  );
 
   const selectAll = useCallback(() => {
     setSelectedSegmentIds(new Set(segments.map((s) => s.id)));
@@ -370,8 +641,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
         downloadUrl,
         isStale,
         showRerender: isStale && !isProcessing,
-        showDownload:
-          !!downloadUrl && !isStale && renderStatus === "completed",
+        showDownload: !!downloadUrl && !isStale && renderStatus === "completed",
       };
     });
   }, [
@@ -386,6 +656,22 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
 
   const metadataDisabled = !metadataEnabled || isProcessing;
   const descriptiveChildrenDisabled = !descriptiveTab || metadataDisabled;
+
+  const selectedMetadataRows = useMemo(() => {
+    return segments
+      .map((seg, index) => ({ segment: seg, index: index + 1 }))
+      .filter(({ segment }) => selectedSegmentIds.has(segment.id))
+      .map(({ segment, index }) => {
+        const meta = cachedMetadataMap.get(segment.id);
+        const stale = isSegmentMetadataStale(
+          meta,
+          segment.startTime,
+          segment.endTime,
+          metadataOptions,
+        );
+        return { segment, meta, index, stale };
+      });
+  }, [segments, selectedSegmentIds, cachedMetadataMap, metadataOptions]);
 
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-4 sm:gap-5">
@@ -429,370 +715,446 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
 
       <div className="flex flex-col flex-1 min-h-0 rounded-xl border border-border bg-card shadow-sm overflow-hidden">
         <div className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain lg:overflow-hidden">
-          <div className="grid grid-cols-1 lg:grid-cols-3 lg:h-full lg:min-h-0 divide-y lg:divide-y-0 lg:divide-x divide-border">
-          {/* Scenes */}
-          <ExportColumn className="lg:min-w-0">
-            <ColumnHeader
-              title="Scenes"
-              trailing={
-                <div className="flex items-center gap-3">
-                  {!isProcessing && (
-                    <div className="flex items-center gap-1.5 text-xs">
-                      <button
-                        type="button"
-                        onClick={selectAll}
-                        className="text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        All
-                      </button>
-                      <span className="text-muted-foreground/40">/</span>
-                      <button
-                        type="button"
-                        onClick={selectNone}
-                        className="text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        None
-                      </button>
-                    </div>
-                  )}
-                  <span className="text-xs font-medium tabular-nums text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
-                    {selectedSegmentIds.size}/{segments.length}
-                  </span>
-                </div>
-              }
-            />
-            <ScrollArea className="lg:flex-1 lg:min-h-0 max-h-[min(50dvh,22rem)] lg:max-h-none">
-              <div className="p-2">
-                {segmentRows.map((row) => {
-                  const canSelect = !isProcessing;
-                  const isRendering =
-                    isProcessing &&
-                    segmentDownloads.some(
-                      (d) =>
-                        d.segmentId === row.id && d.status === "rendering",
-                    );
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.75fr)_minmax(0,1fr)] lg:h-full lg:min-h-0 divide-y lg:divide-y-0 lg:divide-x divide-border">
+            {/* Scenes */}
+            <ExportColumn className="lg:min-w-0">
+              <ColumnHeader
+                title="Scenes"
+                trailing={
+                  <div className="flex items-center gap-3">
+                    {!isProcessing && (
+                      <div className="flex items-center gap-1.5 text-xs">
+                        <button
+                          type="button"
+                          onClick={selectAll}
+                          className="text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          All
+                        </button>
+                        <span className="text-muted-foreground/40">/</span>
+                        <button
+                          type="button"
+                          onClick={selectNone}
+                          className="text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          None
+                        </button>
+                      </div>
+                    )}
+                    <span className="text-xs font-medium tabular-nums text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
+                      {selectedSegmentIds.size}/{segments.length}
+                    </span>
+                  </div>
+                }
+              />
+              <ScrollArea className="lg:flex-1 lg:min-h-0 max-h-[min(50dvh,22rem)] lg:max-h-none">
+                <div className="p-2">
+                  {segmentRows.map((row) => {
+                    const canSelect = !isProcessing;
+                    const isRendering =
+                      isProcessing &&
+                      segmentDownloads.some(
+                        (d) =>
+                          d.segmentId === row.id && d.status === "rendering",
+                      );
 
-                  return (
-                    <div
-                      key={row.id}
-                      className={cn(
-                        "group relative flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors",
-                        canSelect && "cursor-pointer",
-                        row.isSelected
-                          ? "bg-primary/10"
-                          : "hover:bg-muted/50",
-                      )}
-                      role={canSelect ? "button" : undefined}
-                      tabIndex={canSelect ? 0 : undefined}
-                      onClick={canSelect ? () => toggleSegment(row.id) : undefined}
-                      onKeyDown={
-                        canSelect
-                          ? (e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                toggleSegment(row.id);
+                    return (
+                      <div
+                        key={row.id}
+                        className={cn(
+                          "group relative flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors",
+                          canSelect && "cursor-pointer",
+                          row.isSelected
+                            ? "bg-primary/10"
+                            : "hover:bg-muted/50",
+                        )}
+                        role={canSelect ? "button" : undefined}
+                        tabIndex={canSelect ? 0 : undefined}
+                        onClick={
+                          canSelect ? () => toggleSegment(row.id) : undefined
+                        }
+                        onKeyDown={
+                          canSelect
+                            ? (e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  toggleSegment(row.id);
+                                }
                               }
-                            }
-                          : undefined
-                      }
-                    >
-                      <div className="shrink-0">
-                        {isProcessing ? (
-                          <SceneStatusIcon status={row.renderStatus} />
-                        ) : (
-                          <Checkbox
-                            checked={row.isSelected}
-                            onCheckedChange={() => toggleSegment(row.id)}
-                            onClick={(e) => e.stopPropagation()}
-                          />
+                            : undefined
+                        }
+                      >
+                        <div className="shrink-0">
+                          {isProcessing ? (
+                            <SceneStatusIcon status={row.renderStatus} />
+                          ) : (
+                            <Checkbox
+                              checked={row.isSelected}
+                              onCheckedChange={() => toggleSegment(row.id)}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                          )}
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <span className="text-sm font-medium leading-snug line-clamp-2">
+                            {formatSegmentLabel(row.index, row.label)}
+                          </span>
+                        </div>
+
+                        <span className="shrink-0 text-xs tabular-nums text-muted-foreground self-center">
+                          {row.duration}
+                        </span>
+
+                        {row.showDownload && (
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="shrink-0 h-8 w-8 text-muted-foreground hover:text-foreground"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDownload(
+                                row.downloadUrl!,
+                                formatSegmentLabel(row.index, row.label),
+                              );
+                            }}
+                            aria-label={`Download ${row.label}`}
+                          >
+                            <Download className="h-4 w-4" />
+                          </Button>
+                        )}
+
+                        {row.showRerender && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="shrink-0 h-8 gap-1.5 px-2 text-xs text-primary hover:text-primary"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRerenderSegment(row.id);
+                            }}
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                            Re-render
+                          </Button>
+                        )}
+
+                        {isRendering && (
+                          <div className="shrink-0 h-8 w-8 flex items-center justify-center">
+                            <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                          </div>
                         )}
                       </div>
-
-                      <div className="min-w-0 flex-1">
-                        <span className="text-sm font-medium leading-snug line-clamp-2">
-                          {formatSegmentLabel(row.index, row.label)}
-                        </span>
-                      </div>
-
-                      <span className="shrink-0 text-xs tabular-nums text-muted-foreground self-center">
-                        {row.duration}
-                      </span>
-
-                      {row.showDownload && (
-                        <Button
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="shrink-0 h-8 w-8 text-muted-foreground hover:text-foreground"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDownload(
-                              row.downloadUrl!,
-                              formatSegmentLabel(row.index, row.label),
-                            );
-                          }}
-                          aria-label={`Download ${row.label}`}
-                        >
-                          <Download className="h-4 w-4" />
-                        </Button>
-                      )}
-
-                      {row.showRerender && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          className="shrink-0 h-8 gap-1.5 px-2 text-xs text-primary hover:text-primary"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleRerenderSegment(row.id);
-                          }}
-                        >
-                          <RefreshCw className="h-3.5 w-3.5" />
-                          Re-render
-                        </Button>
-                      )}
-
-                      {isRendering && (
-                        <div className="shrink-0 h-8 w-8 flex items-center justify-center">
-                          <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </ScrollArea>
-          </ExportColumn>
-
-          {/* Metadata (UI preview - backend wiring TBD) */}
-          <ExportColumn>
-            <ColumnHeader
-              title="Metadata"
-              trailing={
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-                    Coming soon
-                  </span>
-                  <Switch
-                    checked={metadataEnabled}
-                    onCheckedChange={setMetadataEnabled}
-                    disabled={isProcessing}
-                    aria-label="Include metadata"
-                  />
+                    );
+                  })}
                 </div>
-              }
-            />
-            <div
-              className={cn(
-                "px-4 py-4 space-y-4 lg:flex-1 lg:min-h-0 lg:overflow-y-auto",
-                metadataDisabled && "opacity-50 pointer-events-none",
-              )}
-            >
-              <OptionRow
-                id="meta-titles"
-                label="Titles"
-                checked={includeTitles}
-                onCheckedChange={setIncludeTitles}
-              />
-              <div className="space-y-2">
-                <OptionRow
-                  id="meta-descriptions"
-                  label="Descriptions"
-                  checked={includeDescriptions}
-                  onCheckedChange={setIncludeDescriptions}
-                />
-                <NestedGroup disabled={!includeDescriptions}>
-                  <div className="space-y-2.5">
-                    {DESCRIPTION_LENGTH_OPTIONS.map((opt) => (
-                      <OptionRow
-                        key={opt.value}
-                        id={`desc-${opt.value}`}
-                        label={opt.label}
-                        checked={descriptionLengths.has(opt.value)}
-                        onCheckedChange={() =>
-                          toggleDescriptionLength(opt.value)
-                        }
-                        disabled={!includeDescriptions}
-                      />
-                    ))}
-                  </div>
-                </NestedGroup>
-              </div>
-              <OptionRow
-                id="meta-thumbnails"
-                label="Thumbnails"
-                checked={includeThumbnails}
-                onCheckedChange={setIncludeThumbnails}
-              />
-              <OptionRow
-                id="meta-poster"
-                label="Poster Art"
-                checked={includePosterArt}
-                onCheckedChange={setIncludePosterArt}
-              />
-              <Separator className="my-1" />
-              <div className="space-y-2">
-                <OptionRow
-                  id="meta-descriptive"
-                  label="Descriptive Tab"
-                  checked={descriptiveTab}
-                  onCheckedChange={setDescriptiveTab}
-                />
-                <NestedGroup disabled={descriptiveChildrenDisabled}>
-                  <OptionRow
-                    id="meta-advisory"
-                    label="Content Advisory"
-                    checked={contentAdvisory}
-                    onCheckedChange={setContentAdvisory}
-                    disabled={descriptiveChildrenDisabled}
-                  />
-                  <OptionRow
-                    id="meta-mood"
-                    label="Mood"
-                    checked={mood}
-                    onCheckedChange={setMood}
-                    disabled={descriptiveChildrenDisabled}
-                  />
-                  <OptionRow
-                    id="meta-theme"
-                    label="Theme"
-                    checked={theme}
-                    onCheckedChange={setTheme}
-                    disabled={descriptiveChildrenDisabled}
-                  />
-                  <OptionRow
-                    id="meta-tone"
-                    label="Tone"
-                    checked={tone}
-                    onCheckedChange={setTone}
-                    disabled={descriptiveChildrenDisabled}
-                  />
-                </NestedGroup>
-              </div>
-            </div>
-          </ExportColumn>
+              </ScrollArea>
+            </ExportColumn>
 
-          {/* Configuration */}
-          <ExportColumn>
-            <ColumnHeader title="Configuration" />
-            <div className="px-4 py-4 space-y-6 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
-              <ConfigSection
-                title="Ads"
+            {/* Metadata */}
+            <ExportColumn className="lg:min-h-0 lg:flex-1">
+              <ColumnHeader
+                title="Metadata"
                 trailing={
                   <div className="flex items-center gap-2">
+                    {metadataEnabled && metadataLoading && (
+                      <span className="text-[10px] text-muted-foreground hidden sm:inline">
+                        Generating…
+                      </span>
+                    )}
+                    {metadataEnabled &&
+                      !metadataLoading &&
+                      staleMetadataSegmentIds.length > 0 && (
+                        <span className="text-[10px] text-amber-600 dark:text-amber-500 hidden sm:inline">
+                          Updating {staleMetadataSegmentIds.length}…
+                        </span>
+                      )}
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          disabled={metadataDisabled}
+                          aria-label="Metadata options"
+                        >
+                          <SlidersHorizontal className="h-3.5 w-3.5" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent
+                        align="end"
+                        className="w-72 space-y-4"
+                      >
+                        <p className="text-xs font-semibold">Include in export</p>
+                        <OptionRow
+                          id="meta-titles"
+                          label="Titles"
+                          checked={includeTitles}
+                          onCheckedChange={setIncludeTitles}
+                        />
+                        <div className="space-y-2">
+                          <OptionRow
+                            id="meta-descriptions"
+                            label="Descriptions"
+                            checked={includeDescriptions}
+                            onCheckedChange={setIncludeDescriptions}
+                          />
+                          <NestedGroup disabled={!includeDescriptions}>
+                            <div className="space-y-2.5">
+                              {DESCRIPTION_LENGTH_OPTIONS.map((opt) => (
+                                <OptionRow
+                                  key={opt.value}
+                                  id={`desc-${opt.value}`}
+                                  label={opt.label}
+                                  checked={descriptionLengths.has(opt.value)}
+                                  onCheckedChange={() =>
+                                    toggleDescriptionLength(opt.value)
+                                  }
+                                  disabled={!includeDescriptions}
+                                />
+                              ))}
+                            </div>
+                          </NestedGroup>
+                        </div>
+                        <OptionRow
+                          id="meta-thumbnails"
+                          label="Thumbnails"
+                          checked={includeThumbnails}
+                          onCheckedChange={setIncludeThumbnails}
+                        />
+                        <Separator />
+                        <div className="space-y-2">
+                          <OptionRow
+                            id="meta-descriptive"
+                            label="Descriptive Tags"
+                            checked={descriptiveTab}
+                            onCheckedChange={setDescriptiveTab}
+                          />
+                          <NestedGroup disabled={descriptiveChildrenDisabled}>
+                            <OptionRow
+                              id="meta-advisory"
+                              label="Content Advisory"
+                              checked={contentAdvisory}
+                              onCheckedChange={setContentAdvisory}
+                              disabled={descriptiveChildrenDisabled}
+                            />
+                            <OptionRow
+                              id="meta-mood"
+                              label="Mood"
+                              checked={mood}
+                              onCheckedChange={setMood}
+                              disabled={descriptiveChildrenDisabled}
+                            />
+                            <OptionRow
+                              id="meta-theme"
+                              label="Theme"
+                              checked={theme}
+                              onCheckedChange={setTheme}
+                              disabled={descriptiveChildrenDisabled}
+                            />
+                            <OptionRow
+                              id="meta-tone"
+                              label="Tone"
+                              checked={tone}
+                              onCheckedChange={setTone}
+                              disabled={descriptiveChildrenDisabled}
+                            />
+                          </NestedGroup>
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                    {metadataLoading && (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                    )}
+                    <Switch
+                      checked={metadataEnabled}
+                      onCheckedChange={setMetadataEnabled}
+                      disabled={isProcessing}
+                      aria-label="Include metadata"
+                    />
+                  </div>
+                }
+              />
+
+              {!metadataEnabled ? (
+                <div className="flex flex-1 items-center justify-center px-6 py-12 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    Metadata export is off. Toggle on to generate titles,
+                    descriptions, and thumbnails.
+                  </p>
+                </div>
+              ) : selectedMetadataRows.length === 0 ? (
+                <div className="flex flex-1 items-center justify-center px-6 py-12 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    Select scenes to preview their metadata.
+                  </p>
+                </div>
+              ) : (
+                <div
+                  className={cn(
+                    "flex flex-col min-h-0 flex-1",
+                    metadataDisabled && "opacity-50 pointer-events-none",
+                  )}
+                >
+                  {metadataError && (
+                    <div className="shrink-0 px-4 py-2 border-b border-border bg-destructive/5">
+                      <p className="text-xs text-destructive">{metadataError}</p>
+                    </div>
+                  )}
+                  <ScrollArea className="flex-1 min-h-0 max-h-[min(55dvh,28rem)] lg:max-h-none">
+                    <div className="p-3 space-y-3">
+                      {selectedMetadataRows.map(
+                        ({ segment, meta, index, stale }) => (
+                          <MetadataSceneCard
+                            key={segment.id}
+                            index={index}
+                            segmentTitle={segment.title}
+                            meta={meta}
+                            stale={stale}
+                            loading={metadataLoading}
+                            includeTitles={includeTitles}
+                            includeDescriptions={includeDescriptions}
+                            includeThumbnails={includeThumbnails}
+                            descriptionLengths={descriptionLengths}
+                            descriptiveTab={descriptiveTab}
+                            contentAdvisory={contentAdvisory}
+                            mood={mood}
+                            theme={theme}
+                            tone={tone}
+                            error={metadataSegmentErrors.get(segment.id)}
+                            warning={metadataSegmentWarnings.get(segment.id)}
+                          />
+                        ),
+                      )}
+                    </div>
+                  </ScrollArea>
+                </div>
+              )}
+            </ExportColumn>
+
+            {/* Configuration */}
+            <ExportColumn>
+              <ColumnHeader title="Configuration" />
+              <div className="px-4 py-4 space-y-6 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
+                <ConfigSection
+                  title="Ads"
+                  trailing={
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                        Coming soon
+                      </span>
+                      <Switch
+                        checked={adsEnabled}
+                        onCheckedChange={setAdsEnabled}
+                        disabled={isProcessing}
+                        aria-label="Enable ads"
+                      />
+                    </div>
+                  }
+                >
+                  <div
+                    className={cn(
+                      "space-y-4",
+                      (!adsEnabled || isProcessing) &&
+                        "opacity-50 pointer-events-none",
+                    )}
+                  >
+                    <div>
+                      <Label className="text-xs text-muted-foreground">
+                        Ad Load
+                      </Label>
+                      <input
+                        type="range"
+                        min={1}
+                        max={15}
+                        value={adLoad}
+                        onChange={(e) => setAdLoad(Number(e.target.value))}
+                        className="mt-2 w-full h-1.5 accent-primary cursor-pointer"
+                        disabled={!adsEnabled || isProcessing}
+                      />
+                      <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+                        <span>1</span>
+                        <span className="font-medium text-foreground tabular-nums">
+                          {adLoad}
+                        </span>
+                        <span>15</span>
+                      </div>
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground mb-2 block">
+                        Placement
+                      </Label>
+                      <div className="flex flex-wrap gap-x-4 gap-y-2">
+                        <OptionRow
+                          id="ad-pre"
+                          label="Pre"
+                          checked={adPre}
+                          onCheckedChange={setAdPre}
+                        />
+                        <OptionRow
+                          id="ad-mid"
+                          label="Mid"
+                          checked={adMid}
+                          onCheckedChange={setAdMid}
+                        />
+                        <OptionRow
+                          id="ad-post"
+                          label="Post"
+                          checked={adPost}
+                          onCheckedChange={setAdPost}
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <Label className="text-xs text-muted-foreground mb-2 block">
+                        Ad Tag Type
+                      </Label>
+                      <div className="flex gap-4">
+                        <OptionRow
+                          id="ad-vast"
+                          label="VAST"
+                          checked={adVast}
+                          onCheckedChange={setAdVast}
+                        />
+                        <OptionRow
+                          id="ad-iab"
+                          label="IAB"
+                          checked={adIab}
+                          onCheckedChange={setAdIab}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </ConfigSection>
+
+                <Separator />
+
+                <ConfigSection
+                  title="Video Format"
+                  trailing={
                     <span className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
                       Coming soon
                     </span>
-                    <Switch
-                      checked={adsEnabled}
-                      onCheckedChange={setAdsEnabled}
-                      disabled={isProcessing}
-                      aria-label="Enable ads"
-                    />
-                  </div>
-                }
-              >
-                <div
-                  className={cn(
-                    "space-y-4",
-                    (!adsEnabled || isProcessing) &&
-                      "opacity-50 pointer-events-none",
-                  )}
+                  }
                 >
-                  <div>
-                    <Label className="text-xs text-muted-foreground">
-                      Ad Load
-                    </Label>
-                    <input
-                      type="range"
-                      min={1}
-                      max={15}
-                      value={adLoad}
-                      onChange={(e) => setAdLoad(Number(e.target.value))}
-                      className="mt-2 w-full h-1.5 accent-primary cursor-pointer"
-                      disabled={!adsEnabled || isProcessing}
-                    />
-                    <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
-                      <span>1</span>
-                      <span className="font-medium text-foreground tabular-nums">
-                        {adLoad}
-                      </span>
-                      <span>15</span>
-                    </div>
-                  </div>
-                  <div>
-                    <Label className="text-xs text-muted-foreground mb-2 block">
-                      Placement
-                    </Label>
-                    <div className="flex flex-wrap gap-x-4 gap-y-2">
-                      <OptionRow
-                        id="ad-pre"
-                        label="Pre"
-                        checked={adPre}
-                        onCheckedChange={setAdPre}
-                      />
-                      <OptionRow
-                        id="ad-mid"
-                        label="Mid"
-                        checked={adMid}
-                        onCheckedChange={setAdMid}
-                      />
-                      <OptionRow
-                        id="ad-post"
-                        label="Post"
-                        checked={adPost}
-                        onCheckedChange={setAdPost}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Label className="text-xs text-muted-foreground mb-2 block">
-                      Ad Tag Type
-                    </Label>
-                    <div className="flex gap-4">
-                      <OptionRow
-                        id="ad-vast"
-                        label="VAST"
-                        checked={adVast}
-                        onCheckedChange={setAdVast}
-                      />
-                      <OptionRow
-                        id="ad-iab"
-                        label="IAB"
-                        checked={adIab}
-                        onCheckedChange={setAdIab}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </ConfigSection>
-
-              <Separator />
-
-              <ConfigSection
-                title="Video Format"
-                trailing={
-                  <span className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-                    Coming soon
-                  </span>
-                }
-              >
-                <RadioGroup
-                  name="video-format"
-                  value={videoFormat}
-                  onChange={setVideoFormat}
-                  options={[
-                    { value: "mp4-h264", label: "MP4 (H.264)" },
-                    { value: "mp4-h265", label: "MP4 (H.265)" },
-                    { value: "mov", label: ".MOV" },
-                    { value: "webm", label: "WebM" },
-                  ]}
-                  disabled={isProcessing}
-                />
-              </ConfigSection>
-            </div>
-          </ExportColumn>
+                  <RadioGroup
+                    name="video-format"
+                    value={videoFormat}
+                    onChange={setVideoFormat}
+                    options={[
+                      { value: "mp4-h264", label: "MP4 (H.264)" },
+                      { value: "mp4-h265", label: "MP4 (H.265)" },
+                      { value: "mov", label: ".MOV" },
+                      { value: "webm", label: "WebM" },
+                    ]}
+                    disabled={isProcessing}
+                  />
+                </ConfigSection>
+              </div>
+            </ExportColumn>
           </div>
         </div>
 
@@ -801,15 +1163,35 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
             {isProcessing
               ? "Export in progress — you can leave and return later."
               : status === "completed"
-                ? "Export complete. Download individual scenes or return to the editor."
+                ? metadataEnabled
+                  ? "Export complete. Scene videos and metadata JSON are ready to download."
+                  : "Export complete. Download individual scenes or return to the editor."
                 : hasAnySelection
                   ? `${selectedSegmentIds.size} scene${selectedSegmentIds.size === 1 ? "" : "s"} selected`
                   : "Select at least one scene to export"}
           </p>
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:shrink-0">
-            <Button variant="ghost" size="sm" onClick={handleDone} className="w-full sm:w-auto">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleDone}
+              className="w-full sm:w-auto"
+            >
               {status === "completed" || someRendered ? "Done" : "Cancel"}
             </Button>
+            {metadataEnabled &&
+              hasAnySelection &&
+              (status === "completed" || someRendered) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDownloadMetadataJson}
+                  className="w-full sm:w-auto"
+                >
+                  <Download className="h-4 w-4 mr-2" />
+                  Metadata JSON
+                </Button>
+              )}
             {(status === "idle" || status === "failed") && (
               <Button
                 size="sm"
@@ -832,6 +1214,152 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   );
 }
 
+function MetadataSceneCard({
+  index,
+  segmentTitle,
+  meta,
+  stale,
+  loading,
+  includeTitles,
+  includeDescriptions,
+  includeThumbnails,
+  descriptionLengths,
+  descriptiveTab,
+  contentAdvisory,
+  mood,
+  theme,
+  tone,
+  error,
+  warning,
+}: {
+  index: number;
+  segmentTitle: string;
+  meta: SegmentMetadataCache | undefined;
+  stale: boolean;
+  loading: boolean;
+  includeTitles: boolean;
+  includeDescriptions: boolean;
+  includeThumbnails: boolean;
+  descriptionLengths: Set<DescriptionLength>;
+  descriptiveTab: boolean;
+  contentAdvisory: boolean;
+  mood: boolean;
+  theme: boolean;
+  tone: boolean;
+  error?: string;
+  warning?: string;
+}) {
+  const isGenerating = stale && loading;
+  const contentAdvisoryTag = normalizeContentAdvisory(
+    meta?.tags?.content_advisory,
+  );
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border p-3 space-y-2.5",
+        stale
+          ? "border-amber-500/30 bg-amber-500/[0.03]"
+          : "border-border bg-card",
+      )}
+    >
+      <div className="flex gap-3">
+        {includeThumbnails && (
+          <div className="size-[72px] self-start rounded-md overflow-hidden shrink-0 bg-muted">
+            {meta?.thumbnailUrl ? (
+              <img
+                src={meta.thumbnailUrl}
+                alt=""
+                className="size-full object-cover"
+              />
+            ) : (
+              <div className="size-full flex items-center justify-center">
+                {isGenerating ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                ) : (
+                  <span className="text-[10px] text-muted-foreground">
+                    No thumbnail
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="min-w-0 flex-1 space-y-1.5">
+          {includeTitles && (
+            <p className="text-sm font-semibold leading-snug">
+              {formatSegmentLabel(index, segmentTitle)}
+            </p>
+          )}
+
+          {includeDescriptions && (
+            <div className="space-y-1">
+              {DESCRIPTION_LENGTH_OPTIONS.filter((opt) =>
+                descriptionLengths.has(opt.value),
+              ).map((opt) => {
+                const text = meta?.descriptions?.[opt.value];
+                return (
+                  <div key={opt.value}>
+                    {descriptionLengths.size > 1 && (
+                      <span className="text-[10px] font-medium text-muted-foreground/80 uppercase tracking-wide">
+                        {opt.label}
+                      </span>
+                    )}
+                    <p
+                      className={cn(
+                        "text-xs text-muted-foreground leading-relaxed",
+                        descriptionLengths.size > 1 && "mt-0.5",
+                        !text && isGenerating && "italic",
+                      )}
+                    >
+                      {text || (isGenerating ? "Generating…" : "—")}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {isGenerating && (
+          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground mt-0.5" />
+        )}
+      </div>
+
+      {descriptiveTab && meta?.tags && (
+        <div className="flex flex-wrap gap-1.5">
+          {contentAdvisory && contentAdvisoryTag && (
+            <span className="text-[10px] bg-muted px-2 py-0.5 rounded-full">
+              {contentAdvisoryTag}
+            </span>
+          )}
+          {mood && meta.tags.mood && (
+            <span className="text-[10px] bg-muted px-2 py-0.5 rounded-full">
+              {meta.tags.mood}
+            </span>
+          )}
+          {theme && meta.tags.theme && (
+            <span className="text-[10px] bg-muted px-2 py-0.5 rounded-full">
+              {meta.tags.theme}
+            </span>
+          )}
+          {tone && meta.tags.tone && (
+            <span className="text-[10px] bg-muted px-2 py-0.5 rounded-full">
+              {meta.tags.tone}
+            </span>
+          )}
+        </div>
+      )}
+
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      {warning && (
+        <p className="text-xs text-amber-600 dark:text-amber-500">{warning}</p>
+      )}
+    </div>
+  );
+}
+
 function SceneStatusIcon({
   status,
 }: {
@@ -839,17 +1367,15 @@ function SceneStatusIcon({
 }) {
   switch (status) {
     case "rendering":
-      return (
-        <Loader2 className="h-4 w-4 animate-spin text-primary" />
-      );
+      return <Loader2 className="h-4 w-4 animate-spin text-primary" />;
     case "completed":
-      return (
-        <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-      );
+      return <CheckCircle2 className="h-4 w-4 text-emerald-500" />;
     case "failed":
       return <XCircle className="h-4 w-4 text-destructive" />;
     default:
-      return <div className="h-4 w-4 rounded border border-border bg-muted/50" />;
+      return (
+        <div className="h-4 w-4 rounded border border-border bg-muted/50" />
+      );
   }
 }
 
@@ -861,11 +1387,7 @@ function ExportColumn({
   className?: string;
 }) {
   return (
-    <div
-      className={cn("flex flex-col min-h-0", className)}
-    >
-      {children}
-    </div>
+    <div className={cn("flex flex-col min-h-0", className)}>{children}</div>
   );
 }
 

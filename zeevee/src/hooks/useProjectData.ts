@@ -7,6 +7,8 @@ import {
   setCaptionSettings,
   setGlobalFraming,
   setLastSegmentRenders,
+  setSegmentMetadata,
+  setProjectThumbnailUrl,
 } from "@/store/editorSlice";
 import {
   getProject,
@@ -83,6 +85,14 @@ export function useProjectData(projectId: string | undefined) {
         project.lastRenderDownloads.length > 0
       ) {
         dispatch(setLastSegmentRenders(project.lastRenderDownloads));
+      }
+
+      if (project.segmentMetadata && project.segmentMetadata.length > 0) {
+        dispatch(setSegmentMetadata(project.segmentMetadata));
+      }
+
+      if (project.thumbnailUrl) {
+        dispatch(setProjectThumbnailUrl(project.thumbnailUrl));
       }
 
       // Load generation metadata (last used generation inputs)

@@ -60,6 +60,9 @@ interface EditorState {
         contentHash?: string;
       }[]
     | null;
+  // Export metadata from Pegasus (cached on project)
+  segmentMetadata: import("@/lib/segmentMetadataFingerprint").SegmentMetadataCache[] | null;
+  projectThumbnailUrl: string | null;
 }
 
 const initialState: EditorState = {
@@ -84,6 +87,8 @@ const initialState: EditorState = {
   showKeyframes: false,
   // Last rendered segments
   lastSegmentRenders: null,
+  segmentMetadata: null,
+  projectThumbnailUrl: null,
 };
 
 // Helper to mark state as edited
@@ -785,6 +790,20 @@ export const editorSlice = createSlice({
     clearLastSegmentRenders: (state) => {
       state.lastSegmentRenders = null;
     },
+    setSegmentMetadata: (
+      state,
+      action: PayloadAction<
+        import("@/lib/segmentMetadataFingerprint").SegmentMetadataCache[]
+      >,
+    ) => {
+      state.segmentMetadata = action.payload;
+    },
+    setProjectThumbnailUrl: (
+      state,
+      action: PayloadAction<string | null>,
+    ) => {
+      state.projectThumbnailUrl = action.payload;
+    },
   },
 });
 
@@ -829,5 +848,7 @@ export const {
   // Render tracking
   setLastSegmentRenders,
   clearLastSegmentRenders,
+  setSegmentMetadata,
+  setProjectThumbnailUrl,
 } = editorSlice.actions;
 export default editorSlice.reducer;

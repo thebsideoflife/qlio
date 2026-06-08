@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,6 +37,7 @@ import {
 } from "@/services/api";
 import { EditableTitle } from "@/components/ui/editable-title";
 import { touchRecentAsset } from "./recentAssets";
+import { ensureAssetThumbnailsOnce } from "@/lib/ensureThumbnails";
 
 interface AssetCardProps {
   asset: Asset;
@@ -53,6 +54,7 @@ interface Project {
   createdAt: string;
   segmentCount: number;
   firstSegmentStartTime: number | null;
+  thumbnailUrl?: string | null;
 }
 
 const stageLabels: Record<string, string> = {
@@ -95,127 +97,36 @@ function setFavorite(projectId: string, isFavorite: boolean) {
   localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
 }
 
-// Cache for video thumbnails to avoid re-extracting
-const thumbnailCache = new Map<string, string>();
-
-// Component to extract and display a video frame at a specific time
-function VideoThumbnail({
-  videoUrl,
-  time,
+function CoverImage({
+  src,
+  alt,
   className,
-  fallbackUrl,
+  loading,
 }: {
-  videoUrl: string;
-  time: number;
+  src?: string | null;
+  alt: string;
   className?: string;
-  fallbackUrl: string;
+  loading?: boolean;
 }) {
-  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
-
-  const cacheKey = `${videoUrl}:${time}`;
-
-  useEffect(() => {
-    // Check cache first — defer setState to avoid synchronous updates in effect
-    const cached = thumbnailCache.get(cacheKey);
-    if (cached) {
-      queueMicrotask(() => {
-        setThumbnailUrl(cached);
-        setLoading(false);
-      });
-      return;
-    }
-
-    const video = videoRef.current;
-    if (!video) return;
-
-    let mounted = true;
-
-    const handleSeeked = () => {
-      if (!mounted) return;
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
-          thumbnailCache.set(cacheKey, dataUrl);
-          setThumbnailUrl(dataUrl);
-        }
-      } catch (e) {
-        console.error("Failed to capture video frame:", e);
-        setError(true);
-      }
-      setLoading(false);
-    };
-
-    const handleError = () => {
-      if (!mounted) return;
-      setError(true);
-      setLoading(false);
-    };
-
-    const handleLoadedMetadata = () => {
-      if (!mounted) return;
-      video.currentTime = time;
-    };
-
-    video.addEventListener("seeked", handleSeeked);
-    video.addEventListener("error", handleError);
-    video.addEventListener("loadedmetadata", handleLoadedMetadata);
-
-    // If already loaded, seek immediately
-    if (video.readyState >= 1) {
-      video.currentTime = time;
-    }
-
-    return () => {
-      mounted = false;
-      video.removeEventListener("seeked", handleSeeked);
-      video.removeEventListener("error", handleError);
-      video.removeEventListener("loadedmetadata", handleLoadedMetadata);
-    };
-  }, [videoUrl, time, cacheKey]);
-
-  if (error || (!loading && !thumbnailUrl)) {
+  if (loading) {
     return (
-      <img src={fallbackUrl} alt="" className={cn("object-cover", className)} />
+      <div
+        className={cn(
+          "bg-muted animate-pulse flex items-center justify-center",
+          className,
+        )}
+      >
+        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+      </div>
     );
   }
 
+  if (!src) {
+    return <div className={cn("bg-muted", className)} aria-label={alt} />;
+  }
+
   return (
-    <>
-      {/* Hidden video element for frame extraction */}
-      <video
-        ref={videoRef}
-        src={videoUrl}
-        crossOrigin="anonymous"
-        preload="metadata"
-        muted
-        playsInline
-        className="hidden"
-      />
-      {loading ? (
-        <div
-          className={cn(
-            "bg-slate-800 animate-pulse flex items-center justify-center",
-            className,
-          )}
-        >
-          <Loader2 className="h-3 w-3 animate-spin text-slate-600" />
-        </div>
-      ) : (
-        <img
-          src={thumbnailUrl || fallbackUrl}
-          alt=""
-          className={cn("object-cover", className)}
-        />
-      )}
-    </>
+    <img src={src} alt={alt} className={cn("object-cover", className)} />
   );
 }
 
@@ -234,6 +145,8 @@ export function AssetCard({
   const [favorites, setFavorites] =
     useState<Record<string, boolean>>(getFavorites);
   const [showAllProjects, setShowAllProjects] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [isInView, setIsInView] = useState(variant === "spotlight");
 
   // Get display title - use originalName as fallback if title is empty/untitled
   const getDisplayTitle = useCallback(
@@ -264,7 +177,24 @@ export function AssetCard({
   const loadProjects = useCallback(async () => {
     setLoadingProjects(true);
     try {
-      const projectList = await listProjects(asset.id);
+      let projectList = await listProjects(asset.id);
+      const needsThumbs = projectList.some(
+        (p) =>
+          p.segmentCount > 0 && (!p.thumbnailUrl || p.thumbnailStale),
+      );
+      if (needsThumbs) {
+        try {
+          await ensureAssetThumbnailsOnce(asset.id);
+          projectList = await listProjects(asset.id);
+        } catch (thumbErr) {
+          console.error("Failed to ensure project thumbnails:", thumbErr);
+          try {
+            projectList = await listProjects(asset.id);
+          } catch {
+            // keep first list
+          }
+        }
+      }
       setProjects(projectList);
     } catch (error) {
       console.error("Failed to load projects:", error);
@@ -273,11 +203,35 @@ export function AssetCard({
     }
   }, [asset.id]);
 
+  // Collapsed grid: only fetch server thumbnails when the card is on screen
   useEffect(() => {
-    if (isReady && variant === "spotlight") {
+    if (variant === "spotlight") return;
+    const el = cardRef.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) setIsInView(true);
+      },
+      { rootMargin: "120px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [variant]);
+
+  useEffect(() => {
+    if (isReady && isInView) {
       loadProjects();
     }
-  }, [isReady, variant, loadProjects]);
+  }, [isReady, isInView, loadProjects]);
+
+  const primaryThumbnailUrl = useMemo(() => {
+    const sorted = [...projects].sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+    return sorted.find((p) => p.thumbnailUrl)?.thumbnailUrl ?? null;
+  }, [projects]);
 
   const handleUpdateAssetTitle = async (newTitle: string) => {
     const oldTitle = localAssetTitle;
@@ -368,19 +322,11 @@ export function AssetCard({
     }
   };
 
-  // Fallback thumbnail for when video isn't available
-  const FALLBACK_THUMBNAIL =
-    "https://images.unsplash.com/photo-1626814026160-2237a95fc5a0?w=200&auto=format&fit=crop&q=60";
-
-  // Get first segment start time for a project
-  const getFirstSegmentTime = (project: Project): number | null => {
-    return project.firstSegmentStartTime;
-  };
-
   // Collapsed variant - small thumbnail card for 2x2 grid
   if (variant === "collapsed") {
     return (
       <div
+        ref={cardRef}
         className={cn(
           "rounded-xl overflow-hidden bg-card border-2 border-border cursor-pointer transition-all duration-200 hover:border-blue-500/50 hover:shadow-lg",
           "group",
@@ -388,20 +334,12 @@ export function AssetCard({
         onClick={onSelect}
       >
         <div className="relative aspect-[4/3] w-full overflow-hidden">
-          {asset.videoUrl ? (
-            <VideoThumbnail
-              videoUrl={asset.videoUrl}
-              time={5}
-              className="h-full w-full transition-transform duration-500 group-hover:scale-105"
-              fallbackUrl={FALLBACK_THUMBNAIL}
-            />
-          ) : (
-            <img
-              src={FALLBACK_THUMBNAIL}
-              alt={asset.title}
-              className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
-            />
-          )}
+          <CoverImage
+            src={primaryThumbnailUrl}
+            alt={asset.title}
+            loading={loadingProjects && !primaryThumbnailUrl}
+            className="h-full w-full transition-transform duration-500 group-hover:scale-105"
+          />
           <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent" />
           {/* Status badge */}
           {(asset.status === "uploading" ||
@@ -434,20 +372,12 @@ export function AssetCard({
       <div className="rounded-xl overflow-hidden bg-card border-2 border-border shadow-2xl">
         {/* Hero Section - 16:9 landscape */}
         <div className="relative aspect-video w-full overflow-hidden group">
-          {asset.videoUrl ? (
-            <VideoThumbnail
-              videoUrl={asset.videoUrl}
-              time={5}
-              className="h-full w-full transition-transform duration-500 group-hover:scale-105"
-              fallbackUrl={FALLBACK_THUMBNAIL}
-            />
-          ) : (
-            <img
-              src={FALLBACK_THUMBNAIL}
-              alt={asset.title}
-              className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
-            />
-          )}
+          <CoverImage
+            src={primaryThumbnailUrl}
+            alt={asset.title}
+            loading={loadingProjects && !primaryThumbnailUrl}
+            className="h-full w-full transition-transform duration-500 group-hover:scale-105"
+          />
           {/* Gradient overlay */}
           <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent" />
 
@@ -602,20 +532,16 @@ export function AssetCard({
                       >
                         {/* Thumbnail */}
                         <div className="w-20 h-12 bg-muted rounded-lg overflow-hidden shrink-0 relative">
-                          {asset.videoUrl && getFirstSegmentTime(project) !== null ? (
-                            <VideoThumbnail
-                              videoUrl={asset.videoUrl}
-                              time={getFirstSegmentTime(project)!}
-                              className="w-full h-full"
-                              fallbackUrl={FALLBACK_THUMBNAIL}
-                            />
-                          ) : (
-                            <img
-                              src={FALLBACK_THUMBNAIL}
-                              alt={project.title}
-                              className="w-full h-full object-cover"
-                            />
-                          )}
+                          <CoverImage
+                            src={project.thumbnailUrl}
+                            alt={project.title}
+                            loading={
+                              loadingProjects &&
+                              project.segmentCount > 0 &&
+                              !project.thumbnailUrl
+                            }
+                            className="w-full h-full"
+                          />
                           <div className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 group-hover/item:opacity-100 transition-opacity">
                             <Play className="h-4 w-4 text-white fill-white" />
                           </div>

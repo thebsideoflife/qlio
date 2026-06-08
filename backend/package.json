@@ -6,7 +6,8 @@
   "scripts": {
     "build": "esbuild src/handlers/*.ts --bundle --platform=node --target=node18 --outdir=dist --external:@remotion/lambda --external:@remotion/renderer",
     "pegasus:eval": "tsx src/scripts/pegasus15-eval.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test:export-metadata": "tsx src/scripts/test-export-metadata-fingerprint.ts",
+    "test": "npm run test:export-metadata"
   },
   "keywords": [],
   "author": "",

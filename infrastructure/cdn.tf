@@ -77,6 +77,81 @@ resource "aws_cloudfront_distribution" "media" {
     compress = true
   }
 
+  # Raw uploads (editor preview) — must not compress; browsers use Range requests
+  ordered_cache_behavior {
+    path_pattern     = "raw/*"
+    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "S3-${aws_s3_bucket.media.id}"
+
+    trusted_key_groups = [aws_cloudfront_key_group.media.id]
+
+    forwarded_values {
+      query_string = false
+      headers      = ["Origin", "Access-Control-Request-Method", "Access-Control-Request-Headers", "Range"]
+
+      cookies {
+        forward = "none"
+      }
+    }
+
+    viewer_protocol_policy = "redirect-to-https"
+    min_ttl                = 0
+    default_ttl            = 604800
+    max_ttl                = 31536000
+    compress               = false
+  }
+
+  # Annotated sources (framing analysis copies)
+  ordered_cache_behavior {
+    path_pattern     = "annotated/*"
+    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "S3-${aws_s3_bucket.media.id}"
+
+    trusted_key_groups = [aws_cloudfront_key_group.media.id]
+
+    forwarded_values {
+      query_string = false
+      headers      = ["Origin", "Access-Control-Request-Method", "Access-Control-Request-Headers", "Range"]
+
+      cookies {
+        forward = "none"
+      }
+    }
+
+    viewer_protocol_policy = "redirect-to-https"
+    min_ttl                = 0
+    default_ttl            = 604800
+    max_ttl                = 31536000
+    compress               = false
+  }
+
+  # Thumbnail JPEGs — binary; do not gzip
+  ordered_cache_behavior {
+    path_pattern     = "thumbnails/*"
+    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "S3-${aws_s3_bucket.media.id}"
+
+    trusted_key_groups = [aws_cloudfront_key_group.media.id]
+
+    forwarded_values {
+      query_string = false
+      headers      = ["Origin", "Access-Control-Request-Method", "Access-Control-Request-Headers"]
+
+      cookies {
+        forward = "none"
+      }
+    }
+
+    viewer_protocol_policy = "redirect-to-https"
+    min_ttl                = 0
+    default_ttl            = 86400
+    max_ttl                = 31536000
+    compress               = false
+  }
+
   # Cache behavior for video files - longer cache, byte-range support
   ordered_cache_behavior {
     path_pattern     = "videos/*"

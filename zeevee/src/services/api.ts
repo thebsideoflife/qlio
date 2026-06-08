@@ -93,12 +93,19 @@ export interface JobStatus {
   completedAt?: string;
   error?: string;
   segmentCount?: number;
+  segmentErrors?: Array<{ segmentId: string; error: string }>;
+  segmentWarnings?: Array<{
+    segmentId: string;
+    code: string;
+    message: string;
+  }>;
 }
 
 export interface ProjectJobStatus {
   projectId: string;
   generationJob: JobStatus | null;
   framingJob: JobStatus | null;
+  exportMetadataJob: JobStatus | null;
   activeRenderJobId: string | null;
 }
 
@@ -215,12 +222,230 @@ export const deleteProject = async (projectId: string) => {
   return response.data;
 };
 
-export const listProjects = async (assetId?: string) => {
+export interface ProjectSummary {
+  projectId: string;
+  assetId: string;
+  title: string;
+  createdAt: string;
+  segmentCount: number;
+  firstSegmentStartTime: number | null;
+  thumbnailUrl?: string | null;
+  thumbnailStale?: boolean;
+}
+
+export const listProjects = async (
+  assetId?: string,
+): Promise<ProjectSummary[]> => {
   const response = await axios.get(`${API_URL}/projects`, {
     params: assetId ? { assetId } : {},
     headers: getAuthHeaders(),
   });
   return response.data;
+};
+
+// ===== Export Metadata API =====
+
+export type ExportDescriptionLength =
+  | "short"
+  | "two_sentences"
+  | "paragraph";
+
+export interface SegmentExportMetadata {
+  segmentId: string;
+  contentHash: string;
+  title?: string;
+  descriptions?: {
+    short?: string;
+    two_sentences?: string;
+    paragraph?: string;
+  };
+  tags?: {
+    content_advisory?: string;
+    mood?: string;
+    theme?: string;
+    tone?: string;
+  };
+  thumbnailUrl?: string | null;
+  generatedAt?: string;
+}
+
+export interface GenerateExportMetadataRequest {
+  segmentIds?: string[];
+  options?: {
+    includeTitles?: boolean;
+    includeDescriptions?: boolean;
+    descriptionLengths?: ExportDescriptionLength[];
+    descriptiveTags?: {
+      contentAdvisory?: boolean;
+      mood?: boolean;
+      theme?: boolean;
+      tone?: boolean;
+    };
+    includeThumbnails?: boolean;
+  };
+}
+
+export interface GenerateExportMetadataResponse {
+  segments: SegmentExportMetadata[];
+  generated: string[];
+  cached: string[];
+  errors?: Array<{ segmentId: string; error: string }>;
+  warnings?: Array<{ segmentId: string; code: string; message: string }>;
+  projectThumbnailUrl?: string | null;
+}
+
+export interface StartEnsureThumbnailsResponse {
+  message: string;
+  status: "generating";
+  pendingCount: number;
+}
+
+export interface CompletedEnsureThumbnailsResponse {
+  projects: EnsuredProjectThumbnail[];
+  status: "completed";
+}
+
+export interface EnsuredProjectThumbnail {
+  projectId: string;
+  thumbnailUrl: string | null;
+  generated?: boolean;
+  error?: string;
+}
+
+export const ensureAssetProjectThumbnails = async (
+  assetId: string,
+): Promise<
+  CompletedEnsureThumbnailsResponse | StartEnsureThumbnailsResponse
+> => {
+  const response = await axios.post(
+    `${API_URL}/assets/${assetId}/ensure-project-thumbnails`,
+    {},
+    { headers: getAuthHeaders() },
+  );
+  return response.data;
+};
+
+/** Poll listProjects until thumbnails are fresh or timeout. */
+export const pollProjectThumbnailsReady = async (
+  assetId: string,
+  options: {
+    pollIntervalMs?: number;
+    maxWaitMs?: number;
+  } = {},
+): Promise<ProjectSummary[]> => {
+  // Ensure-thumbnails Lambda timeout is 300s — wait slightly longer
+  const { pollIntervalMs = 3000, maxWaitMs = 330_000 } = options;
+  const start = Date.now();
+
+  while (Date.now() - start < maxWaitMs) {
+    const projects = await listProjects(assetId);
+    const stillStale = projects.some(
+      (p) => p.segmentCount > 0 && p.thumbnailStale,
+    );
+    if (!stillStale) return projects;
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+
+  return listProjects(assetId);
+};
+
+export interface StartExportMetadataResponse {
+  message: string;
+  jobId: string;
+  status: "pending" | "generating";
+}
+
+export const startExportMetadata = async (
+  projectId: string,
+  body: GenerateExportMetadataRequest,
+): Promise<GenerateExportMetadataResponse | StartExportMetadataResponse> => {
+  const response = await axios.post(
+    `${API_URL}/projects/${projectId}/export-metadata`,
+    body,
+    { headers: getAuthHeaders() },
+  );
+  return response.data;
+};
+
+export const pollExportMetadataStatus = async (
+  projectId: string,
+  options: {
+    segmentIds?: string[];
+    onProgress?: (status: JobStatus) => void;
+    initialDelayMs?: number;
+    pollIntervalMs?: number;
+    maxWaitMs?: number;
+  } = {},
+): Promise<GenerateExportMetadataResponse> => {
+  const {
+    segmentIds,
+    onProgress,
+    initialDelayMs = 5000,
+    pollIntervalMs = 5000,
+    maxWaitMs = 900_000,
+  } = options;
+  const startTime = Date.now();
+
+  await new Promise((resolve) => setTimeout(resolve, initialDelayMs));
+
+  while (Date.now() - startTime < maxWaitMs) {
+    const jobStatus = await getProjectJobStatus(projectId);
+    const job = jobStatus.exportMetadataJob;
+
+    if (!job) {
+      throw new Error("No export metadata job found for this project");
+    }
+
+    onProgress?.(job);
+
+    if (job.status === "completed") {
+      const project = await getProject(projectId);
+      let segments: SegmentExportMetadata[] = project.segmentMetadata || [];
+      if (segmentIds?.length) {
+        const ids = new Set(segmentIds);
+        segments = segments.filter((s) => ids.has(s.segmentId));
+      }
+      return {
+        segments,
+        generated: [],
+        cached: segments.map((s) => s.segmentId),
+        errors: job.segmentErrors,
+        warnings: job.segmentWarnings,
+        projectThumbnailUrl: project.thumbnailUrl ?? null,
+      };
+    }
+
+    if (job.status === "failed") {
+      const err = new Error(job.error || "Export metadata generation failed");
+      if (job.segmentErrors?.length) {
+        (err as Error & { segmentErrors?: typeof job.segmentErrors }).segmentErrors =
+          job.segmentErrors;
+      }
+      throw err;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+
+  throw new Error("Export metadata generation timed out");
+};
+
+/** Starts generation; polls automatically when the API returns 202. */
+export const generateExportMetadata = async (
+  projectId: string,
+  body: GenerateExportMetadataRequest,
+  options?: {
+    onProgress?: (status: JobStatus) => void;
+  },
+): Promise<GenerateExportMetadataResponse> => {
+  const response = await startExportMetadata(projectId, body);
+  if ("segments" in response) {
+    return response;
+  }
+  return pollExportMetadataStatus(projectId, {
+    segmentIds: body.segmentIds,
+    onProgress: options?.onProgress,
+  });
 };
 
 // ===== Segment Generation API (Async) =====

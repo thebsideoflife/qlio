@@ -22,12 +22,19 @@ interface JobStatus {
   completedAt?: string;
   error?: string;
   segmentCount?: number;
+  segmentErrors?: Array<{ segmentId: string; error: string }>;
+  segmentWarnings?: Array<{
+    segmentId: string;
+    code: string;
+    message: string;
+  }>;
 }
 
 interface ProjectJobStatusResponse {
   projectId: string;
   generationJob: JobStatus | null;
   framingJob: JobStatus | null;
+  exportMetadataJob: JobStatus | null;
   // Include active render job if any
   activeRenderJobId: string | null;
 }
@@ -60,7 +67,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         TableName: PROJECTS_TABLE,
         Key: { projectId },
         // Only fetch job-related fields
-        ProjectionExpression: "projectId, generationJob, framingJob, activeRenderJobId",
+        ProjectionExpression: "projectId, generationJob, framingJob, exportMetadataJob, activeRenderJobId",
       })
     );
 
@@ -78,15 +85,21 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     const project = result.Item;
 
     // Check if a job is stale (stuck in pending/analyzing too long)
-    const isStaleJob = (job: any): boolean => {
+    const isStaleJob = (
+      job: any,
+      activeStatuses: string[] = ["pending", "analyzing"],
+    ): boolean => {
       if (!job || !job.startedAt) return false;
-      if (job.status !== "pending" && job.status !== "analyzing") return false;
+      if (!activeStatuses.includes(job.status)) return false;
       const ageMs = Date.now() - new Date(job.startedAt).getTime();
       return ageMs > STALE_JOB_THRESHOLD_MS;
     };
 
     // Mark a stale job as failed in DynamoDB (fire-and-forget, don't block response)
-    const markJobAsFailed = (jobType: "generationJob" | "framingJob", job: any) => {
+    const markJobAsFailed = (
+      jobType: "generationJob" | "framingJob" | "exportMetadataJob",
+      job: any,
+    ) => {
       const now = new Date().toISOString();
       docClient
         .send(
@@ -107,11 +120,19 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     };
 
     // Extract job status, detecting and marking stale jobs as failed
-    const extractJobStatus = (job: any, jobType: "generationJob" | "framingJob"): JobStatus | null => {
+    const extractJobStatus = (
+      job: any,
+      jobType: "generationJob" | "framingJob" | "exportMetadataJob",
+    ): JobStatus | null => {
       if (!job) return null;
 
       // If job is stale, mark it as failed and return the failed status
-      if (isStaleJob(job)) {
+      const activeStatuses =
+        jobType === "exportMetadataJob"
+          ? ["pending", "generating"]
+          : ["pending", "analyzing"];
+
+      if (isStaleJob(job, activeStatuses)) {
         console.log(
           `[JobStatus] Detected stale ${jobType}: ${job.jobId} started ${job.startedAt}, marking as failed`
         );
@@ -126,7 +147,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         };
       }
 
-      return {
+      const base: JobStatus = {
         status: job.status,
         jobId: job.jobId,
         startedAt: job.startedAt,
@@ -134,12 +155,27 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         error: job.error,
         segmentCount: job.segmentCount,
       };
+
+      if (jobType === "exportMetadataJob") {
+        if (job.segmentErrors?.length) {
+          base.segmentErrors = job.segmentErrors;
+        }
+        if (job.segmentWarnings?.length) {
+          base.segmentWarnings = job.segmentWarnings;
+        }
+      }
+
+      return base;
     };
 
     const response: ProjectJobStatusResponse = {
       projectId,
       generationJob: extractJobStatus(project.generationJob, "generationJob"),
       framingJob: extractJobStatus(project.framingJob, "framingJob"),
+      exportMetadataJob: extractJobStatus(
+        project.exportMetadataJob,
+        "exportMetadataJob",
+      ),
       activeRenderJobId: project.activeRenderJobId || null,
     };
 
