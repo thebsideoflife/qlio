@@ -143,6 +143,7 @@ export interface AssetInfo {
   /** Raw file location for Pegasus when `asset_id` is not usable (e.g. chunked). */
   s3VideoUrl?: string;
   s3Key?: string;
+  transcriptionUrl?: string;
   status?: string;
 }
 
@@ -308,6 +309,7 @@ export class TwelveLabsWrapper {
       duration: result.Item.duration,
       s3VideoUrl: result.Item.s3VideoUrl,
       s3Key: result.Item.key,
+      transcriptionUrl: result.Item.transcriptionUrl,
       status: result.Item.status,
     };
   }
