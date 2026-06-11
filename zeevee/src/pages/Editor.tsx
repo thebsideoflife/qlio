@@ -7,7 +7,6 @@ import {
 import { CaptionOverlay } from "@/components/editor/CaptionOverlay";
 import { CaptionEditor } from "@/components/editor/CaptionEditor";
 import { FramingSlider } from "@/components/editor/FramingSlider";
-import { PhonePreviewFrame } from "@/components/editor/PhonePreviewFrame";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
@@ -267,7 +266,6 @@ export default function Editor() {
   };
 
   const aspectRatioValue = getAspectRatioValue(globalFraming.aspectRatio);
-  const isMobilePreview = globalFraming.aspectRatio === "9:16";
 
   // Set projectId in Redux for sync middleware
   // Also reset local state when switching projects (prevents stale state from previous project)
@@ -689,9 +687,7 @@ export default function Editor() {
               ref={framingContainerRef}
               className={cn(
                 "relative overflow-hidden bg-black select-none",
-                isMobilePreview
-                  ? "rounded-[1.35rem] shadow-none"
-                  : "rounded-2xl shadow-2xl shadow-black/50",
+                "rounded-2xl shadow-2xl shadow-black/50",
                 isDragging
                   ? "cursor-grabbing ring-4 ring-blue-500 ring-offset-4 ring-offset-background"
                   : displayZoom > 0
@@ -700,17 +696,8 @@ export default function Editor() {
               )}
               style={{
                 aspectRatio: aspectRatioValue,
-                ...(isMobilePreview
-                  ? {
-                      height: "100%",
-                      width: "auto",
-                      maxHeight: "100%",
-                      maxWidth: "100%",
-                    }
-                  : {
-                      maxHeight: aspectRatioValue < 1 ? "100%" : "90%",
-                      maxWidth: aspectRatioValue >= 1 ? "100%" : "90%",
-                    }),
+                maxHeight: aspectRatioValue < 1 ? "100%" : "90%",
+                maxWidth: aspectRatioValue >= 1 ? "100%" : "90%",
               }}
               onMouseDown={
                 displayZoom > 0 ? handleFramingMouseDown : undefined
@@ -849,11 +836,7 @@ export default function Editor() {
           onClick={handleBackgroundClick}
         >
           {framingPreview ? (
-            isMobilePreview ? (
-              <PhonePreviewFrame>{framingPreview}</PhonePreviewFrame>
-            ) : (
-              framingPreview
-            )
+            framingPreview
           ) : (
             <div className="text-muted-foreground font-medium">Loading Video...</div>
           )}
