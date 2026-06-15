@@ -150,9 +150,9 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   const [adsEnabled, setAdsEnabled] = useState(true);
   const [adLoad, setAdLoad] = useState(8);
   const [adPre, setAdPre] = useState(true);
-  const [adMid, setAdMid] = useState(true);
-  const [adPost, setAdPost] = useState(true);
-  const [adVast, setAdVast] = useState(true);
+  const [adMid, setAdMid] = useState(false);
+  const [adPost, setAdPost] = useState(false);
+  const [adVast, setAdVast] = useState(false);
   const [adIab, setAdIab] = useState(true);
 
   const cachedRenderMap = useMemo(() => {
