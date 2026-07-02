@@ -16,6 +16,9 @@
 
 import { TwelveLabs, TwelvelabsApi } from "twelvelabs-js";
 import type { ContentType } from "./storyiq/types";
+import { Purpose } from "./storyiq/types";
+import type { NarrativeBrief } from "./storyiq/jockey/types";
+import { enrichSegmentDefinitionsWithBrief, windowAnalysisSuffix } from "./storyiq/jockey/prompts";
 
 /** StoryIQ Pegasus `time_based_metadata` segment length hints (seconds) — keep in sync with pipeline. */
 export const QLIO_PEGASUS_SEGMENT_MIN_SEC = 60;
@@ -242,6 +245,60 @@ export function getSegmentDefinitions(
   return qlioMicroseriesSegmentDefinitionsForGeneration(opts);
 }
 
+/**
+ * Build Pegasus segment definitions enriched with Jockey narrative brief.
+ */
+export function buildJockeySegmentDefinitions(
+  brief: NarrativeBrief,
+  purpose: Purpose.COMPACT_VIDEO | Purpose.EPISODE_RECAP,
+  opts: {
+    userInstructions?: string;
+    targetDurationSeconds?: number;
+    videoDurationSeconds: number;
+    windowArcNames: string[];
+    windowLocalStartSec?: number;
+    windowLocalEndSec?: number;
+    physicalOffsetSec?: number;
+    /** Segment length bounds carried as prompt guidance on windowed tasks. */
+    minSegmentDurationSec?: number;
+    maxSegmentDurationSec?: number;
+  },
+): TwelvelabsApi.SegmentDefinition[] {
+  const purposeKey =
+    purpose === Purpose.EPISODE_RECAP ? "episode_recap" : "compact_video";
+
+  const base = getSegmentDefinitions("generic", {
+    userInstructions: opts.userInstructions,
+    targetDurationSeconds: opts.targetDurationSeconds,
+    videoDurationSeconds: opts.videoDurationSeconds,
+    purpose: purposeKey,
+  });
+
+  let windowSuffix: string | undefined;
+  if (
+    opts.windowLocalStartSec !== undefined &&
+    opts.windowLocalEndSec !== undefined
+  ) {
+    const offset = opts.physicalOffsetSec ?? 0;
+    windowSuffix = windowAnalysisSuffix({
+      windowLocalStartSec: opts.windowLocalStartSec,
+      windowLocalEndSec: opts.windowLocalEndSec,
+      globalStartSec: offset + opts.windowLocalStartSec,
+      globalEndSec: offset + opts.windowLocalEndSec,
+      minSegmentSec: opts.minSegmentDurationSec,
+      maxSegmentSec: opts.maxSegmentDurationSec,
+    });
+  }
+
+  return enrichSegmentDefinitionsWithBrief(
+    base,
+    brief,
+    purpose,
+    opts.windowArcNames,
+    windowSuffix,
+  ) as TwelvelabsApi.SegmentDefinition[];
+}
+
 // =============================================================================
 // Task Creation & Polling
 // =============================================================================
@@ -289,7 +346,6 @@ export async function createQlioPegasusSegmentationTask(
 
   const win = params.limitAnalysisToWindow;
   if (win) {
-    // timeRanges is mutually exclusive with top-level startTime/endTime, but NOT with min/maxSegmentDuration
     if (params.startTime !== undefined || params.endTime !== undefined) {
       throw new Error(
         "[Pegasus] limitAnalysisToWindow is mutually exclusive with top-level startTime/endTime",
@@ -312,12 +368,23 @@ export async function createQlioPegasusSegmentationTask(
     },
   };
 
-  // min/maxSegmentDuration work with both timeRanges and top-level startTime/endTime
-  if (params.minSegmentDuration !== undefined) {
-    payload.minSegmentDuration = params.minSegmentDuration;
-  }
-  if (params.maxSegmentDuration !== undefined) {
-    payload.maxSegmentDuration = params.maxSegmentDuration;
+  // TwelveLabs rejects min/maxSegmentDuration combined with
+  // segment_definitions.time_ranges — for windowed tasks, callers must convey
+  // segment-length guidance in the definition description text instead.
+  if (!win) {
+    if (params.minSegmentDuration !== undefined) {
+      payload.minSegmentDuration = params.minSegmentDuration;
+    }
+    if (params.maxSegmentDuration !== undefined) {
+      payload.maxSegmentDuration = params.maxSegmentDuration;
+    }
+  } else if (
+    params.minSegmentDuration !== undefined ||
+    params.maxSegmentDuration !== undefined
+  ) {
+    console.log(
+      "[Pegasus] Dropping min/maxSegmentDuration on windowed task (incompatible with time_ranges) — using prompt guidance instead",
+    );
   }
   // top-level startTime/endTime only if NOT using timeRanges
   if (!win) {

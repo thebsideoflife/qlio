@@ -38,15 +38,23 @@ import { generateSportsHighlights } from "./sports-highlights-pipeline";
 
 const PRESIGN_TTL_SEC = 43_200;
 
-/** Default total runtime when Retain is Auto (compact). */
-const COMPACT_DEFAULT_TARGET_PERCENT = 30;
+/** Default total runtime when Retain is Auto (compact). Locked product decision: 50%. */
+const COMPACT_DEFAULT_TARGET_PERCENT = 50;
 /** Default "previously on" recap length (1-1.5 min). */
 const EPISODE_RECAP_DEFAULT_TARGET_SEC = 75;
 
-interface PegasusSceneRow {
+export interface PegasusSceneRow {
   start_time: number;
   end_time: number;
   metadata: Record<string, unknown>;
+}
+
+export interface PegasusChunkTaskResult {
+  chunkIndex: number;
+  startOffset: number;
+  endOffset: number;
+  rows: PegasusSceneRow[];
+  taskId: string;
 }
 
 function pegasusSegmentDurationBounds(options?: {
@@ -65,7 +73,7 @@ function pegasusSegmentDurationBounds(options?: {
 /**
  * Check if segment should be kept based on microseries_keep or recap_keep field.
  */
-function shouldKeepSegment(meta: Record<string, unknown>): boolean {
+export function shouldKeepPegasusSegment(meta: Record<string, unknown>): boolean {
   const microseriesKeep = meta.microseries_keep;
   const recapKeep = meta.recap_keep;
   
@@ -98,7 +106,7 @@ interface VideoContextResult {
   isChunked: boolean;
 }
 
-async function resolveVideoContextForPegasus(
+export async function resolveVideoContextForPegasus(
   twelvelabs: TwelveLabsWrapper,
   assetId: string,
 ): Promise<VideoContextResult> {
@@ -182,13 +190,7 @@ async function resolveVideoContextForClassification(
 // Parallel Chunk Processing & Deduplication
 // =============================================================================
 
-interface ChunkTaskResult {
-  chunkIndex: number;
-  startOffset: number;
-  endOffset: number;
-  rows: PegasusSceneRow[];
-  taskId: string;
-}
+type ChunkTaskResult = PegasusChunkTaskResult;
 
 /**
  * Run Pegasus segmentation on multiple chunks in parallel.
@@ -264,7 +266,7 @@ async function runPegasusOnChunksParallel(
  * Segments in overlap regions are kept from the chunk where they're furthest
  * from the boundary (more reliable detection).
  */
-function mergeChunkResults(
+export function mergeChunkResults(
   chunkResults: ChunkTaskResult[],
   videoDuration: number,
 ): PegasusSceneRow[] {
@@ -342,7 +344,7 @@ const KNOWN_SEGMENT_DEF_IDS = ["qlio_scene", "qlio_trek_scene"] as const;
  * Parse Pegasus scene rows from result data.
  * Handles qlio_scene and qlio_trek_scene result keys.
  */
-function parsePegasusSceneRows(
+export function parsePegasusSceneRows(
   data: Record<string, unknown>,
 ): PegasusSceneRow[] {
   // Find which definition ID has data
@@ -488,7 +490,7 @@ function reasoningFromRow(meta: Record<string, unknown>): string {
   return bits.join(" ").slice(0, 500);
 }
 
-function rowsToProposedSegments(
+export function rowsToProposedSegments(
   rows: PegasusSceneRow[],
   transcript: TranscriptSegment[],
   videoDuration: number,
@@ -716,7 +718,7 @@ export async function generateSegmentsWithPegasus(
   // For compact_video and episode_recap, trust Pegasus keep decisions
   // For full_video and highlights (sports), keep all segments
   if (purpose === Purpose.COMPACT_VIDEO || purpose === Purpose.EPISODE_RECAP) {
-    rows = rows.filter((r) => shouldKeepSegment(r.metadata));
+    rows = rows.filter((r) => shouldKeepPegasusSegment(r.metadata));
     if (rows.length < beforeFilter) {
       console.log(
         `[StoryIQ Pegasus] Filtered ${beforeFilter - rows.length} segments via microseries_keep/recap_keep`,

@@ -193,6 +193,26 @@ export interface StoryIQTools {
 // Agent State Types
 // ============================================================================
 
+/**
+ * Jockey v3 self-directed inputs (SPEC-jockey-v3-self-directed-cuts.md).
+ * Required when JOCKEY_V3_SELF_DIRECTED_ENABLED is on for compact/recap.
+ */
+export interface JockeyV3Input {
+  /** TwelveLabs Agents API key (jockey1.0) */
+  agentsApiKey: string;
+  /** Asset id already readable under the Agents key (skips re-upload) */
+  agentsAssetId?: string;
+  /** Existing knowledge store containing the asset (skips indexing wait) */
+  knowledgeStoreId?: string;
+  /** Presigned video URL for one-time upload when no agentsAssetId exists */
+  videoUrlForUpload?: string;
+  /** Persist the Agents asset + store ids for reuse on later runs */
+  onAgentsContextReady?: (ctx: {
+    agentsAssetId: string;
+    knowledgeStoreId: string;
+  }) => Promise<void>;
+}
+
 export interface StoryIQInput {
   assetId: string;
   goals: StoryIQGoals;
@@ -209,6 +229,8 @@ export interface StoryIQInput {
   maxAsyncWaitMs?: number;
   /** Gemini API key for fallback content classification */
   geminiApiKey?: string;
+  /** Jockey v3 self-directed context (only used when the v3 flag is on) */
+  jockeyV3?: JockeyV3Input;
 }
 
 export interface StoryIQOutput {

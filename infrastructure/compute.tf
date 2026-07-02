@@ -108,7 +108,8 @@ data "aws_iam_policy_document" "lambda_policy" {
       aws_secretsmanager_secret.twelve_labs_signing_secret.arn,
       data.aws_secretsmanager_secret.anthropic_api_key.arn,
       aws_secretsmanager_secret.gemini_api_key.arn,
-      aws_secretsmanager_secret.cloudfront_private_key.arn
+      aws_secretsmanager_secret.cloudfront_private_key.arn,
+      aws_secretsmanager_secret.coleman_jockey_twelve_labs_key.arn
     ]
   }
   statement {
@@ -521,8 +522,18 @@ resource "aws_lambda_function" "generate_segments" {
       BUCKET_NAME             = aws_s3_bucket.media.bucket
       DETECT_SCENES_FUNCTION        = aws_lambda_function.detect_scenes.function_name
       ANALYZE_FRAMING_FUNCTION_NAME = aws_lambda_function.analyze_framing.function_name
-      GEMINI_SECRET_ARN           = aws_secretsmanager_secret.gemini_api_key.arn
-      ANTHROPIC_SECRET_ARN        = data.aws_secretsmanager_secret.anthropic_api_key.arn
+      GEMINI_SECRET_ARN    = aws_secretsmanager_secret.gemini_api_key.arn
+      ANTHROPIC_SECRET_ARN = data.aws_secretsmanager_secret.anthropic_api_key.arn
+      # Jockey pipeline for compact_video + episode_recap.
+      # Rollback: set to "false" and redeploy — reverts to legacy Pegasus path.
+      JOCKEY_COMPACT_RECAP_ENABLED = "true"
+      # Jockey v3 self-directed cutting (SPEC-jockey-v3-self-directed-cuts.md).
+      # Layered above JOCKEY_COMPACT_RECAP_ENABLED. Default OFF — flip to
+      # "true" only after the v3 eval suite + producer visual QA pass.
+      # Rollback: set to "false" and redeploy — reverts to the current path.
+      JOCKEY_V3_SELF_DIRECTED_ENABLED = "false"
+      # Agents API (jockey1.0) key for the v3 self-directed path.
+      JOCKEY_AGENTS_SECRET_ARN = aws_secretsmanager_secret.coleman_jockey_twelve_labs_key.arn
     }
   }
 }
