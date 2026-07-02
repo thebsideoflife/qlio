@@ -570,6 +570,7 @@ export default function Editor() {
         assetType: request.assetType,
         platform: request.platform,
         format: request.format,
+        jockeyEnabled: request.jockeyEnabled,
       });
       console.log(`[Editor] Started generation job: ${jobId}`);
 

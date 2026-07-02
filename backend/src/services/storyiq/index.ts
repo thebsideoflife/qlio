@@ -137,8 +137,14 @@ export async function generateWithStoryIQ(
   const isJockeyPurpose =
     goals.purpose === Purpose.COMPACT_VIDEO ||
     goals.purpose === Purpose.EPISODE_RECAP;
-  const useJockeyV3 = isJockeyV3Enabled() && isJockeyPurpose;
-  const useJockey = !useJockeyV3 && isJockeyPipelineEnabled() && isJockeyPurpose;
+  const jockeyRequested = input.jockeyEnabled === true;
+  const useJockeyV3 =
+    jockeyRequested && isJockeyV3Enabled() && isJockeyPurpose;
+  const useJockey =
+    jockeyRequested &&
+    !useJockeyV3 &&
+    isJockeyPipelineEnabled() &&
+    isJockeyPurpose;
 
   let finalResult: FinalSegments;
 

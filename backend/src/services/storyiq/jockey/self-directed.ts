@@ -111,6 +111,23 @@ export interface V3Issue {
   message: string;
 }
 
+/**
+ * Structural failures that make a pass unshippable. Everything else is
+ * editorial feedback: it drives the re-ask loop, but if Jockey never produces
+ * a perfectly clean pass, the best structurally-valid pass still ships
+ * (with the outstanding issues recorded in notes).
+ */
+const BLOCKING_ISSUE_CODES: ReadonlySet<V3IssueCode> = new Set([
+  "no_segments",
+  "invalid_response",
+  "cut_artifact",
+  "overlap",
+]);
+
+export function isBlockingIssue(issue: V3Issue): boolean {
+  return BLOCKING_ISSUE_CODES.has(issue.code);
+}
+
 export type JockeyV3PurposeKey = "compact_video" | "episode_recap";
 
 // ============================================================================

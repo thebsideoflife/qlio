@@ -4,8 +4,8 @@
  * Prompts are first-class code artifacts (12-factor agents). Per
  * SPEC-jockey-v3-self-directed-cuts.md, the only guidance Jockey receives is
  * the producer's intent plus format and target runtime — no preprocessing
- * brief, no external scene data. Jockey explores the asset, decides where the
- * scenes are, and returns the final cuts.
+ * brief, no external scene data. Jockey plans from its cultural knowledge of
+ * the title, verifies against the actual content, and returns the final cuts.
  */
 
 import type { JockeyV3PurposeKey, V3Issue } from "./self-directed";
@@ -20,9 +20,13 @@ import {
 } from "./self-directed";
 
 export const SELF_DIRECTED_INSTRUCTIONS =
-  "You are a professional video editor with full access to this video through your knowledge store. " +
-  "You explore the content yourself, decide where the scenes are, and return final, ship-ready cuts. " +
-  "Every cut must open and close exactly on a scene change you identified — never mid-scene, mid-gesture, or mid-word. " +
+  "You are a professional story editor cutting a microseries from a full episode. " +
+  "You have full access to this video through your knowledge store. " +
+  "You know television, film, and pop culture deeply — use that knowledge to plan, " +
+  "but the indexed video content is your only source of truth for what actually happens " +
+  "and for every timestamp. " +
+  "Every cut must open and close on a natural scene boundary you identified in the content — " +
+  "never mid-scene, mid-gesture, or mid-word. " +
   "Your cuts are used as-is with no downstream editing, so the timestamps you return are the timestamps that ship.";
 
 export interface SelfDirectedPromptOptions {
@@ -46,11 +50,13 @@ function formatBlock(opts: SelfDirectedPromptOptions): string {
   const lower = Math.round(targetSeconds * COMPACT_BAND_LOWER_MULT);
   const upper = Math.round(targetSeconds * COMPACT_BAND_UPPER_MULT);
   return [
-    `FORMAT: Compact cut of the full story.`,
-    `- Source runs ${Math.round(durationSec)}s. Keep scenes totaling ${lower}–${upper}s (target ~${Math.round(targetSeconds)}s).`,
-    `- Hit the target by choosing which whole scenes to keep — never by clipping a scene short.`,
-    `- Follow the narrative arc across the ENTIRE timeline: selections must appear in every quarter of the source, opening act through ending.`,
-    `- Each kept segment must be watchable in isolation: it starts where a scene starts and ends where that scene ends.`,
+    `FORMAT: Compact microseries — the episode distilled to its core moments.`,
+    `- Source runs ${Math.round(durationSec)}s. Keep material totaling ${lower}–${upper}s (target ~${Math.round(targetSeconds)}s — about half the episode).`,
+    `- Each segment becomes its own standalone video in the microseries: it must be watchable in isolation and carry a complete moment or mini-arc.`,
+    `- Aim for segments of roughly 60–120 seconds each. Longer is fine when a scene truly earns it; never pad a thin scene to fit.`,
+    `- Prioritize scenes driven by the primary characters. Cut B-roll, establishing filler, and side threads that don't advance the core story.`,
+    `- Spread selections roughly uniformly across the ENTIRE timeline — opening act through ending — so together they tell the full story.`,
+    `- Do not include dead air or filler at the ends of a segment: open where the moment engages and close where it lands, on a clean boundary.`,
   ].join("\n");
 }
 
@@ -59,7 +65,12 @@ export function buildSelfDirectedPrompt(
 ): string {
   const producerBlock = opts.userInstructions?.trim()
     ? `PRODUCER INTENT (honor named themes, scenes, and characters):\n${opts.userInstructions.trim()}`
-    : "PRODUCER INTENT: none given — favor dialog-forward scenes that advance the story.";
+    : "PRODUCER INTENT: none given — favor dialog-forward scenes with the primary characters that advance the story.";
+
+  const goal =
+    opts.purpose === "episode_recap"
+      ? "plan the recap"
+      : "plan the compaction";
 
   return [
     `Cut "${opts.title}" (${Math.round(opts.durationSec)}s source).`,
@@ -69,16 +80,22 @@ export function buildSelfDirectedPrompt(
     formatBlock(opts),
     "",
     `WORKFLOW:`,
-    `1. Explore the video and identify its scene changes — the moments where one scene ends and the next begins.`,
-    `2. Choose the scenes to keep based on the producer intent and format above.`,
-    `3. Return the final cuts. Every startTime and endTime must sit exactly on one of the scene changes you identified (within ${SCENE_EDGE_TOLERANCE_SEC}s).`,
+    `1. PLAN FROM CONTEXT: Start from what you know about this title and the culture around it — ` +
+      `its genre, its primary characters, its reputation, and what audiences remember or expect from it. ` +
+      `Use that to ${goal}: which arcs, relationships, and moments must survive for the story to still land. ` +
+      `Adapt your editorial approach to the genre — a procedural, a documentary, a comedy, and a prestige drama each compress differently.`,
+    `2. VERIFY AGAINST THE CONTENT: The video in front of you is the source of truth. ` +
+      `Explore it fully, confirm what actually happens, and identify its scene changes — the moments where one scene ends and the next begins. ` +
+      `Every timestamp you return must come from this exploration, never from memory or assumption.`,
+    `3. CUT: Select the moments that realize your plan and return the final cuts. ` +
+      `Every startTime and endTime must sit on a scene change you identified in the content (within ${SCENE_EDGE_TOLERANCE_SEC}s).`,
     "",
     `OUTPUT RULES:`,
     `- All timestamps are seconds on the source video timeline.`,
     `- segments: chronological, non-overlapping final cuts.`,
     `- sceneBoundaries: every scene-change timestamp you identified while exploring (including all cut edges).`,
     `- title: human-readable headline per segment, ≤10 words, WHO does WHAT. No "(Part N)" or numbering suffixes.`,
-    `- description: one sentence on why the scene earns its place.`,
+    `- description: one sentence on why the moment earns its place in the story.`,
   ].join("\n");
 }
 

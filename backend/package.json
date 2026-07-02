@@ -8,6 +8,7 @@
     "pegasus:eval": "tsx src/scripts/pegasus15-eval.ts",
     "jockey:eval": "tsx src/scripts/jockey-eval.ts",
     "jockey:eval:suite": "tsx src/scripts/jockey-eval-suite/run.ts",
+    "jockey:prewarm": "tsx src/scripts/prewarm-jockey-agents.ts",
     "test:export-metadata": "tsx src/scripts/test-export-metadata-fingerprint.ts",
     "test:jockey-coverage": "tsx src/scripts/test-jockey-coverage.ts",
     "test:jockey-v3-gates": "tsx src/scripts/test-jockey-v3-gates.ts",

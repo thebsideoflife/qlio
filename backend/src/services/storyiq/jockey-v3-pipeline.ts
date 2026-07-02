@@ -24,6 +24,7 @@ import {
 } from "./types";
 import {
   applySafetyClamps,
+  isBlockingIssue,
   mapToProposedSegments,
   quartileCounts,
   validateSelfDirectedCuts,
@@ -213,6 +214,17 @@ export async function generateSegmentsWithJockeyV3(
   let shipped: SelfDirectedCuts | null = null;
   let clampNotes: string[] = [];
 
+  // Best structurally-valid candidate across passes. If no pass clears every
+  // editorial gate, this ships (with outstanding issues in notes) instead of
+  // failing the job — validation still drives the re-ask loop, but a usable
+  // cut list from Jockey always beats a dead job.
+  let bestCandidate: {
+    cuts: SelfDirectedCuts;
+    issues: V3Issue[];
+    clampNotes: string[];
+    pass: number;
+  } | null = null;
+
   for (let pass = 1; pass <= JOCKEY_V3_MAX_PASSES; pass++) {
     if (pass > 1 && remainingMs() < 60_000) {
       console.warn(
@@ -312,6 +324,19 @@ export async function generateSegmentsWithJockeyV3(
       break;
     }
 
+    const hasBlocking = issues.some(isBlockingIssue);
+    if (
+      !hasBlocking &&
+      (!bestCandidate || issues.length < bestCandidate.issues.length)
+    ) {
+      bestCandidate = {
+        cuts: candidate,
+        issues,
+        clampNotes: clamped.notes,
+        pass,
+      };
+    }
+
     console.warn(
       `[JockeyV3] Pass ${pass} failed validation (${issues.length} issue(s)): ` +
         issues.map((i) => `[${i.code}] ${i.message}`).join("; "),
@@ -321,9 +346,28 @@ export async function generateSegmentsWithJockeyV3(
   }
 
   const attempts = passRecords.length;
+  let shippedPass = attempts;
+  let shippedWithIssues: V3Issue[] = [];
+
+  if (!shipped && bestCandidate) {
+    // No pass cleared every editorial gate, but Jockey produced a
+    // structurally-valid cut list (no overlaps, no zero-length rows). Ship it
+    // and surface the outstanding editorial issues in notes.
+    shipped = bestCandidate.cuts;
+    clampNotes = bestCandidate.clampNotes;
+    shippedWithIssues = bestCandidate.issues;
+    shippedPass = bestCandidate.pass;
+    console.warn(
+      `[JockeyV3] No pass cleared all gates after ${attempts} attempt(s) — ` +
+        `shipping best structurally-valid pass ${bestCandidate.pass} with ` +
+        `${bestCandidate.issues.length} outstanding issue(s): ` +
+        bestCandidate.issues.map((i) => `[${i.code}] ${i.message}`).join("; "),
+    );
+  }
 
   if (!shipped) {
-    // Fail loud — no heuristic/legacy fallback while the v3 flag is on (SPEC §4.5).
+    // Fail loud — nothing structurally shippable came back from any pass.
+    // No heuristic/legacy fallback while the v3 flag is on (SPEC §4.5).
     const collected = passRecords
       .map(
         (p) =>
@@ -346,14 +390,22 @@ export async function generateSegmentsWithJockeyV3(
   // Per-job observability (SPEC §8): shipped pass, retries, validation issues
   // per pass, final counts, quartile spread, latency.
   console.log(
-    `[JockeyV3] Done in ${processingTime}ms — shipped pass ${attempts}/${JOCKEY_V3_MAX_PASSES}, ` +
+    `[JockeyV3] Done in ${processingTime}ms — shipped pass ${shippedPass} of ${attempts} attempt(s), ` +
       `${proposed.length} segments, ~${Math.round(totalDuration)}s total, ` +
       `quartiles ${quartiles.join("/")}, ${shipped.sceneBoundaries.length} Jockey scene boundaries`,
   );
 
   const notes: string[] = [
-    `Jockey v3 self-directed: shipped pass ${attempts}/${JOCKEY_V3_MAX_PASSES} ` +
+    `Jockey v3 self-directed: shipped pass ${shippedPass} of ${attempts} attempt(s) ` +
       `(store ${agentsCtx.knowledgeStoreId}). No preprocessing, no deterministic re-cutting.`,
+    ...(shippedWithIssues.length > 0
+      ? [
+          `Shipped best structurally-valid pass with outstanding editorial issue(s): ` +
+            shippedWithIssues
+              .map((i) => `[${i.code}] ${i.message}`)
+              .join("; "),
+        ]
+      : []),
     ...(shipped.logline ? [`Logline: ${shipped.logline}`] : []),
     ...(shipped.editorNotes ? [`Editor notes: ${shipped.editorNotes}`] : []),
     ...passRecords
@@ -367,7 +419,7 @@ export async function generateSegmentsWithJockeyV3(
 
   return {
     segments: proposed,
-    confidence: 0.9,
+    confidence: shippedWithIssues.length > 0 ? 0.7 : 0.9,
     notes,
     attempts,
     sceneBoundaries: shipped.sceneBoundaries,

@@ -77,6 +77,8 @@ interface AsyncJobPayload {
   platform?: string;
   /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
   format?: string;
+  /** When true, use Jockey for compact/recap if env flags allow. Default false. */
+  jockeyEnabled?: boolean;
 }
 
 interface Segment {
@@ -161,6 +163,7 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
       assetType,
       platform,
       format,
+      jockeyEnabled,
     } = body;
 
     // Generate a job ID
@@ -203,6 +206,7 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
       assetType: assetType || undefined,
       platform: platform || undefined,
       format: format || undefined,
+      jockeyEnabled: jockeyEnabled === true,
     };
 
     await lambdaClient.send(
@@ -260,6 +264,7 @@ async function executeGenerationJob(
     assetType,
     platform,
     format,
+    jockeyEnabled,
   } = payload;
 
   console.log(
@@ -326,8 +331,9 @@ async function executeGenerationJob(
     // 4. Get API Keys
     const isJockeyPurpose =
       purpose === "compact_video" || purpose === "episode_recap";
+    const jockeyRequested = jockeyEnabled === true;
     const useJockeyForRequest =
-      JOCKEY_COMPACT_RECAP_ENABLED && isJockeyPurpose;
+      jockeyRequested && JOCKEY_COMPACT_RECAP_ENABLED && isJockeyPurpose;
 
     // Always use the org TwelveLabs key — org-indexed assets are not readable
     // under the Jockey/Agents key. Jockey preprocess uses Claude via Bedrock
@@ -357,7 +363,7 @@ async function executeGenerationJob(
     // Agents context (cached asset/store ids, or a presigned URL for the
     // one-time upload). No detect-scenes, no brief — Jockey owns the cuts.
     const useJockeyV3ForRequest =
-      JOCKEY_V3_SELF_DIRECTED_ENABLED && isJockeyPurpose;
+      jockeyRequested && JOCKEY_V3_SELF_DIRECTED_ENABLED && isJockeyPurpose;
     let jockeyV3: JockeyV3Input | undefined;
 
     if (useJockeyV3ForRequest) {
@@ -478,6 +484,7 @@ async function executeGenerationJob(
           geminiApiKey,
           title: videoTitle,
           jockeyV3,
+          jockeyEnabled: jockeyRequested,
         },
         onStatusChange,
       );

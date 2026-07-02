@@ -10,7 +10,7 @@
 
 **Jockey** replaces direct Pegasus segmentation for **Compact** and **Ep Recap** only. It fixes long-form timeline bias and broken recap duration/beat counts that baseline Pegasus exhibits today.
 
-**Launch posture:** Enable in production on deploy. No staging soak period. Rollback is instant via `JOCKEY_COMPACT_RECAP_ENABLED=false`.
+**Launch posture:** Enabled in production on deploy, but **opt-in per request**: the IQ Editor has a "Jockey mode" toggle (off by default) and only requests with `jockeyEnabled: true` route to Jockey. With `JOCKEY_V3_SELF_DIRECTED_ENABLED=true` (current posture), opted-in requests use the v3 self-directed path (`SPEC-jockey-v3-self-directed-cuts.md`); the brief+Pegasus Jockey path remains as the flag-off rollback layer. Default (toggle off) requests always use the pre-Jockey Pegasus pipeline, unchanged. Rollback is instant via the toggle, or via `JOCKEY_V3_SELF_DIRECTED_ENABLED=false` / `JOCKEY_COMPACT_RECAP_ENABLED=false`.
 
 **Locked product decisions:**
 

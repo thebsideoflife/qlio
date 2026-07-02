@@ -100,29 +100,6 @@ const NARRATIVE_BRIEF_JSON_SCHEMA = {
   required: ["logline", "arcs", "producerNotes", "targetRuntimeSec"],
 };
 
-const SEGMENTS_JSON_SCHEMA = {
-  type: "object",
-  properties: {
-    segments: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          startTime: { type: "number" },
-          endTime: { type: "number" },
-          title: { type: "string" },
-          description: { type: "string" },
-          keep: { type: "boolean" },
-          narrativeRole: { type: "string" },
-        },
-        required: ["startTime", "endTime", "title", "description", "keep"],
-      },
-    },
-    logline: { type: "string" },
-  },
-  required: ["segments"],
-};
-
 export class JockeyAgentsClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -170,21 +147,65 @@ export class JockeyAgentsClient {
     return data as T;
   }
 
-  /** Smoke test — list knowledge stores or create a minimal store probe. */
-  async ping(): Promise<{ ok: boolean; storeCount?: number }> {
-    const data = await this.request<{ data?: unknown[] }>(
-      "GET",
-      "/knowledge-stores?page=1&page_size=1",
-    );
-    return { ok: true, storeCount: data.data?.length ?? 0 };
-  }
-
   async getAssetStatus(assetId: string): Promise<string> {
     const data = await this.request<{ status: string }>(
       "GET",
       `/assets/${assetId}`,
     );
     return data.status;
+  }
+
+  /** List all Agents API assets (paginated). */
+  async listAssets(): Promise<
+    Array<{ _id: string; filename?: string; status?: string }>
+  > {
+    const all: Array<{ _id: string; filename?: string; status?: string }> = [];
+    let page = 1;
+    while (true) {
+      const data = await this.request<{
+        data?: Array<{ _id: string; filename?: string; status?: string }>;
+        page_info?: { total_page?: number };
+      }>("GET", `/assets?page=${page}&page_limit=50`);
+      all.push(...(data.data ?? []));
+      const totalPage = data.page_info?.total_page ?? 1;
+      if (page >= totalPage) break;
+      page++;
+    }
+    return all;
+  }
+
+  async listKnowledgeStores(): Promise<
+    Array<{ _id: string; name?: string; item_count?: number }>
+  > {
+    const all: Array<{ _id: string; name?: string; item_count?: number }> = [];
+    let page = 1;
+    while (true) {
+      const data = await this.request<{
+        data?: Array<{ _id: string; name?: string; item_count?: number }>;
+        page_info?: { total_page?: number };
+      }>("GET", `/knowledge-stores?page=${page}&page_size=50`);
+      all.push(...(data.data ?? []));
+      const totalPage = data.page_info?.total_page ?? 1;
+      if (page >= totalPage) break;
+      page++;
+    }
+    return all;
+  }
+
+  async findKnowledgeStoreByName(
+    name: string,
+  ): Promise<{ _id: string; name?: string } | undefined> {
+    const stores = await this.listKnowledgeStores();
+    return stores.find((s) => s.name === name);
+  }
+
+  async knowledgeStoreExists(storeId: string): Promise<boolean> {
+    try {
+      await this.request("GET", `/knowledge-stores/${storeId}`);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async waitForAssetReady(assetId: string, maxWaitMs = 3_600_000): Promise<void> {
@@ -202,13 +223,9 @@ export class JockeyAgentsClient {
   }
 
   /**
-   * Upload video to Agents API from a public/presigned URL.
-   * Required when the Jockey API key cannot read org-indexed asset ids.
+   * Start Agents asset ingest from URL — returns immediately; TwelveLabs fetches from S3.
    */
-  async uploadAssetFromUrl(
-    videoUrl: string,
-    maxWaitMs = 3_600_000,
-  ): Promise<string> {
+  async beginUploadFromUrl(videoUrl: string): Promise<string> {
     const form = new FormData();
     form.append("method", "url");
     form.append("url", videoUrl);
@@ -223,9 +240,22 @@ export class JockeyAgentsClient {
       throw new Error(`[Agents] POST /assets → ${res.status}: ${text.slice(0, 500)}`);
     }
     const data = JSON.parse(text) as { _id: string };
-    console.log(`[Agents] Uploaded asset ${data._id}, waiting for ready...`);
-    await this.waitForAssetReady(data._id, maxWaitMs);
+    console.log(`[Agents] Started ingest for asset ${data._id}`);
     return data._id;
+  }
+
+  /**
+   * Upload video to Agents API from a public/presigned URL.
+   * Required when the Jockey API key cannot read org-indexed asset ids.
+   */
+  async uploadAssetFromUrl(
+    videoUrl: string,
+    maxWaitMs = 3_600_000,
+  ): Promise<string> {
+    const assetId = await this.beginUploadFromUrl(videoUrl);
+    console.log(`[Agents] Waiting for asset ${assetId} to be ready...`);
+    await this.waitForAssetReady(assetId, maxWaitMs);
+    return assetId;
   }
 
   async createKnowledgeStore(name: string, ingestionDescription?: string): Promise<string> {
@@ -281,6 +311,35 @@ export class JockeyAgentsClient {
     throw new Error(`[Agents] Item ${itemId} not ready after ${maxWaitMs}ms`);
   }
 
+  async beginKnowledgeStoreForAsset(
+    twelveLabsAssetId: string,
+    opts?: {
+      storeName?: string;
+      ingestionDescription?: string;
+    },
+  ): Promise<KnowledgeStoreContext> {
+    const storeName =
+      opts?.storeName ??
+      `qlio-eval-${twelveLabsAssetId.slice(0, 8)}-${Date.now()}`;
+    const ingestionDescription =
+      opts?.ingestionDescription ??
+      "Extract narrative arcs, character names, dialog-forward moments, and story beats with timestamps.";
+
+    let storeId: string;
+    const existing = await this.findKnowledgeStoreByName(storeName);
+    if (existing) {
+      storeId = existing._id;
+      console.log(`[Agents] Reusing knowledge store ${storeId} (${storeName})`);
+    } else {
+      storeId = await this.createKnowledgeStore(storeName, ingestionDescription);
+      console.log(`[Agents] Created knowledge store ${storeId}`);
+    }
+
+    const itemId = await this.addAssetToStore(storeId, twelveLabsAssetId);
+    console.log(`[Agents] Queued asset ${twelveLabsAssetId} as item ${itemId}`);
+    return { storeId, itemId, assetId: twelveLabsAssetId };
+  }
+
   async ensureKnowledgeStoreForAsset(
     twelveLabsAssetId: string,
     opts?: {
@@ -289,20 +348,10 @@ export class JockeyAgentsClient {
       maxWaitMs?: number;
     },
   ): Promise<KnowledgeStoreContext> {
-    const storeName =
-      opts?.storeName ??
-      `qlio-eval-${twelveLabsAssetId.slice(0, 8)}-${Date.now()}`;
-    const storeId = await this.createKnowledgeStore(
-      storeName,
-      opts?.ingestionDescription ??
-        "Extract narrative arcs, character names, dialog-forward moments, and story beats with timestamps.",
-    );
-    console.log(`[Agents] Created knowledge store ${storeId}`);
-    const itemId = await this.addAssetToStore(storeId, twelveLabsAssetId);
-    console.log(`[Agents] Added asset ${twelveLabsAssetId} as item ${itemId}`);
-    await this.waitForItemReady(storeId, itemId, opts?.maxWaitMs);
-    console.log(`[Agents] Item ${itemId} ready`);
-    return { storeId, itemId, assetId: twelveLabsAssetId };
+    const ctx = await this.beginKnowledgeStoreForAsset(twelveLabsAssetId, opts);
+    await this.waitForItemReady(ctx.storeId, ctx.itemId, opts?.maxWaitMs);
+    console.log(`[Agents] Item ${ctx.itemId} ready`);
+    return ctx;
   }
 
   async createStructuredResponse<T>(opts: {
@@ -385,49 +434,6 @@ export class JockeyAgentsClient {
     return NarrativeBriefSchema.parse(raw);
   }
 
-  async generateSegmentsDirect(opts: {
-    storeId: string;
-    purpose: "compact_video" | "episode_recap";
-    title: string;
-    durationSec: number;
-    targetRuntimeSec: number;
-    userInstructions?: string;
-  }): Promise<{
-    segments: Array<{
-      startTime: number;
-      endTime: number;
-      title: string;
-      description: string;
-      keep: boolean;
-      narrativeRole?: string;
-    }>;
-    logline?: string;
-  }> {
-    const recapRules =
-      opts.purpose === "episode_recap"
-        ? "Return 4–6 kept segments totaling ~60–90s."
-        : `Return kept segments totaling ~${Math.round(opts.targetRuntimeSec)}s from ${Math.round(opts.durationSec)}s source.`;
-
-    const prompt = [
-      `Select editorial segments for "${opts.title}" (${Math.round(opts.durationSec)}s).`,
-      `Purpose: ${opts.purpose}.`,
-      recapRules,
-      "Distribute selections across the FULL timeline — include early, middle, and late story.",
-      opts.userInstructions ? `Producer: ${opts.userInstructions}` : "",
-      "Set keep=true only for segments that belong in the final cut.",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    return this.createStructuredResponse({
-      storeId: opts.storeId,
-      prompt,
-      instructions:
-        "You are a video editor selecting timestamped segments. Return precise start/end times in seconds on the source video timeline.",
-      schemaName: "segment_selection",
-      schema: SEGMENTS_JSON_SCHEMA,
-    });
-  }
 }
 
 function extractResponseText(result: AgentsResponseBody): string | undefined {

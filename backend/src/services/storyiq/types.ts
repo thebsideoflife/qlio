@@ -231,6 +231,8 @@ export interface StoryIQInput {
   geminiApiKey?: string;
   /** Jockey v3 self-directed context (only used when the v3 flag is on) */
   jockeyV3?: JockeyV3Input;
+  /** When true, use Jockey for compact/recap if env flags allow */
+  jockeyEnabled?: boolean;
 }
 
 export interface StoryIQOutput {

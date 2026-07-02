@@ -38,8 +38,12 @@ import { generateSportsHighlights } from "./sports-highlights-pipeline";
 
 const PRESIGN_TTL_SEC = 43_200;
 
-/** Default total runtime when Retain is Auto (compact). Locked product decision: 50%. */
-const COMPACT_DEFAULT_TARGET_PERCENT = 50;
+/**
+ * Default total runtime when Retain is Auto (compact).
+ * Pre-Jockey fallback behavior — do not change: the 50% product decision
+ * applies to the Jockey pipelines only (jockey-pipeline.ts / jockey-v3-pipeline.ts).
+ */
+const COMPACT_DEFAULT_TARGET_PERCENT = 30;
 /** Default "previously on" recap length (1-1.5 min). */
 const EPISODE_RECAP_DEFAULT_TARGET_SEC = 75;
 
