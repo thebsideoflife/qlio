@@ -11,6 +11,14 @@ import { TwelveLabsWrapper } from "../twelvelabs";
 import { createStoryIQTools } from "./tools";
 import { generateSegmentsWithPegasus } from "./pegasus-pipeline";
 import {
+  generateSegmentsWithJockey,
+  isJockeyPipelineEnabled,
+} from "./jockey-pipeline";
+import {
+  generateSegmentsWithJockeyV3,
+  isJockeyV3Enabled,
+} from "./jockey-v3-pipeline";
+import {
   Purpose,
   type StoryIQInput,
   type StoryIQOutput,
@@ -126,37 +134,82 @@ export async function generateWithStoryIQ(
     title: input.title || "Untitled Video",
   };
 
-  // Phase 1: Read transcript (required)
-  console.log("[StoryIQ] Phase 1: Reading transcript...");
-  const transcript = await tools.read_full_transcript();
-  console.log(`[StoryIQ] Got ${transcript.length} transcript segments`);
+  const isJockeyPurpose =
+    goals.purpose === Purpose.COMPACT_VIDEO ||
+    goals.purpose === Purpose.EPISODE_RECAP;
+  const jockeyRequested = input.jockeyEnabled === true;
+  const useJockeyV3 =
+    jockeyRequested && isJockeyV3Enabled() && isJockeyPurpose;
+  const useJockey =
+    jockeyRequested &&
+    !useJockeyV3 &&
+    isJockeyPipelineEnabled() &&
+    isJockeyPurpose;
 
-  if (transcript.length === 0) {
-    throw new Error(
-      `Cannot generate segments: No transcript found for asset ${assetId}. ` +
-        `The video may not have been indexed properly, or it may have no audible speech.`,
-    );
+  let finalResult: FinalSegments;
+
+  if (useJockeyV3) {
+    // Jockey v3 self-directed path: no transcript preprocess, no brief, no
+    // scene cache. Fail loud if the Agents context is missing — no fallback
+    // to the legacy path while the v3 flag is on.
+    if (!input.jockeyV3) {
+      throw new Error(
+        "[StoryIQ] JOCKEY_V3_SELF_DIRECTED_ENABLED is on but no Agents API context was provided " +
+          "(agentsApiKey required). Refusing to fall back to the legacy path.",
+      );
+    }
+
+    console.log("[StoryIQ] Phase 2: Jockey v3 self-directed generation...");
+    finalResult = await generateSegmentsWithJockeyV3({
+      purpose: goals.purpose,
+      metadata,
+      targetDuration: goals.targetDuration,
+      targetPercent: goals.targetPercent,
+      userInstructions: goals.userInstructions,
+      maxPollWaitMs: input.maxAsyncWaitMs,
+      agentsApiKey: input.jockeyV3.agentsApiKey,
+      agentsAssetId: input.jockeyV3.agentsAssetId,
+      knowledgeStoreId: input.jockeyV3.knowledgeStoreId,
+      videoUrlForUpload: input.jockeyV3.videoUrlForUpload,
+      onAgentsContextReady: input.jockeyV3.onAgentsContextReady,
+    });
+  } else {
+    // Phase 1: Read transcript (required for legacy paths)
+    console.log("[StoryIQ] Phase 1: Reading transcript...");
+    const transcript = await tools.read_full_transcript();
+    console.log(`[StoryIQ] Got ${transcript.length} transcript segments`);
+
+    if (transcript.length === 0) {
+      throw new Error(
+        `Cannot generate segments: No transcript found for asset ${assetId}. ` +
+          `The video may not have been indexed properly, or it may have no audible speech.`,
+      );
+    }
+
+    // Phase 2: Segment generation (Jockey for compact/recap when enabled, else Pegasus)
+    console.log("[StoryIQ] Phase 2: Segment generation...");
+
+    const generationOptions = {
+      metadata,
+      transcript,
+      purpose: goals.purpose,
+      targetDuration: goals.targetDuration,
+      targetPercent: goals.targetPercent,
+      userInstructions: goals.userInstructions,
+      maxPollWaitMs: input.maxAsyncWaitMs,
+      geminiApiKey: input.geminiApiKey,
+      assumeSports: goals.assumeSports,
+      minSegmentDuration: goals.minSegmentDuration,
+      maxSegmentDuration: goals.maxSegmentDuration,
+      assetType: goals.assetType,
+      platform: goals.platform,
+      format: goals.format,
+    };
+
+    finalResult = useJockey
+      ? await generateSegmentsWithJockey(twelvelabs, generationOptions)
+      : await generateSegmentsWithPegasus(twelvelabs, generationOptions);
   }
-
-  // Phase 2: Segment generation with Pegasus
-  console.log("[StoryIQ] Phase 2: Segment generation...");
-
-  const finalResult = await generateSegmentsWithPegasus(twelvelabs, {
-    metadata,
-    transcript,
-    purpose: goals.purpose,
-    targetDuration: goals.targetDuration,
-    targetPercent: goals.targetPercent,
-    userInstructions: goals.userInstructions,
-    maxPollWaitMs: input.maxAsyncWaitMs,
-    geminiApiKey: input.geminiApiKey,
-    assumeSports: goals.assumeSports,
-    minSegmentDuration: goals.minSegmentDuration,
-    maxSegmentDuration: goals.maxSegmentDuration,
-    assetType: goals.assetType,
-    platform: goals.platform,
-    format: goals.format,
-  });
 
   const processingTime = Date.now() - startTime;
   console.log(
@@ -285,6 +338,7 @@ export type {
   VideoMetadata,
   TranscriptSegment,
   Purpose,
+  JockeyV3Input,
 } from "./types";
 
 export { SceneDetectionPendingError } from "./types";

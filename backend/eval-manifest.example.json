@@ -1,0 +1,42 @@
+{
+  "description": "Qlio Jockey eval assets — replace assetId values with your evaluation UUIDs",
+  "runs": [
+    {
+      "label": "Louis Theroux Philadelphia (~55 min) — compact",
+      "assetId": "REPLACE_WITH_LOUIS_THEROUX_ASSET_ID",
+      "purpose": "compact",
+      "userInstructions": "",
+      "approaches": [
+        "pegasus-baseline",
+        "jockey-gemini-full",
+        "jockey-pegasus-windowed-no-brief",
+        "agents-brief-pegasus"
+      ]
+    },
+    {
+      "label": "Episode recap test content",
+      "assetId": "REPLACE_WITH_RECAP_ASSET_ID",
+      "purpose": "recap",
+      "targetSeconds": 75,
+      "approaches": [
+        "pegasus-baseline",
+        "jockey-gemini-full",
+        "agents-segments-direct"
+      ]
+    },
+    {
+      "label": "Full matrix — run overnight with --all on each asset separately",
+      "assetId": "REPLACE_WITH_LONG_FORM_ASSET_ID",
+      "purpose": "compact",
+      "approaches": [
+        "pegasus-baseline",
+        "jockey-gemini-full",
+        "jockey-gemini-narrow-windows",
+        "jockey-pegasus-windowed-no-brief",
+        "agents-brief-only",
+        "agents-brief-pegasus",
+        "agents-segments-direct"
+      ]
+    }
+  ]
+}

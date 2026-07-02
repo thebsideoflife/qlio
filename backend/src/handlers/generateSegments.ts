@@ -13,7 +13,12 @@ import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { randomUUID } from "crypto";
 import { checkAuth } from "../utils/auth";
 import { createTwelveLabsWrapper } from "../services/twelvelabs";
-import { generateWithStoryIQ, mapMetadataToGoals } from "../services/storyiq";
+import {
+  generateWithStoryIQ,
+  mapMetadataToGoals,
+  type JockeyV3Input,
+} from "../services/storyiq";
+import { presignS3Uri } from "../utils/s3";
 import {
   deriveProjectTitleFromSegments,
   isDefaultProjectTitle,
@@ -28,6 +33,14 @@ const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
 const SECRET_ARN = process.env.SECRET_ARN!;
 const GEMINI_SECRET_ARN = process.env.GEMINI_SECRET_ARN;
+const JOCKEY_COMPACT_RECAP_ENABLED =
+  process.env.JOCKEY_COMPACT_RECAP_ENABLED === "true";
+// Jockey v3 self-directed cutting (SPEC-jockey-v3-self-directed-cuts.md).
+// Layered above JOCKEY_COMPACT_RECAP_ENABLED; rollback = flip to "false".
+const JOCKEY_V3_SELF_DIRECTED_ENABLED =
+  process.env.JOCKEY_V3_SELF_DIRECTED_ENABLED === "true";
+const JOCKEY_AGENTS_SECRET_ARN = process.env.JOCKEY_AGENTS_SECRET_ARN;
+const BUCKET_NAME = process.env.BUCKET_NAME;
 const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 
 // ============================================================================
@@ -64,6 +77,8 @@ interface AsyncJobPayload {
   platform?: string;
   /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
   format?: string;
+  /** When true, use Jockey for compact/recap if env flags allow. Default false. */
+  jockeyEnabled?: boolean;
 }
 
 interface Segment {
@@ -148,6 +163,7 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
       assetType,
       platform,
       format,
+      jockeyEnabled,
     } = body;
 
     // Generate a job ID
@@ -190,6 +206,7 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
       assetType: assetType || undefined,
       platform: platform || undefined,
       format: format || undefined,
+      jockeyEnabled: jockeyEnabled === true,
     };
 
     await lambdaClient.send(
@@ -247,6 +264,7 @@ async function executeGenerationJob(
     assetType,
     platform,
     format,
+    jockeyEnabled,
   } = payload;
 
   console.log(
@@ -311,13 +329,22 @@ async function executeGenerationJob(
     }
 
     // 4. Get API Keys
+    const isJockeyPurpose =
+      purpose === "compact_video" || purpose === "episode_recap";
+    const jockeyRequested = jockeyEnabled === true;
+    const useJockeyForRequest =
+      jockeyRequested && JOCKEY_COMPACT_RECAP_ENABLED && isJockeyPurpose;
+
+    // Always use the org TwelveLabs key — org-indexed assets are not readable
+    // under the Jockey/Agents key. Jockey preprocess uses Claude via Bedrock
+    // (IAM) with ANTHROPIC_SECRET_ARN fallback; Gemini is not required.
     const secretVal = await secretsClient.send(
       new GetSecretValueCommand({ SecretId: SECRET_ARN }),
     );
     const apiKey = secretVal.SecretString;
     if (!apiKey) throw new Error("12Labs API Key not found");
 
-    // Get Gemini key for fallback classification (optional)
+    // Get Gemini key for fallback classification (optional, Pegasus path only)
     let geminiApiKey: string | undefined;
     if (GEMINI_SECRET_ARN) {
       try {
@@ -330,6 +357,75 @@ async function executeGenerationJob(
           "[generateSegments] Could not get Gemini API key, fallback classification disabled",
         );
       }
+    }
+
+    // Jockey v3 self-directed: resolve the Agents API key and per-asset
+    // Agents context (cached asset/store ids, or a presigned URL for the
+    // one-time upload). No detect-scenes, no brief — Jockey owns the cuts.
+    const useJockeyV3ForRequest =
+      jockeyRequested && JOCKEY_V3_SELF_DIRECTED_ENABLED && isJockeyPurpose;
+    let jockeyV3: JockeyV3Input | undefined;
+
+    if (useJockeyV3ForRequest) {
+      if (!JOCKEY_AGENTS_SECRET_ARN) {
+        throw new Error(
+          "JOCKEY_V3_SELF_DIRECTED_ENABLED is on but JOCKEY_AGENTS_SECRET_ARN is not configured",
+        );
+      }
+      const agentsSecret = await secretsClient.send(
+        new GetSecretValueCommand({ SecretId: JOCKEY_AGENTS_SECRET_ARN }),
+      );
+      const agentsApiKey = agentsSecret.SecretString;
+      if (!agentsApiKey || agentsApiKey.startsWith("REPLACE_ME")) {
+        throw new Error("Jockey Agents API key secret is not populated");
+      }
+
+      // Reuse cached Agents ids so re-runs skip upload + indexing.
+      const cachedAgentsAssetId =
+        typeof asset.jockeyAgentsAssetId === "string"
+          ? asset.jockeyAgentsAssetId
+          : undefined;
+      const cachedStoreId =
+        typeof asset.jockeyAgentsStoreId === "string"
+          ? asset.jockeyAgentsStoreId
+          : undefined;
+
+      let videoUrlForUpload: string | undefined;
+      if (!cachedAgentsAssetId) {
+        let s3Uri =
+          typeof asset.s3VideoUrl === "string" ? asset.s3VideoUrl : undefined;
+        if (!s3Uri && typeof asset.key === "string" && BUCKET_NAME) {
+          s3Uri = `s3://${BUCKET_NAME}/${asset.key}`;
+        }
+        if (s3Uri) {
+          videoUrlForUpload = (await presignS3Uri(s3Uri, 43_200)) ?? undefined;
+        }
+      }
+
+      jockeyV3 = {
+        agentsApiKey,
+        agentsAssetId: cachedAgentsAssetId,
+        knowledgeStoreId: cachedStoreId,
+        videoUrlForUpload,
+        onAgentsContextReady: async (ctx) => {
+          await docClient.send(
+            new UpdateCommand({
+              TableName: ASSETS_TABLE,
+              Key: { assetId },
+              UpdateExpression:
+                "set jockeyAgentsAssetId = :a, jockeyAgentsStoreId = :s",
+              ExpressionAttributeValues: {
+                ":a": ctx.agentsAssetId,
+                ":s": ctx.knowledgeStoreId,
+              },
+            }),
+          );
+          console.log(
+            `[generateSegments] Cached Agents context on asset ${assetId}: ` +
+              `asset ${ctx.agentsAssetId}, store ${ctx.knowledgeStoreId}`,
+          );
+        },
+      };
     }
 
     const twelvelabs = createTwelveLabsWrapper(apiKey, ASSETS_TABLE);
@@ -387,6 +483,8 @@ async function executeGenerationJob(
           maxAsyncWaitMs,
           geminiApiKey,
           title: videoTitle,
+          jockeyV3,
+          jockeyEnabled: jockeyRequested,
         },
         onStatusChange,
       );
@@ -412,6 +510,10 @@ async function executeGenerationJob(
       }
     } catch (err) {
       console.error("[generateSegments] StoryIQ failed:", err);
+      // Jockey paths fail loud — no heuristic fallback (SPEC v3 §4.5).
+      if (useJockeyForRequest || useJockeyV3ForRequest) {
+        throw err;
+      }
     }
 
     // =========================================================================

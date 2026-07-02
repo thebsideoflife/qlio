@@ -40,6 +40,8 @@ export interface GenerateRequest {
   format: string;
   assetType: string;
   platform: string;
+  /** Use Jockey pipeline for Compact / Ep Recap (backend env flags must also be on) */
+  jockeyEnabled: boolean;
 }
 
 interface MicroseriesGeneratorProps {
@@ -203,6 +205,8 @@ export function MicroseriesGenerator({
   // Target percent for compact_video mode ("auto" means let AI decide)
   const [targetPercent, setTargetPercent] = useState<string>("auto");
 
+  const [jockeyEnabled, setJockeyEnabled] = useState(false);
+
   // Duration bounds state - initialized from format defaults
   const [minDuration, setMinDuration] = useState(
     SEGMENT_DURATION_DEFAULTS[DEFAULT_FORMAT].min,
@@ -263,6 +267,8 @@ export function MicroseriesGenerator({
 
   // Whether we're in compact video mode
   const isCompactVideo = format === "compact_video";
+  const isJockeyFormat =
+    format === "compact_video" || format === "episode_recap";
 
   // Update duration bounds when format changes
   const handleFormatChange = (newFormat: string) => {
@@ -292,6 +298,7 @@ export function MicroseriesGenerator({
       format,
       assetType,
       platform,
+      jockeyEnabled: isJockeyFormat && jockeyEnabled,
     });
   };
 
@@ -394,6 +401,23 @@ export function MicroseriesGenerator({
 
         {/* Generate Button */}
         <div className="p-4 border-t bg-muted/50 space-y-3">
+          {isJockeyFormat && (
+            <div className="flex items-center justify-between px-1">
+              <Label
+                htmlFor="jockey-toggle"
+                className="text-xs font-semibold text-muted-foreground cursor-pointer"
+              >
+                Jockey mode
+              </Label>
+              <Switch
+                id="jockey-toggle"
+                checked={jockeyEnabled}
+                onCheckedChange={setJockeyEnabled}
+                disabled={isGenerating}
+              />
+            </div>
+          )}
+
           {/* Auto-frame toggle */}
           <div className="flex items-center justify-between px-1">
             <Label

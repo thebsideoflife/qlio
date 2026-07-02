@@ -490,6 +490,8 @@ export interface GenerateSegmentsRequest {
   platform?: string;
   /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
   format?: string;
+  /** Use Jockey pipeline for compact/recap when backend env flags allow */
+  jockeyEnabled?: boolean;
 }
 
 export const generateSegments = async (
@@ -510,6 +512,7 @@ export const generateSegments = async (
       assetType: request.assetType,
       platform: request.platform,
       format: request.format,
+      jockeyEnabled: request.jockeyEnabled === true,
     },
     {
       headers: getAuthHeaders(),
