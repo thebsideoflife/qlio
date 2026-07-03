@@ -413,7 +413,6 @@ export function MicroseriesGenerator({
                 id="jockey-toggle"
                 checked={jockeyEnabled}
                 onCheckedChange={setJockeyEnabled}
-                disabled={isGenerating}
               />
             </div>
           )}
