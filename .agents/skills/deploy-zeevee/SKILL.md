@@ -48,15 +48,15 @@ aws --profile zeevee sts get-caller-identity   # sanity check first
 
 If `sts get-caller-identity` fails, the secret `agent-harness/zeevee/aws-credentials` is not populated or not synced — tell the operator (RUNBOOK Step 11c in agent-harness-infra); do not try to work around it.
 
-## Known limitation: OpenTofu state is local
+## OpenTofu state is remote (S3)
 
-`infrastructure/` uses **local state** (`terraform.tfstate`, gitignored — no S3 backend). A fresh clone does not have it, and `tofu apply` without the existing state would try to recreate the whole stack. Before deploying:
+State lives in S3 (`zeevee-tfstate-730898501390/zeevee/infrastructure.tfstate`, us-west-2, DynamoDB lock table `zeevee-tflock`) — migrated from local state on 2026-07-02, configured in `infrastructure/main.tf`. Any fresh clone can deploy; there is no state file to look for. The one requirement: run `tofu init` once per clone before `deploy.sh` (the script itself does not init):
 
 ```bash
-test -f infrastructure/terraform.tfstate && echo "state present" || echo "STATE MISSING"
+tofu -chdir=infrastructure init -input=false
 ```
 
-If the state file is missing, **stop and report to the operator** — the deploy must run wherever the state lives until it is migrated to a remote backend. Do not run `tofu apply` (or `deploy.sh`, which calls it) against empty state.
+If `init` or `plan` reports a **lock timeout**, another deploy is in flight — wait and retry; never use `-lock=false` or force-unlock without the operator.
 
 ## Backend deploy, step by step
 
@@ -67,7 +67,7 @@ export AWS_CONFIG_FILE=/etc/agent-harness/zeevee/aws-config
 
 # Preflight
 aws --profile zeevee sts get-caller-identity
-test -f infrastructure/terraform.tfstate || { echo "no tofu state; abort"; exit 1; }
+tofu -chdir=infrastructure init -input=false
 
 # Deploy (skip the FFmpeg Docker image unless Dockerfile.ffmpeg or stitch code changed)
 ./deploy.sh --skip-docker
