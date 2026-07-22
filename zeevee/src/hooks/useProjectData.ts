@@ -15,8 +15,8 @@ import {
   type GenerationJob,
   type FramingJob,
 } from "@/services/api";
-import { DEFAULT_CAPTION_SETTINGS } from "@/remotion/types";
-import type { CaptionWord } from "@/remotion/types";
+import { DEFAULT_CAPTION_SETTINGS, DEFAULT_GLOBAL_FRAMING } from "@/remotion/types";
+import type { CaptionWord, GlobalFramingSettings } from "@/remotion/types";
 
 // Last generation inputs persisted on the project (written by generateSegments)
 export interface GenerationMetadata {
@@ -74,9 +74,15 @@ export function useProjectData(projectId: string | undefined) {
         );
       }
 
-      // Load global framing settings if they exist
+      // Load global framing settings if they exist. Default squareTop to false
+      // for projects created before the square-top feature (missing field).
       if (project.globalFraming) {
-        dispatch(setGlobalFraming(project.globalFraming));
+        const loadedFraming: GlobalFramingSettings = {
+          ...DEFAULT_GLOBAL_FRAMING,
+          ...project.globalFraming,
+          squareTop: project.globalFraming.squareTop ?? false,
+        };
+        dispatch(setGlobalFraming(loadedFraming));
       }
 
       // Load cached segment renders (preserve original hashes - don't backfill)

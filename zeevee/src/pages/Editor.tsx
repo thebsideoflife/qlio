@@ -21,10 +21,12 @@ import {
   updateFramingKeyframe,
   updateCaptionWord,
   setGlobalAspectRatio,
+  setSquareTopEnabled,
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
 import { useRef, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { useProjectData } from "@/hooks/useProjectData";
 import { useSeamlessPlayback } from "@/hooks/useSeamlessPlayback";
 import {
@@ -42,6 +44,7 @@ import {
   Maximize2,
   Clock,
   Pencil,
+  Square,
 } from "lucide-react";
 import { getEffectiveKeyframes } from "@/remotion/types";
 import type { AspectRatio } from "@/remotion/types";
@@ -266,6 +269,9 @@ export default function Editor() {
   };
 
   const aspectRatioValue = getAspectRatioValue(globalFraming.aspectRatio);
+  // Square-top portrait mode wipes out all other framing while on. Defaulted to
+  // false for projects created before this feature (missing field on load).
+  const squareTop = !!globalFraming.squareTop;
 
   // Set projectId in Redux for sync middleware
   // Also reset local state when switching projects (prevents stale state from previous project)
@@ -689,22 +695,35 @@ export default function Editor() {
               className={cn(
                 "relative overflow-hidden bg-black select-none",
                 "rounded-2xl shadow-2xl shadow-black/50",
-                isDragging
-                  ? "cursor-grabbing ring-4 ring-blue-500 ring-offset-4 ring-offset-background"
-                  : displayZoom > 0
-                    ? "cursor-grab ring-2 ring-border hover:ring-muted-foreground/50"
-                    : "cursor-pointer ring-2 ring-border",
+                squareTop
+                  ? "cursor-default ring-2 ring-border"
+                  : isDragging
+                    ? "cursor-grabbing ring-4 ring-blue-500 ring-offset-4 ring-offset-background"
+                    : displayZoom > 0
+                      ? "cursor-grab ring-2 ring-border hover:ring-muted-foreground/50"
+                      : "cursor-pointer ring-2 ring-border",
               )}
               style={{
-                aspectRatio: aspectRatioValue,
-                maxHeight: aspectRatioValue < 1 ? "100%" : "90%",
-                maxWidth: aspectRatioValue >= 1 ? "100%" : "90%",
+                // Square-top always renders the portrait (9:16) frame.
+                aspectRatio: squareTop ? 9 / 16 : aspectRatioValue,
+                maxHeight:
+                  (squareTop ? 9 / 16 : aspectRatioValue) < 1
+                    ? "100%"
+                    : "90%",
+                maxWidth:
+                  (squareTop ? 9 / 16 : aspectRatioValue) >= 1
+                    ? "100%"
+                    : "90%",
               }}
               onMouseDown={
-                displayZoom > 0 ? handleFramingMouseDown : undefined
+                squareTop || displayZoom <= 0
+                  ? undefined
+                  : handleFramingMouseDown
               }
               onClick={
-                displayZoom > 0 ? handleFramingClick : handleVideoClick
+                squareTop || displayZoom <= 0
+                  ? handleVideoClick
+                  : handleFramingClick
               }
             >
               <video
@@ -712,6 +731,20 @@ export default function Editor() {
                 src={videoUrl}
                 className="pointer-events-none"
                 style={(() => {
+                  // Square-top: render the video as a 1:1 square crop aligned to
+                  // the top of the portrait frame (black below). The square fills
+                  // the full width; its height (9/16 of the frame) equals the width.
+                  if (squareTop) {
+                    return {
+                      position: "absolute" as const,
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      height: "56.25%", // 1080/1920 → square at full width, top-anchored
+                      objectFit: "cover" as const,
+                      objectPosition: "center center",
+                    };
+                  }
                   if (displayZoom <= 0) {
                     return {
                       width: "100%",
@@ -757,31 +790,56 @@ export default function Editor() {
               />
 
               <div className="absolute top-3 right-3 flex items-center gap-2">
-                <div
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900/80 backdrop-blur-sm border border-zinc-700"
+                {/* Square-top framing toggle. Wipes out all other framing while
+                    on (non-destructive — toggle off to restore). Kept visible
+                    so the mode is always discoverable and reversible. */}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={squareTop ? "default" : "secondary"}
+                  className="h-9 gap-1.5"
+                  title={
+                    squareTop
+                      ? "Square Top portrait mode is on — other framing is hidden"
+                      : "Enable Square Top portrait mode"
+                  }
                   onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    dispatch(setSquareTopEnabled(!squareTop));
+                  }}
                 >
-                  <Maximize2 className="h-3.5 w-3.5 text-zinc-400" />
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={displayZoom}
-                    onChange={(e) => {
-                      updateFramingValue({
-                        zoom: parseFloat(e.target.value),
-                      });
-                    }}
-                    className="w-20 h-1 accent-blue-500 cursor-pointer"
-                    title={`Zoom: ${Math.round(displayZoom * 100)}%`}
-                  />
-                  <Crop className="h-3.5 w-3.5 text-zinc-400" />
-                </div>
+                  <Square className="h-3.5 w-3.5" />
+                  Square Top
+                </Button>
+
+                {!squareTop && (
+                  <div
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900/80 backdrop-blur-sm border border-zinc-700"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Maximize2 className="h-3.5 w-3.5 text-zinc-400" />
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={displayZoom}
+                      onChange={(e) => {
+                        updateFramingValue({
+                          zoom: parseFloat(e.target.value),
+                        });
+                      }}
+                      className="w-20 h-1 accent-blue-500 cursor-pointer"
+                      title={`Zoom: ${Math.round(displayZoom * 100)}%`}
+                    />
+                    <Crop className="h-3.5 w-3.5 text-zinc-400" />
+                  </div>
+                )}
               </div>
 
-              {displayZoom > 0 && !isDragging && (
+              {!squareTop && displayZoom > 0 && !isDragging && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
                   <span className="text-white text-sm font-medium px-3 py-1.5 bg-black/70 rounded-full backdrop-blur-sm">
                     Drag to reposition
@@ -789,7 +847,7 @@ export default function Editor() {
                 </div>
               )}
 
-              {displayZoom > 0 && (
+              {!squareTop && displayZoom > 0 && (
                 <>
                   {globalFraming.aspectRatio === "16:9" && (
                     <>

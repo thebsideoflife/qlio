@@ -34,6 +34,9 @@ export function computeSegmentRenderFingerprint(
       style: captionSettings.style,
     },
     aspectRatio: globalFraming.aspectRatio,
+    // Coerce to boolean so old projects (squareTop undefined) hash identically
+    // to squareTop=false — keeps the frontend and backend fingerprints in lockstep.
+    squareTop: !!globalFraming.squareTop,
   };
 
   const str = JSON.stringify(payload);

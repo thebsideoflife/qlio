@@ -617,6 +617,8 @@ export interface SegmentFraming {
 export interface GlobalFramingSettings {
   aspectRatio: AspectRatio;
   enabled: boolean;
+  // Square-top portrait mode (mirrors @/remotion/types). Only honored when enabled.
+  squareTop?: boolean;
 }
 
 // Render request is minimal - all project data is read from DB by backend
