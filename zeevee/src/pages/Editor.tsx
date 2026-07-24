@@ -26,7 +26,6 @@ import {
 import { useParams } from "react-router-dom";
 import { useRef, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
 import { useProjectData } from "@/hooks/useProjectData";
 import { useSeamlessPlayback } from "@/hooks/useSeamlessPlayback";
 import {
@@ -44,7 +43,7 @@ import {
   Maximize2,
   Clock,
   Pencil,
-  Square,
+  PanelTop,
 } from "lucide-react";
 import { getEffectiveKeyframes } from "@/remotion/types";
 import type { AspectRatio } from "@/remotion/types";
@@ -703,18 +702,23 @@ export default function Editor() {
                       ? "cursor-grab ring-2 ring-border hover:ring-muted-foreground/50"
                       : "cursor-pointer ring-2 ring-border",
               )}
-              style={{
-                // Square-top always renders the portrait (9:16) frame.
-                aspectRatio: squareTop ? 9 / 16 : aspectRatioValue,
-                maxHeight:
-                  (squareTop ? 9 / 16 : aspectRatioValue) < 1
-                    ? "100%"
-                    : "90%",
-                maxWidth:
-                  (squareTop ? 9 / 16 : aspectRatioValue) >= 1
-                    ? "100%"
-                    : "90%",
-              }}
+              style={
+                // Square-top uses an absolutely positioned <video>, so the
+                // frame has no in-flow content and collapses unless we give it
+                // an explicit height for aspect-ratio to resolve against.
+                squareTop
+                  ? {
+                      aspectRatio: 9 / 16,
+                      height: "100%",
+                      width: "auto",
+                      maxWidth: "90%",
+                    }
+                  : {
+                      aspectRatio: aspectRatioValue,
+                      maxHeight: aspectRatioValue < 1 ? "100%" : "90%",
+                      maxWidth: aspectRatioValue >= 1 ? "100%" : "90%",
+                    }
+              }
               onMouseDown={
                 squareTop || displayZoom <= 0
                   ? undefined
@@ -789,31 +793,8 @@ export default function Editor() {
                 }
               />
 
-              <div className="absolute top-3 right-3 flex items-center gap-2">
-                {/* Square-top framing toggle. Wipes out all other framing while
-                    on (non-destructive — toggle off to restore). Kept visible
-                    so the mode is always discoverable and reversible. */}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={squareTop ? "default" : "secondary"}
-                  className="h-9 gap-1.5"
-                  title={
-                    squareTop
-                      ? "Square Top portrait mode is on — other framing is hidden"
-                      : "Enable Square Top portrait mode"
-                  }
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    dispatch(setSquareTopEnabled(!squareTop));
-                  }}
-                >
-                  <Square className="h-3.5 w-3.5" />
-                  Square Top
-                </Button>
-
-                {!squareTop && (
+              {!squareTop && (
+                <div className="absolute top-3 right-3 flex items-center gap-2">
                   <div
                     className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900/80 backdrop-blur-sm border border-zinc-700"
                     onMouseDown={(e) => e.stopPropagation()}
@@ -836,8 +817,8 @@ export default function Editor() {
                     />
                     <Crop className="h-3.5 w-3.5 text-zinc-400" />
                   </div>
-                )}
-              </div>
+                </div>
+              )}
 
               {!squareTop && displayZoom > 0 && !isDragging && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
@@ -894,6 +875,32 @@ export default function Editor() {
           className="flex-1 min-h-0 bg-muted relative flex items-center justify-center p-4"
           onClick={handleBackgroundClick}
         >
+          {/* Preview chrome (not over the frame) — top-right, left of IQ */}
+          <button
+            type="button"
+            title={
+              squareTop
+                ? "Square Top on — click to restore framing"
+                : "Square Top portrait mode"
+            }
+            aria-pressed={squareTop}
+            onClick={(e) => {
+              e.stopPropagation();
+              dispatch(setSquareTopEnabled(!squareTop));
+            }}
+            className={cn(
+              "absolute top-3 right-3 z-10 flex items-center gap-1.5",
+              "px-2.5 py-1.5 rounded-md text-[11px] font-semibold tracking-wide",
+              "border shadow-sm transition-colors",
+              squareTop
+                ? "bg-blue-500/15 border-blue-500/50 text-blue-500"
+                : "bg-card/90 border-border text-muted-foreground hover:text-foreground hover:bg-card",
+            )}
+          >
+            <PanelTop className="h-3.5 w-3.5" />
+            Square Top
+          </button>
+
           {framingPreview ? (
             framingPreview
           ) : (
