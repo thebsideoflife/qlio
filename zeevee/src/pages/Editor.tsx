@@ -21,6 +21,7 @@ import {
   updateFramingKeyframe,
   updateCaptionWord,
   setGlobalAspectRatio,
+  setSquareTopEnabled,
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
 import { useRef, useEffect, useState } from "react";
@@ -42,6 +43,7 @@ import {
   Maximize2,
   Clock,
   Pencil,
+  PanelTop,
 } from "lucide-react";
 import { getEffectiveKeyframes } from "@/remotion/types";
 import type { AspectRatio } from "@/remotion/types";
@@ -266,6 +268,9 @@ export default function Editor() {
   };
 
   const aspectRatioValue = getAspectRatioValue(globalFraming.aspectRatio);
+  // Square-top portrait mode wipes out all other framing while on. Defaulted to
+  // false for projects created before this feature (missing field on load).
+  const squareTop = !!globalFraming.squareTop;
 
   // Set projectId in Redux for sync middleware
   // Also reset local state when switching projects (prevents stale state from previous project)
@@ -689,22 +694,40 @@ export default function Editor() {
               className={cn(
                 "relative overflow-hidden bg-black select-none",
                 "rounded-2xl shadow-2xl shadow-black/50",
-                isDragging
-                  ? "cursor-grabbing ring-4 ring-blue-500 ring-offset-4 ring-offset-background"
-                  : displayZoom > 0
-                    ? "cursor-grab ring-2 ring-border hover:ring-muted-foreground/50"
-                    : "cursor-pointer ring-2 ring-border",
+                squareTop
+                  ? "cursor-default ring-2 ring-border"
+                  : isDragging
+                    ? "cursor-grabbing ring-4 ring-blue-500 ring-offset-4 ring-offset-background"
+                    : displayZoom > 0
+                      ? "cursor-grab ring-2 ring-border hover:ring-muted-foreground/50"
+                      : "cursor-pointer ring-2 ring-border",
               )}
-              style={{
-                aspectRatio: aspectRatioValue,
-                maxHeight: aspectRatioValue < 1 ? "100%" : "90%",
-                maxWidth: aspectRatioValue >= 1 ? "100%" : "90%",
-              }}
+              style={
+                // Square-top uses an absolutely positioned <video>, so the
+                // frame has no in-flow content and collapses unless we give it
+                // an explicit height for aspect-ratio to resolve against.
+                squareTop
+                  ? {
+                      aspectRatio: 9 / 16,
+                      height: "100%",
+                      width: "auto",
+                      maxWidth: "90%",
+                    }
+                  : {
+                      aspectRatio: aspectRatioValue,
+                      maxHeight: aspectRatioValue < 1 ? "100%" : "90%",
+                      maxWidth: aspectRatioValue >= 1 ? "100%" : "90%",
+                    }
+              }
               onMouseDown={
-                displayZoom > 0 ? handleFramingMouseDown : undefined
+                squareTop || displayZoom <= 0
+                  ? undefined
+                  : handleFramingMouseDown
               }
               onClick={
-                displayZoom > 0 ? handleFramingClick : handleVideoClick
+                squareTop || displayZoom <= 0
+                  ? handleVideoClick
+                  : handleFramingClick
               }
             >
               <video
@@ -712,6 +735,20 @@ export default function Editor() {
                 src={videoUrl}
                 className="pointer-events-none"
                 style={(() => {
+                  // Square-top: render the video as a 1:1 square crop aligned to
+                  // the top of the portrait frame (black below). The square fills
+                  // the full width; its height (9/16 of the frame) equals the width.
+                  if (squareTop) {
+                    return {
+                      position: "absolute" as const,
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      height: "56.25%", // 1080/1920 → square at full width, top-anchored
+                      objectFit: "cover" as const,
+                      objectPosition: "center center",
+                    };
+                  }
                   if (displayZoom <= 0) {
                     return {
                       width: "100%",
@@ -756,32 +793,34 @@ export default function Editor() {
                 }
               />
 
-              <div className="absolute top-3 right-3 flex items-center gap-2">
-                <div
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900/80 backdrop-blur-sm border border-zinc-700"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <Maximize2 className="h-3.5 w-3.5 text-zinc-400" />
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={displayZoom}
-                    onChange={(e) => {
-                      updateFramingValue({
-                        zoom: parseFloat(e.target.value),
-                      });
-                    }}
-                    className="w-20 h-1 accent-blue-500 cursor-pointer"
-                    title={`Zoom: ${Math.round(displayZoom * 100)}%`}
-                  />
-                  <Crop className="h-3.5 w-3.5 text-zinc-400" />
+              {!squareTop && (
+                <div className="absolute top-3 right-3 flex items-center gap-2">
+                  <div
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900/80 backdrop-blur-sm border border-zinc-700"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Maximize2 className="h-3.5 w-3.5 text-zinc-400" />
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={displayZoom}
+                      onChange={(e) => {
+                        updateFramingValue({
+                          zoom: parseFloat(e.target.value),
+                        });
+                      }}
+                      className="w-20 h-1 accent-blue-500 cursor-pointer"
+                      title={`Zoom: ${Math.round(displayZoom * 100)}%`}
+                    />
+                    <Crop className="h-3.5 w-3.5 text-zinc-400" />
+                  </div>
                 </div>
-              </div>
+              )}
 
-              {displayZoom > 0 && !isDragging && (
+              {!squareTop && displayZoom > 0 && !isDragging && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
                   <span className="text-white text-sm font-medium px-3 py-1.5 bg-black/70 rounded-full backdrop-blur-sm">
                     Drag to reposition
@@ -789,7 +828,7 @@ export default function Editor() {
                 </div>
               )}
 
-              {displayZoom > 0 && (
+              {!squareTop && displayZoom > 0 && (
                 <>
                   {globalFraming.aspectRatio === "16:9" && (
                     <>
@@ -836,6 +875,32 @@ export default function Editor() {
           className="flex-1 min-h-0 bg-muted relative flex items-center justify-center p-4"
           onClick={handleBackgroundClick}
         >
+          {/* Preview chrome (not over the frame) — top-right, left of IQ */}
+          <button
+            type="button"
+            title={
+              squareTop
+                ? "Square Top on — click to restore framing"
+                : "Square Top portrait mode"
+            }
+            aria-pressed={squareTop}
+            onClick={(e) => {
+              e.stopPropagation();
+              dispatch(setSquareTopEnabled(!squareTop));
+            }}
+            className={cn(
+              "absolute top-3 right-3 z-10 flex items-center gap-1.5",
+              "px-2.5 py-1.5 rounded-md text-[11px] font-semibold tracking-wide",
+              "border shadow-sm transition-colors",
+              squareTop
+                ? "bg-blue-500/15 border-blue-500/50 text-blue-500"
+                : "bg-card/90 border-border text-muted-foreground hover:text-foreground hover:bg-card",
+            )}
+          >
+            <PanelTop className="h-3.5 w-3.5" />
+            Square Top
+          </button>
+
           {framingPreview ? (
             framingPreview
           ) : (

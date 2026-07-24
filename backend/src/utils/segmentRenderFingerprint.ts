@@ -47,7 +47,7 @@ export function computeSegmentRenderFingerprint(
     framing?: SegmentFraming;
   },
   captionSettings: { enabled: boolean; style: unknown },
-  globalFraming: { aspectRatio: string },
+  globalFraming: { aspectRatio: string; squareTop?: boolean },
 ): string {
   const payload = {
     startTime: segment.startTime,
@@ -58,6 +58,9 @@ export function computeSegmentRenderFingerprint(
       style: captionSettings.style,
     },
     aspectRatio: globalFraming.aspectRatio,
+    // Coerce to boolean so old projects (squareTop undefined) hash identically
+    // to squareTop=false — keeps this mirror in lockstep with the frontend copy.
+    squareTop: !!globalFraming.squareTop,
   };
 
   const str = JSON.stringify(payload);

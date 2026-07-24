@@ -100,11 +100,17 @@ export interface Segment {
 export interface GlobalFramingSettings {
   aspectRatio: AspectRatio;
   enabled: boolean;
+  // Square-top portrait mode: render the source video as a 1:1 square aligned to
+  // the top of a 9:16 frame (black below). Wipes out all per-segment keyframe
+  // framing while on (non-destructive — toggle off to restore). Only honored
+  // when `enabled === true`.
+  squareTop?: boolean;
 }
 
 export const DEFAULT_GLOBAL_FRAMING: GlobalFramingSettings = {
   aspectRatio: "9:16",
   enabled: true,
+  squareTop: false,
 };
 
 export type CaptionedVideoProps = {

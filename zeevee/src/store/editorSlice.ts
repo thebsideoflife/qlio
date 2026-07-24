@@ -613,6 +613,10 @@ export const editorSlice = createSlice({
       state.globalFraming.enabled = action.payload;
       markEdited(state);
     },
+    setSquareTopEnabled: (state, action: PayloadAction<boolean>) => {
+      state.globalFraming.squareTop = action.payload;
+      markEdited(state);
+    },
     setSegmentFraming: (
       state,
       action: PayloadAction<{ segmentId: string; framing: SegmentFraming }>,
@@ -878,6 +882,7 @@ export const {
   setGlobalFraming,
   setGlobalAspectRatio,
   setFramingEnabled,
+  setSquareTopEnabled,
   setSegmentFraming,
   applyFramingUpdates,
   updateSegmentFraming,

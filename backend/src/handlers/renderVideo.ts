@@ -40,6 +40,10 @@ interface CaptionSettings {
 interface GlobalFramingSettings {
   aspectRatio: AspectRatio;
   enabled: boolean;
+  // Square-top portrait mode (mirrors zeevee/src/remotion/types). When true,
+  // CaptionedVideo renders the source as a 1:1 square at the top of the
+  // portrait frame. Only honored when enabled === true.
+  squareTop?: boolean;
 }
 
 interface SegmentFraming {
@@ -74,9 +78,16 @@ const DEFAULT_CAPTION_SETTINGS: CaptionSettings = {
 const DEFAULT_GLOBAL_FRAMING: GlobalFramingSettings = {
   aspectRatio: "9:16",
   enabled: true,
+  squareTop: false,
 };
 
-function getCompositionId(aspectRatio: AspectRatio): string {
+// Square-top portrait mode always renders the 9:16 portrait composition,
+// regardless of the stored aspect ratio.
+function getCompositionId(
+  aspectRatio: AspectRatio,
+  squareTop?: boolean,
+): string {
+  if (squareTop) return "CaptionedVideoPortrait";
   switch (aspectRatio) {
     case "16:9":
       return "CaptionedVideo";
@@ -229,7 +240,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
   const jobId = uuidv4();
   const outputFormat = body.outputFormat || "mp4";
-  const compositionId = getCompositionId(globalFraming.aspectRatio);
+  const compositionId = getCompositionId(
+    globalFraming.aspectRatio,
+    globalFraming.squareTop,
+  );
 
   // Create render job with all data the cutSegments handler needs
   const renderJob = {

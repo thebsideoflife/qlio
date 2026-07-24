@@ -1,0 +1,77 @@
+import React from "react";
+import { AbsoluteFill, OffthreadVideo, useVideoConfig } from "remotion";
+import type { CaptionLine, CaptionSettings } from "./types";
+import { CaptionDisplay } from "../components/editor/CaptionDisplay";
+
+interface SquareTopVideoProps {
+  src: string;
+  // Segment bounds (seconds). Omit/leave at 0 to render the full video.
+  startTime?: number;
+  endTime?: number;
+  captions: CaptionLine[];
+  captionSettings: CaptionSettings;
+  currentTime: number;
+  containerHeight: number;
+}
+
+/**
+ * Square-top portrait layout.
+ *
+ * The composition is the portrait canvas (1080x1920). The source 16:9 video is
+ * center-cropped to a 1:1 square that fills the full width (1080x1080) and is
+ * anchored to the top of the frame. The remaining 840px below is black.
+ *
+ * This is the "wipe out all other framing" mode: segment.framing / keyframe
+ * zoom/focus is intentionally ignored here — no AI, no focus math, just a fixed
+ * square crop. Captions render over the square region (containerHeight is the
+ * composition height so caption positioning math is unchanged).
+ */
+export const SquareTopVideo: React.FC<SquareTopVideoProps> = ({
+  src,
+  startTime,
+  endTime,
+  captions,
+  captionSettings,
+  currentTime,
+  containerHeight,
+}) => {
+  const { fps } = useVideoConfig();
+
+  // startFrom/endAt are only meaningful with explicit segment bounds; omitting
+  // them renders the full video (matches the no-segments full-video path).
+  const hasBounds =
+    startTime !== undefined && endTime !== undefined && endTime > startTime;
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: "black" }}>
+      <AbsoluteFill
+        style={{
+          // Square fills the full width, anchored to the top of the portrait frame.
+          height: "56.25%", // 1080 / 1920 = 0.5625 → a 1:1 square at full width
+          top: 0,
+          overflow: "hidden",
+        }}
+      >
+        <OffthreadVideo
+          src={src}
+          startFrom={hasBounds ? Math.round(startTime * fps) : undefined}
+          endAt={hasBounds ? Math.round(endTime * fps) : undefined}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            objectPosition: "center center",
+          }}
+        />
+        <CaptionDisplay
+          captions={captions}
+          settings={captionSettings}
+          currentTime={currentTime}
+          // Captions are positioned relative to the square region (its own height),
+          // so pass the square's pixel height, not the full composition height.
+          containerHeight={Math.round(containerHeight * 0.5625)}
+        />
+      </AbsoluteFill>
+    </AbsoluteFill>
+  );
+};

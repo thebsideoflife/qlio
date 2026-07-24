@@ -13,6 +13,7 @@ import type {
 } from "./types";
 import { DEFAULT_SEGMENT_FRAMING } from "./types";
 import { AutoFramedVideo } from "./AutoFramedVideo";
+import { SquareTopVideo } from "./SquareTopVideo";
 import { CaptionDisplay } from "../components/editor/CaptionDisplay";
 
 interface SegmentVideoProps {
@@ -23,6 +24,7 @@ interface SegmentVideoProps {
   captionSettings: CaptionSettings;
   framing?: SegmentFraming;
   framingEnabled?: boolean;
+  squareTop?: boolean;
 }
 
 function SegmentVideo({
@@ -33,6 +35,7 @@ function SegmentVideo({
   captionSettings,
   framing,
   framingEnabled = false,
+  squareTop = false,
 }: SegmentVideoProps) {
   const frame = useCurrentFrame();
   const { fps, height } = useVideoConfig();
@@ -61,6 +64,22 @@ function SegmentVideo({
       >
         Error: No video URL
       </AbsoluteFill>
+    );
+  }
+
+  // Square-top mode wipes out all other framing — render the square-top layout
+  // and ignore segment.framing entirely.
+  if (squareTop) {
+    return (
+      <SquareTopVideo
+        src={videoUrl}
+        startTime={startTime}
+        endTime={endTime}
+        captions={captions}
+        captionSettings={captionSettings}
+        currentTime={currentTime}
+        containerHeight={height}
+      />
     );
   }
 
@@ -113,6 +132,9 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
   const { fps, height } = useVideoConfig();
 
   const framingEnabled = globalFraming?.enabled ?? false;
+  // Square-top portrait mode wipes out all other framing while on. Only honored
+  // when framing is enabled (consistent with the framingEnabled gate below).
+  const squareTop = framingEnabled && !!globalFraming?.squareTop;
 
   // Validate videoUrl
   if (!videoUrl || videoUrl.trim() === "") {
@@ -147,6 +169,22 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
   // No segments = render full video
   if (segments.length === 0) {
     const currentTime = frame / fps;
+
+    // Square-top mode: render the full video as a square at the top of the
+    // portrait frame, ignoring framing entirely.
+    if (squareTop) {
+      return (
+        <SquareTopVideo
+          src={videoUrl}
+          startTime={0}
+          endTime={0}
+          captions={captions}
+          captionSettings={captionSettings}
+          currentTime={currentTime}
+          containerHeight={height}
+        />
+      );
+    }
 
     // Apply framing if enabled (use default framing with global aspect ratio)
     if (framingEnabled && globalFraming) {
@@ -219,6 +257,7 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
               captionSettings={captionSettings}
               framing={segmentFraming}
               framingEnabled={framingEnabled}
+              squareTop={squareTop}
             />
           </Sequence>
         );
