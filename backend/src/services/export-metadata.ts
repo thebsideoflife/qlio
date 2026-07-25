@@ -9,6 +9,11 @@ import {
   type AssetInfo,
   type ChunkInfo,
 } from "./twelvelabs";
+import {
+  iabAllowlistPromptBlock,
+  normalizeIabTags,
+  type IabTaxonomyTags,
+} from "./iab-content-taxonomy";
 
 const MIN_CLIP_SEC = 4.001;
 const PEGASUS_TIMEOUT_MS = 600_000; // 10 min per clip (Lambda max is 15 min)
@@ -25,6 +30,7 @@ export interface ExportMetadataOptions {
     theme?: boolean;
     tone?: boolean;
   };
+  includeIab?: boolean;
   includeThumbnails?: boolean;
 }
 
@@ -54,6 +60,7 @@ export interface ParsedSegmentMetadata {
     mood?: string;
     theme?: string;
     tone?: string;
+    iab?: IabTaxonomyTags;
   };
 }
 
@@ -148,6 +155,11 @@ export function computeMissingMetadataOptions(
       missing.descriptiveTags = missingTags;
       hasMissing = true;
     }
+  }
+
+  if (options.includeIab && !cached?.tags?.iab?.cat?.length) {
+    missing.includeIab = true;
+    hasMissing = true;
   }
 
   if (options.includeThumbnails !== false && !cached?.thumbnailKey) {
@@ -343,17 +355,27 @@ export function buildExportMetadataPrompt(
     fields.push('"tone": "Overall tone (e.g. tense, hopeful, comedic)."');
   }
 
+  if (options.includeIab) {
+    fields.push(
+      '"iab_cat": ["id1", "id2"]',
+    );
+  }
+
   if (fields.length === 0) {
     fields.push(
       '"mood": "One or two words for emotional tone."',
     );
   }
 
+  const iabBlock = options.includeIab
+    ? `\n\n${iabAllowlistPromptBlock()}\nReturn iab_cat as 2-4 IDs: exactly one form factor (prefer Clip for short scenes) plus 1-3 genres.`
+    : "";
+
   return `Analyze this video clip and return JSON only (no markdown) with these fields:
 {
   ${fields.join(",\n  ")}
 }
-Base all fields only on what happens in this clip.`;
+Base all fields only on what happens in this clip.${iabBlock}`;
 }
 
 function normalizeContentAdvisory(value: string): string | undefined {
@@ -421,9 +443,9 @@ export function parseExportMetadataResponse(
   }
 
   const tags = options.descriptiveTags;
-  if (tags) {
+  if (tags || options.includeIab) {
     const parsedTags: NonNullable<ParsedSegmentMetadata["tags"]> = {};
-    if (tags.contentAdvisory) {
+    if (tags?.contentAdvisory) {
       const advisory =
         typeof data.content_advisory === "string"
           ? normalizeContentAdvisory(data.content_advisory)
@@ -431,14 +453,27 @@ export function parseExportMetadataResponse(
       // Empty string marks "checked, nothing to flag" so toggles don't re-fetch.
       parsedTags.content_advisory = advisory ?? "";
     }
-    if (tags.mood && typeof data.mood === "string") {
+    if (tags?.mood && typeof data.mood === "string") {
       parsedTags.mood = data.mood.trim();
     }
-    if (tags.theme && typeof data.theme === "string") {
+    if (tags?.theme && typeof data.theme === "string") {
       parsedTags.theme = data.theme.trim();
     }
-    if (tags.tone && typeof data.tone === "string") {
+    if (tags?.tone && typeof data.tone === "string") {
       parsedTags.tone = data.tone.trim();
+    }
+    if (options.includeIab) {
+      const iabRaw =
+        data.iab && typeof data.iab === "object"
+          ? (data.iab as Record<string, unknown>)
+          : null;
+      const catSource = Array.isArray(data.iab_cat)
+        ? data.iab_cat
+        : iabRaw?.cat;
+      const iab = normalizeIabTags(catSource, iabRaw?.labels ?? data.iab_labels);
+      if (iab) {
+        parsedTags.iab = iab;
+      }
     }
     if (Object.keys(parsedTags).length > 0) {
       result.tags = parsedTags;

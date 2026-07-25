@@ -40,7 +40,7 @@ export interface GenerateRequest {
   format: string;
   assetType: string;
   platform: string;
-  /** Use Jockey pipeline for Compact / Ep Recap (backend env flags must also be on) */
+  /** Use Enhanced Cut pipeline for Compact / Ep Recap (backend env flags must also be on) */
   jockeyEnabled: boolean;
 }
 
@@ -404,13 +404,13 @@ export function MicroseriesGenerator({
           {isJockeyFormat && (
             <div className="flex items-center justify-between px-1">
               <Label
-                htmlFor="jockey-toggle"
+                htmlFor="enhanced-cut-toggle"
                 className="text-xs font-semibold text-muted-foreground cursor-pointer"
               >
-                Jockey mode
+                Enhanced Cut
               </Label>
               <Switch
-                id="jockey-toggle"
+                id="enhanced-cut-toggle"
                 checked={jockeyEnabled}
                 onCheckedChange={setJockeyEnabled}
                 disabled={isGenerating}

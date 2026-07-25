@@ -36,13 +36,7 @@ import {
   XCircle,
   Save,
   RefreshCw,
-  SlidersHorizontal,
 } from "lucide-react";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { cn, formatSegmentLabel } from "@/lib/utils";
 import {
   computeSegmentRenderFingerprint,
@@ -152,8 +146,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   const [adPre, setAdPre] = useState(true);
   const [adMid, setAdMid] = useState(false);
   const [adPost, setAdPost] = useState(false);
-  const [adVast, setAdVast] = useState(false);
-  const [adIab, setAdIab] = useState(true);
+  const [includeIab, setIncludeIab] = useState(true);
 
   const cachedRenderMap = useMemo(() => {
     const map = new Map<string, SegmentRenderCache>();
@@ -188,6 +181,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
             tone,
           }
         : undefined,
+      includeIab,
       includeThumbnails,
     }),
     [
@@ -199,6 +193,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       mood,
       theme,
       tone,
+      includeIab,
       includeThumbnails,
     ],
   );
@@ -873,100 +868,6 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                           Updating {staleMetadataSegmentIds.length}…
                         </span>
                       )}
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          disabled={metadataDisabled}
-                          aria-label="Metadata options"
-                        >
-                          <SlidersHorizontal className="h-3.5 w-3.5" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent align="end" className="w-72 space-y-4">
-                        <p className="text-xs font-semibold">
-                          Include in export
-                        </p>
-                        <OptionRow
-                          id="meta-titles"
-                          label="Titles"
-                          checked={includeTitles}
-                          onCheckedChange={setIncludeTitles}
-                        />
-                        <div className="space-y-2">
-                          <OptionRow
-                            id="meta-descriptions"
-                            label="Descriptions"
-                            checked={includeDescriptions}
-                            onCheckedChange={setIncludeDescriptions}
-                          />
-                          <NestedGroup disabled={!includeDescriptions}>
-                            <div className="space-y-2.5">
-                              {DESCRIPTION_LENGTH_OPTIONS.map((opt) => (
-                                <OptionRow
-                                  key={opt.value}
-                                  id={`desc-${opt.value}`}
-                                  label={opt.label}
-                                  checked={descriptionLengths.has(opt.value)}
-                                  onCheckedChange={() =>
-                                    toggleDescriptionLength(opt.value)
-                                  }
-                                  disabled={!includeDescriptions}
-                                />
-                              ))}
-                            </div>
-                          </NestedGroup>
-                        </div>
-                        <OptionRow
-                          id="meta-thumbnails"
-                          label="Thumbnails"
-                          checked={includeThumbnails}
-                          onCheckedChange={setIncludeThumbnails}
-                        />
-                        <Separator />
-                        <div className="space-y-2">
-                          <OptionRow
-                            id="meta-descriptive"
-                            label="Descriptive Tags"
-                            checked={descriptiveTab}
-                            onCheckedChange={setDescriptiveTab}
-                          />
-                          <NestedGroup disabled={descriptiveChildrenDisabled}>
-                            <OptionRow
-                              id="meta-advisory"
-                              label="Content Advisory"
-                              checked={contentAdvisory}
-                              onCheckedChange={setContentAdvisory}
-                              disabled={descriptiveChildrenDisabled}
-                            />
-                            <OptionRow
-                              id="meta-mood"
-                              label="Mood"
-                              checked={mood}
-                              onCheckedChange={setMood}
-                              disabled={descriptiveChildrenDisabled}
-                            />
-                            <OptionRow
-                              id="meta-theme"
-                              label="Theme"
-                              checked={theme}
-                              onCheckedChange={setTheme}
-                              disabled={descriptiveChildrenDisabled}
-                            />
-                            <OptionRow
-                              id="meta-tone"
-                              label="Tone"
-                              checked={tone}
-                              onCheckedChange={setTone}
-                              disabled={descriptiveChildrenDisabled}
-                            />
-                          </NestedGroup>
-                        </div>
-                      </PopoverContent>
-                    </Popover>
                     {metadataLoading && (
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                     )}
@@ -1042,6 +943,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                             mood={mood}
                             theme={theme}
                             tone={tone}
+                            includeIab={includeIab}
                             error={metadataSegmentErrors.get(segment.id)}
                             warning={metadataSegmentWarnings.get(segment.id)}
                           />
@@ -1057,6 +959,107 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
             <ExportColumn>
               <ColumnHeader title="Configuration" />
               <div className="px-4 py-4 space-y-6 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
+                <ConfigSection title="Metadata">
+                  <div
+                    className={cn(
+                      "space-y-4",
+                      metadataDisabled && "opacity-50 pointer-events-none",
+                    )}
+                  >
+                    <OptionRow
+                      id="meta-titles"
+                      label="Titles"
+                      checked={includeTitles}
+                      onCheckedChange={setIncludeTitles}
+                      disabled={metadataDisabled}
+                    />
+                    <div className="space-y-2">
+                      <OptionRow
+                        id="meta-descriptions"
+                        label="Descriptions"
+                        checked={includeDescriptions}
+                        onCheckedChange={setIncludeDescriptions}
+                        disabled={metadataDisabled}
+                      />
+                      <NestedGroup
+                        disabled={!includeDescriptions || metadataDisabled}
+                      >
+                        <div className="space-y-2.5">
+                          {DESCRIPTION_LENGTH_OPTIONS.map((opt) => (
+                            <OptionRow
+                              key={opt.value}
+                              id={`desc-${opt.value}`}
+                              label={opt.label}
+                              checked={descriptionLengths.has(opt.value)}
+                              onCheckedChange={() =>
+                                toggleDescriptionLength(opt.value)
+                              }
+                              disabled={
+                                !includeDescriptions || metadataDisabled
+                              }
+                            />
+                          ))}
+                        </div>
+                      </NestedGroup>
+                    </div>
+                    <OptionRow
+                      id="meta-thumbnails"
+                      label="Thumbnails"
+                      checked={includeThumbnails}
+                      onCheckedChange={setIncludeThumbnails}
+                      disabled={metadataDisabled}
+                    />
+                    <OptionRow
+                      id="meta-iab"
+                      label="IAB"
+                      checked={includeIab}
+                      onCheckedChange={setIncludeIab}
+                      disabled={metadataDisabled}
+                    />
+                    <div className="space-y-2">
+                      <OptionRow
+                        id="meta-descriptive"
+                        label="Descriptive Tags"
+                        checked={descriptiveTab}
+                        onCheckedChange={setDescriptiveTab}
+                        disabled={metadataDisabled}
+                      />
+                      <NestedGroup disabled={descriptiveChildrenDisabled}>
+                        <OptionRow
+                          id="meta-advisory"
+                          label="Content Advisory"
+                          checked={contentAdvisory}
+                          onCheckedChange={setContentAdvisory}
+                          disabled={descriptiveChildrenDisabled}
+                        />
+                        <OptionRow
+                          id="meta-mood"
+                          label="Mood"
+                          checked={mood}
+                          onCheckedChange={setMood}
+                          disabled={descriptiveChildrenDisabled}
+                        />
+                        <OptionRow
+                          id="meta-theme"
+                          label="Theme"
+                          checked={theme}
+                          onCheckedChange={setTheme}
+                          disabled={descriptiveChildrenDisabled}
+                        />
+                        <OptionRow
+                          id="meta-tone"
+                          label="Tone"
+                          checked={tone}
+                          onCheckedChange={setTone}
+                          disabled={descriptiveChildrenDisabled}
+                        />
+                      </NestedGroup>
+                    </div>
+                  </div>
+                </ConfigSection>
+
+                <Separator />
+
                 <ConfigSection
                   title="Ads"
                   trailing={
@@ -1123,25 +1126,6 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                           label="Post"
                           checked={adPost}
                           onCheckedChange={setAdPost}
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <Label className="text-xs text-muted-foreground mb-2 block">
-                        Ad Tag Type
-                      </Label>
-                      <div className="flex gap-4">
-                        <OptionRow
-                          id="ad-vast"
-                          label="VAST"
-                          checked={adVast}
-                          onCheckedChange={setAdVast}
-                        />
-                        <OptionRow
-                          id="ad-iab"
-                          label="IAB"
-                          checked={adIab}
-                          onCheckedChange={setAdIab}
                         />
                       </div>
                     </div>
@@ -1247,6 +1231,7 @@ function MetadataSceneCard({
   mood,
   theme,
   tone,
+  includeIab,
   error,
   warning,
 }: {
@@ -1264,6 +1249,7 @@ function MetadataSceneCard({
   mood: boolean;
   theme: boolean;
   tone: boolean;
+  includeIab: boolean;
   error?: string;
   warning?: string;
 }) {
@@ -1271,6 +1257,7 @@ function MetadataSceneCard({
   const contentAdvisoryTag = normalizeContentAdvisory(
     meta?.tags?.content_advisory,
   );
+  const iabLabels = includeIab ? meta?.tags?.iab?.labels : undefined;
 
   return (
     <div
@@ -1367,6 +1354,25 @@ function MetadataSceneCard({
               {meta.tags.tone}
             </span>
           )}
+        </div>
+      )}
+
+      {includeIab && (
+        <div className="flex flex-wrap gap-1.5">
+          {iabLabels?.length
+            ? iabLabels.map((label) => (
+                <span
+                  key={label}
+                  className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full"
+                >
+                  {label}
+                </span>
+              ))
+            : isGenerating && (
+                <span className="text-[10px] text-muted-foreground italic">
+                  IAB…
+                </span>
+              )}
         </div>
       )}
 
