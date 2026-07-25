@@ -23,8 +23,8 @@ interface SquareTopVideoProps {
  *
  * This is the "wipe out all other framing" mode: segment.framing / keyframe
  * zoom/focus is intentionally ignored here — no AI, no focus math, just a fixed
- * square crop. Captions render over the square region (containerHeight is the
- * composition height so caption positioning math is unchanged).
+ * square crop. Captions render over the full portrait frame (same positioning
+ * as non–square-top portrait), not confined to the square.
  */
 export const SquareTopVideo: React.FC<SquareTopVideoProps> = ({
   src,
@@ -63,15 +63,13 @@ export const SquareTopVideo: React.FC<SquareTopVideoProps> = ({
             objectPosition: "center center",
           }}
         />
-        <CaptionDisplay
-          captions={captions}
-          settings={captionSettings}
-          currentTime={currentTime}
-          // Captions are positioned relative to the square region (its own height),
-          // so pass the square's pixel height, not the full composition height.
-          containerHeight={Math.round(containerHeight * 0.5625)}
-        />
       </AbsoluteFill>
+      <CaptionDisplay
+        captions={captions}
+        settings={captionSettings}
+        currentTime={currentTime}
+        containerHeight={containerHeight}
+      />
     </AbsoluteFill>
   );
 };

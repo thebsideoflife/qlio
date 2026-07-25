@@ -15,8 +15,6 @@ const SNAP_THRESHOLD = 8;
 // Reference height for font sizing - matches Remotion's 1080p base
 // This ensures consistent font sizes regardless of preview container size
 const REFERENCE_HEIGHT = 1080;
-// Square-top video occupies the top 1080px of a 1920 portrait frame (56.25%).
-const SQUARE_TOP_HEIGHT_RATIO = 0.5625;
 
 export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
   const dispatch = useDispatch();
@@ -24,13 +22,6 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
   const { enabled, style } = useSelector(
     (state: RootState) => state.editor.captionSettings,
   );
-  const squareTop = useSelector(
-    (state: RootState) => !!state.editor.globalFraming.squareTop,
-  );
-  // Match SquareTopVideo: captions live in the top square and scale to it.
-  const fontReferenceHeight = squareTop
-    ? REFERENCE_HEIGHT * SQUARE_TOP_HEIGHT_RATIO
-    : REFERENCE_HEIGHT;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -155,12 +146,8 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
   return (
     <div
       ref={containerRef}
-      className="absolute left-0 right-0 top-0 pointer-events-none"
-      style={{
-        zIndex: 10,
-        // Square-top: captions sit in the top square only (same region as the video).
-        height: squareTop ? `${SQUARE_TOP_HEIGHT_RATIO * 100}%` : "100%",
-      }}
+      className="absolute inset-0 pointer-events-none"
+      style={{ zIndex: 10 }}
       onMouseDown={onDragStart}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
@@ -189,7 +176,7 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
               <span
                 style={{
                   fontFamily: style.fontFamily,
-                  fontSize: `${(style.fontSize / 100) * fontReferenceHeight}px`,
+                  fontSize: `${(style.fontSize / 100) * REFERENCE_HEIGHT}px`,
                   fontWeight: style.fontWeight ?? "600",
                   lineHeight: 1.25,
                   color: style.color,
