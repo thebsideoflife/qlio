@@ -2,7 +2,10 @@ import type {
   ExportMetadataFingerprintOptions,
   SegmentMetadataCache,
 } from "./segmentMetadataFingerprint";
-import { normalizeContentAdvisory } from "./segmentMetadataFingerprint";
+import {
+  filterIabTagsForFields,
+  normalizeContentAdvisory,
+} from "./segmentMetadataFingerprint";
 
 export { normalizeContentAdvisory };
 
@@ -108,13 +111,14 @@ function pickTags(
     }
   }
   if (includeIab && meta.tags.iab?.cat?.length) {
-    out.iab = {
-      cattax: 7,
-      cat: meta.tags.iab.cat,
-      ...(meta.tags.iab.labels?.length
-        ? { labels: meta.tags.iab.labels }
-        : {}),
-    };
+    const filtered = filterIabTagsForFields(meta.tags.iab, options.iabFields);
+    if (filtered) {
+      out.iab = {
+        cattax: 7,
+        cat: filtered.cat,
+        ...(filtered.labels?.length ? { labels: filtered.labels } : {}),
+      };
+    }
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }

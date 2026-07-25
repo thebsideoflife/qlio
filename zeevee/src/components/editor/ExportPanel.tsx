@@ -45,8 +45,13 @@ import {
 } from "@/lib/segmentRenderFingerprint";
 import {
   isSegmentMetadataStale,
+  filterIabTagsForFields,
   type SegmentMetadataCache,
 } from "@/lib/segmentMetadataFingerprint";
+import {
+  IAB_FORM_FACTOR_IDS,
+  IAB_GENRE_IDS,
+} from "@/lib/iabContentTaxonomy";
 import {
   buildExportMetadataDocument,
   downloadExportMetadataJson,
@@ -147,6 +152,8 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   const [adMid, setAdMid] = useState(false);
   const [adPost, setAdPost] = useState(false);
   const [includeIab, setIncludeIab] = useState(true);
+  const [iabFormFactor, setIabFormFactor] = useState(true);
+  const [iabGenres, setIabGenres] = useState(true);
 
   const cachedRenderMap = useMemo(() => {
     const map = new Map<string, SegmentRenderCache>();
@@ -182,6 +189,12 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
           }
         : undefined,
       includeIab,
+      iabFields: includeIab
+        ? {
+            formFactor: iabFormFactor,
+            genres: iabGenres,
+          }
+        : undefined,
       includeThumbnails,
     }),
     [
@@ -194,6 +207,8 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       theme,
       tone,
       includeIab,
+      iabFormFactor,
+      iabGenres,
       includeThumbnails,
     ],
   );
@@ -653,6 +668,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
 
   const metadataDisabled = !metadataEnabled || isProcessing;
   const descriptiveChildrenDisabled = !descriptiveTab || metadataDisabled;
+  const iabChildrenDisabled = !includeIab || metadataDisabled;
 
   const selectedMetadataRows = useMemo(() => {
     return segments
@@ -944,6 +960,8 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                             theme={theme}
                             tone={tone}
                             includeIab={includeIab}
+                            iabFormFactor={iabFormFactor}
+                            iabGenres={iabGenres}
                             error={metadataSegmentErrors.get(segment.id)}
                             warning={metadataSegmentWarnings.get(segment.id)}
                           />
@@ -1009,13 +1027,31 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                       onCheckedChange={setIncludeThumbnails}
                       disabled={metadataDisabled}
                     />
-                    <OptionRow
-                      id="meta-iab"
-                      label="IAB"
-                      checked={includeIab}
-                      onCheckedChange={setIncludeIab}
-                      disabled={metadataDisabled}
-                    />
+                    <div className="space-y-2">
+                      <OptionRow
+                        id="meta-iab"
+                        label="IAB"
+                        checked={includeIab}
+                        onCheckedChange={setIncludeIab}
+                        disabled={metadataDisabled}
+                      />
+                      <NestedGroup disabled={iabChildrenDisabled}>
+                        <OptionRow
+                          id="meta-iab-form-factor"
+                          label="Form Factor"
+                          checked={iabFormFactor}
+                          onCheckedChange={setIabFormFactor}
+                          disabled={iabChildrenDisabled}
+                        />
+                        <OptionRow
+                          id="meta-iab-genres"
+                          label="Genres"
+                          checked={iabGenres}
+                          onCheckedChange={setIabGenres}
+                          disabled={iabChildrenDisabled}
+                        />
+                      </NestedGroup>
+                    </div>
                     <div className="space-y-2">
                       <OptionRow
                         id="meta-descriptive"
@@ -1232,6 +1268,8 @@ function MetadataSceneCard({
   theme,
   tone,
   includeIab,
+  iabFormFactor,
+  iabGenres,
   error,
   warning,
 }: {
@@ -1250,6 +1288,8 @@ function MetadataSceneCard({
   theme: boolean;
   tone: boolean;
   includeIab: boolean;
+  iabFormFactor: boolean;
+  iabGenres: boolean;
   error?: string;
   warning?: string;
 }) {
@@ -1257,7 +1297,39 @@ function MetadataSceneCard({
   const contentAdvisoryTag = normalizeContentAdvisory(
     meta?.tags?.content_advisory,
   );
-  const iabLabels = includeIab ? meta?.tags?.iab?.labels : undefined;
+  const filteredIab = includeIab
+    ? filterIabTagsForFields(meta?.tags?.iab, {
+        formFactor: iabFormFactor,
+        genres: iabGenres,
+      })
+    : undefined;
+
+  const iabFormFactors =
+    filteredIab?.cat
+      ?.map((id, i) => ({
+        id,
+        label: filteredIab.labels?.[i] ?? id,
+      }))
+      .filter(({ id }) => IAB_FORM_FACTOR_IDS.has(id)) ?? [];
+  const iabGenreTags =
+    filteredIab?.cat
+      ?.map((id, i) => ({
+        id,
+        label: filteredIab.labels?.[i] ?? id,
+      }))
+      .filter(({ id }) => IAB_GENRE_IDS.has(id)) ?? [];
+
+  const hasDescriptiveFields =
+    descriptiveTab &&
+    !!meta?.tags &&
+    ((contentAdvisory && !!contentAdvisoryTag) ||
+      (mood && !!meta.tags.mood) ||
+      (theme && !!meta.tags.theme) ||
+      (tone && !!meta.tags.tone));
+
+  const hasIabFields =
+    includeIab &&
+    (iabFormFactors.length > 0 || iabGenreTags.length > 0 || isGenerating);
 
   return (
     <div
@@ -1332,47 +1404,63 @@ function MetadataSceneCard({
         )}
       </div>
 
-      {descriptiveTab && meta?.tags && (
-        <div className="flex flex-wrap gap-1.5">
-          {contentAdvisory && contentAdvisoryTag && (
-            <span className="text-[10px] bg-muted px-2 py-0.5 rounded-full">
-              {contentAdvisoryTag}
-            </span>
-          )}
-          {mood && meta.tags.mood && (
-            <span className="text-[10px] bg-muted px-2 py-0.5 rounded-full">
-              {meta.tags.mood}
-            </span>
-          )}
-          {theme && meta.tags.theme && (
-            <span className="text-[10px] bg-muted px-2 py-0.5 rounded-full">
-              {meta.tags.theme}
-            </span>
-          )}
-          {tone && meta.tags.tone && (
-            <span className="text-[10px] bg-muted px-2 py-0.5 rounded-full">
-              {meta.tags.tone}
-            </span>
-          )}
-        </div>
-      )}
-
-      {includeIab && (
-        <div className="flex flex-wrap gap-1.5">
-          {iabLabels?.length
-            ? iabLabels.map((label) => (
-                <span
-                  key={label}
-                  className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full"
-                >
-                  {label}
-                </span>
-              ))
-            : isGenerating && (
-                <span className="text-[10px] text-muted-foreground italic">
-                  IAB…
-                </span>
+      {(hasDescriptiveFields || hasIabFields) && (
+        <div className="space-y-3 pt-2 border-t border-border/60">
+          {hasDescriptiveFields && meta?.tags && (
+            <MetadataFieldGroup title="Descriptive">
+              {contentAdvisory && contentAdvisoryTag && (
+                <MetadataField
+                  label="Content Advisory"
+                  value={contentAdvisoryTag}
+                />
               )}
+              {mood && meta.tags.mood && (
+                <MetadataField label="Mood" value={meta.tags.mood} />
+              )}
+              {theme && meta.tags.theme && (
+                <MetadataField label="Theme" value={meta.tags.theme} />
+              )}
+              {tone && meta.tags.tone && (
+                <MetadataField label="Tone" value={meta.tags.tone} />
+              )}
+            </MetadataFieldGroup>
+          )}
+
+          {hasIabFields && (
+            <MetadataFieldGroup title="IAB">
+              {iabFormFactors.length > 0 || iabGenreTags.length > 0 ? (
+                <>
+                  {iabFormFactor && iabFormFactors.length > 0 && (
+                    <MetadataField
+                      label="Form Factor"
+                      value={iabFormFactors.map((f) => f.label).join(", ")}
+                    />
+                  )}
+                  {iabGenres && iabGenreTags.length > 0 && (
+                    <MetadataField
+                      label="Genres"
+                      value={
+                        <span className="flex flex-wrap gap-1">
+                          {iabGenreTags.map((g) => (
+                            <span
+                              key={g.id}
+                              className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-foreground/90"
+                            >
+                              {g.label}
+                            </span>
+                          ))}
+                        </span>
+                      }
+                    />
+                  )}
+                </>
+              ) : (
+                <p className="text-[11px] text-muted-foreground italic">
+                  Generating…
+                </p>
+              )}
+            </MetadataFieldGroup>
+          )}
         </div>
       )}
 
@@ -1380,6 +1468,42 @@ function MetadataSceneCard({
       {warning && (
         <p className="text-xs text-amber-600 dark:text-amber-500">{warning}</p>
       )}
+    </div>
+  );
+}
+
+function MetadataFieldGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <h4 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+        {title}
+      </h4>
+      <dl className="space-y-1">{children}</dl>
+    </div>
+  );
+}
+
+function MetadataField({
+  label,
+  value,
+}: {
+  label: string;
+  value: ReactNode;
+}) {
+  return (
+    <div className="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-x-3 gap-y-0.5 items-start">
+      <dt className="text-[11px] text-muted-foreground leading-snug pt-px">
+        {label}
+      </dt>
+      <dd className="text-[11px] text-foreground leading-snug min-w-0">
+        {value}
+      </dd>
     </div>
   );
 }

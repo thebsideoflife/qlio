@@ -11,7 +11,11 @@ import {
 } from "./twelvelabs";
 import {
   iabAllowlistPromptBlock,
+  iabHasFormFactor,
+  iabHasGenre,
+  iabPickInstruction,
   normalizeIabTags,
+  type IabFieldOptions,
   type IabTaxonomyTags,
 } from "./iab-content-taxonomy";
 
@@ -31,6 +35,7 @@ export interface ExportMetadataOptions {
     tone?: boolean;
   };
   includeIab?: boolean;
+  iabFields?: IabFieldOptions;
   includeThumbnails?: boolean;
 }
 
@@ -157,9 +162,28 @@ export function computeMissingMetadataOptions(
     }
   }
 
-  if (options.includeIab && !cached?.tags?.iab?.cat?.length) {
-    missing.includeIab = true;
-    hasMissing = true;
+  if (options.includeIab) {
+    const iabFields = options.iabFields;
+    const wantForm = iabFields?.formFactor !== false;
+    const wantGenres = iabFields?.genres !== false;
+    const cachedIab = cached?.tags?.iab;
+    const missingForm = wantForm && !iabHasFormFactor(cachedIab);
+    const missingGenres = wantGenres && !iabHasGenre(cachedIab);
+    if (missingForm || missingGenres || !cachedIab?.cat?.length) {
+      missing.includeIab = true;
+      missing.iabFields = {
+        ...(missingForm ? { formFactor: true } : {}),
+        ...(missingGenres ? { genres: true } : {}),
+      };
+      // If cache is empty, request whatever the user currently has enabled.
+      if (!cachedIab?.cat?.length) {
+        missing.iabFields = {
+          formFactor: wantForm,
+          genres: wantGenres,
+        };
+      }
+      hasMissing = true;
+    }
   }
 
   if (options.includeThumbnails !== false && !cached?.thumbnailKey) {
@@ -182,6 +206,32 @@ export function isSegmentMetadataIncomplete(
 export function mergeSegmentMetadataEntry<
   T extends CachedSegmentFields & { segmentId: string; generatedAt?: string },
 >(existing: T | undefined, update: T): T {
+  const mergedTags = {
+    ...existing?.tags,
+    ...update.tags,
+  };
+  const existingIab = existing?.tags?.iab;
+  const updateIab = update.tags?.iab;
+  if (existingIab?.cat?.length && updateIab?.cat?.length) {
+    const cat: string[] = [];
+    const labels: string[] = [];
+    const seen = new Set<string>();
+    for (const source of [existingIab, updateIab]) {
+      for (let i = 0; i < source.cat.length; i++) {
+        const id = source.cat[i];
+        if (seen.has(id)) continue;
+        seen.add(id);
+        cat.push(id);
+        if (source.labels?.[i]) labels.push(source.labels[i]);
+      }
+    }
+    mergedTags.iab = {
+      cattax: updateIab.cattax ?? existingIab.cattax,
+      cat,
+      ...(labels.length ? { labels } : {}),
+    };
+  }
+
   return {
     ...existing,
     ...update,
@@ -189,10 +239,7 @@ export function mergeSegmentMetadataEntry<
       ...existing?.descriptions,
       ...update.descriptions,
     },
-    tags: {
-      ...existing?.tags,
-      ...update.tags,
-    },
+    tags: mergedTags,
     thumbnailKey: update.thumbnailKey ?? existing?.thumbnailKey,
     generatedAt: update.generatedAt ?? existing?.generatedAt,
   } as T;
@@ -356,19 +403,18 @@ export function buildExportMetadataPrompt(
   }
 
   if (options.includeIab) {
-    fields.push(
-      '"iab_cat": ["id1", "id2"]',
-    );
+    fields.push('"iab_cat": ["id1", "id2"]');
   }
 
   if (fields.length === 0) {
-    fields.push(
-      '"mood": "One or two words for emotional tone."',
-    );
+    fields.push('"mood": "One or two words for emotional tone."');
   }
 
+  const iabInstruction = options.includeIab
+    ? iabPickInstruction(options.iabFields)
+    : "";
   const iabBlock = options.includeIab
-    ? `\n\n${iabAllowlistPromptBlock()}\nReturn iab_cat as 2-4 IDs: exactly one form factor (prefer Clip for short scenes) plus 1-3 genres.`
+    ? `\n\n${iabAllowlistPromptBlock(options.iabFields)}${iabInstruction ? `\n${iabInstruction}` : ""}`
     : "";
 
   return `Analyze this video clip and return JSON only (no markdown) with these fields:
@@ -470,7 +516,11 @@ export function parseExportMetadataResponse(
       const catSource = Array.isArray(data.iab_cat)
         ? data.iab_cat
         : iabRaw?.cat;
-      const iab = normalizeIabTags(catSource, iabRaw?.labels ?? data.iab_labels);
+      const iab = normalizeIabTags(
+        catSource,
+        iabRaw?.labels ?? data.iab_labels,
+        options.iabFields,
+      );
       if (iab) {
         parsedTags.iab = iab;
       }
