@@ -16,7 +16,10 @@
  *     → deterministic gates → pass: map to ProposedSegment[] / fail: re-ask
  */
 
-import { JockeyAgentsClient } from "../jockey-agents-api";
+import {
+  JockeyAgentsClient,
+  isStaleKnowledgeStoreError,
+} from "../jockey-agents-api";
 import {
   Purpose,
   type FinalSegments,
@@ -110,35 +113,16 @@ function resolveTargetSeconds(
   return target;
 }
 
-async function ensureAgentsContext(
+/**
+ * Create a knowledge store for an Agents asset, wait for indexing, and persist
+ * the new IDs via onAgentsContextReady so subsequent runs can reuse them.
+ */
+async function createAndPersistStore(
   client: JockeyAgentsClient,
+  agentsAssetId: string,
   options: JockeyV3PipelineOptions,
   maxWaitMs: number,
 ): Promise<JockeyV3AgentsContext> {
-  if (options.knowledgeStoreId && options.agentsAssetId) {
-    console.log(
-      `[JockeyV3] Reusing knowledge store ${options.knowledgeStoreId} (asset ${options.agentsAssetId})`,
-    );
-    return {
-      agentsAssetId: options.agentsAssetId,
-      knowledgeStoreId: options.knowledgeStoreId,
-    };
-  }
-
-  let agentsAssetId = options.agentsAssetId;
-  if (!agentsAssetId) {
-    if (!options.videoUrlForUpload) {
-      throw new Error(
-        "[JockeyV3] No Agents asset id and no video URL for upload — cannot reach the asset under the Agents key",
-      );
-    }
-    console.log("[JockeyV3] Uploading asset to Agents API (one-time per asset)...");
-    agentsAssetId = await client.uploadAssetFromUrl(
-      options.videoUrlForUpload,
-      maxWaitMs,
-    );
-  }
-
   const storeCtx = await client.ensureKnowledgeStoreForAsset(agentsAssetId, {
     storeName: `qlio-v3-${options.metadata.assetId.slice(0, 8)}-${Date.now()}`,
     maxWaitMs,
@@ -160,6 +144,47 @@ async function ensureAgentsContext(
   }
 
   return ctx;
+}
+
+async function ensureAgentsContext(
+  client: JockeyAgentsClient,
+  options: JockeyV3PipelineOptions,
+  maxWaitMs: number,
+): Promise<JockeyV3AgentsContext> {
+  // Cached store IDs can go stale in private beta (stores purged, assets kept).
+  // Verify before reuse; if gone, recreate against the existing Agents asset.
+  if (options.knowledgeStoreId && options.agentsAssetId) {
+    const exists = await client.knowledgeStoreExists(options.knowledgeStoreId);
+    if (exists) {
+      console.log(
+        `[JockeyV3] Reusing knowledge store ${options.knowledgeStoreId} (asset ${options.agentsAssetId})`,
+      );
+      return {
+        agentsAssetId: options.agentsAssetId,
+        knowledgeStoreId: options.knowledgeStoreId,
+      };
+    }
+    console.warn(
+      `[JockeyV3] Cached knowledge store ${options.knowledgeStoreId} no longer exists — ` +
+        `recreating for asset ${options.agentsAssetId}`,
+    );
+  }
+
+  let agentsAssetId = options.agentsAssetId;
+  if (!agentsAssetId) {
+    if (!options.videoUrlForUpload) {
+      throw new Error(
+        "[JockeyV3] No Agents asset id and no video URL for upload — cannot reach the asset under the Agents key",
+      );
+    }
+    console.log("[JockeyV3] Uploading asset to Agents API (one-time per asset)...");
+    agentsAssetId = await client.uploadAssetFromUrl(
+      options.videoUrlForUpload,
+      maxWaitMs,
+    );
+  }
+
+  return createAndPersistStore(client, agentsAssetId, options, maxWaitMs);
 }
 
 interface PassRecord {
@@ -198,7 +223,10 @@ export async function generateSegmentsWithJockeyV3(
   );
 
   const client = new JockeyAgentsClient({ apiKey: options.agentsApiKey });
-  const agentsCtx = await ensureAgentsContext(client, options, remainingMs());
+  let agentsCtx = await ensureAgentsContext(client, options, remainingMs());
+  // At most one mid-run store rebuild — avoids burning all 3 passes on a
+  // purged store ID, and avoids recreate loops if the API keeps 404ing.
+  let storeRecoveredThisRun = false;
 
   const promptBase: SelfDirectedPromptOptions = {
     purpose: purposeKey,
@@ -225,6 +253,15 @@ export async function generateSegmentsWithJockeyV3(
     pass: number;
   } | null = null;
 
+  const askJockey = (storeId: string, prompt: string) =>
+    client.createStructuredResponse<unknown>({
+      storeId,
+      prompt,
+      instructions: SELF_DIRECTED_INSTRUCTIONS,
+      schemaName: "self_directed_cuts",
+      schema: SELF_DIRECTED_CUTS_JSON_SCHEMA,
+    });
+
   for (let pass = 1; pass <= JOCKEY_V3_MAX_PASSES; pass++) {
     if (pass > 1 && remainingMs() < 60_000) {
       console.warn(
@@ -248,26 +285,61 @@ export async function generateSegmentsWithJockeyV3(
 
     let raw: unknown;
     try {
-      raw = await client.createStructuredResponse<unknown>({
-        storeId: agentsCtx.knowledgeStoreId,
-        prompt,
-        instructions: SELF_DIRECTED_INSTRUCTIONS,
-        schemaName: "self_directed_cuts",
-        schema: SELF_DIRECTED_CUTS_JSON_SCHEMA,
-      });
+      raw = await askJockey(agentsCtx.knowledgeStoreId, prompt);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      previousIssues = [
-        { code: "invalid_response", message: `Agents API call failed: ${message}` },
-      ];
-      passRecords.push({
-        pass,
-        issues: previousIssues,
-        segmentCount: 0,
-        latencyMs: Date.now() - passStart,
-      });
-      console.warn(`[JockeyV3] Pass ${pass} failed: ${message}`);
-      continue;
+      // Store can disappear between ensureAgentsContext and /responses (or
+      // the existence check can race a purge). Rebuild once and retry this pass.
+      if (
+        isStaleKnowledgeStoreError(err) &&
+        !storeRecoveredThisRun &&
+        remainingMs() >= 60_000
+      ) {
+        const staleId = agentsCtx.knowledgeStoreId;
+        console.warn(
+          `[JockeyV3] Pass ${pass}: knowledge store ${staleId} gone (404) — ` +
+            `recreating for asset ${agentsCtx.agentsAssetId} and retrying`,
+        );
+        try {
+          agentsCtx = await createAndPersistStore(
+            client,
+            agentsCtx.agentsAssetId,
+            options,
+            remainingMs(),
+          );
+          storeRecoveredThisRun = true;
+          raw = await askJockey(agentsCtx.knowledgeStoreId, prompt);
+        } catch (recoverErr) {
+          const message =
+            recoverErr instanceof Error ? recoverErr.message : String(recoverErr);
+          previousIssues = [
+            {
+              code: "invalid_response",
+              message: `Agents API call failed after store recovery: ${message}`,
+            },
+          ];
+          passRecords.push({
+            pass,
+            issues: previousIssues,
+            segmentCount: 0,
+            latencyMs: Date.now() - passStart,
+          });
+          console.warn(`[JockeyV3] Pass ${pass} failed after store recovery: ${message}`);
+          continue;
+        }
+      } else {
+        const message = err instanceof Error ? err.message : String(err);
+        previousIssues = [
+          { code: "invalid_response", message: `Agents API call failed: ${message}` },
+        ];
+        passRecords.push({
+          pass,
+          issues: previousIssues,
+          segmentCount: 0,
+          latencyMs: Date.now() - passStart,
+        });
+        console.warn(`[JockeyV3] Pass ${pass} failed: ${message}`);
+        continue;
+      }
     }
 
     const parsed = SelfDirectedCutsSchema.safeParse(raw);
