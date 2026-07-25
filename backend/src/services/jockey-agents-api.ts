@@ -199,12 +199,19 @@ export class JockeyAgentsClient {
     return stores.find((s) => s.name === name);
   }
 
+  /**
+   * Probe whether a knowledge store still exists.
+   * Returns false only on a confirmed not-found (404 / resource_not_exist*).
+   * Any other failure (timeout, 429, 5xx, auth) is rethrown so callers do
+   * not treat infra flakes as "store gone" and re-index forever.
+   */
   async knowledgeStoreExists(storeId: string): Promise<boolean> {
     try {
       await this.request("GET", `/knowledge-stores/${storeId}`);
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      if (isStaleKnowledgeStoreError(err)) return false;
+      throw err;
     }
   }
 
@@ -434,6 +441,21 @@ export class JockeyAgentsClient {
     return NarrativeBriefSchema.parse(raw);
   }
 
+}
+
+/**
+ * True when the Agents API reports a knowledge store ID is gone (404 /
+ * resource_not_exist[s]). Private-beta stores can be purged while cached asset
+ * IDs remain valid — callers should recreate the store and retry.
+ * Deliberately narrow: non-404 failures must not look "stale" or every flake
+ * triggers a full re-index + Dynamo cache rewrite.
+ */
+export function isStaleKnowledgeStoreError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  // Docs use resource_not_exist; production Agents errors use resource_not_exists.
+  if (!/404|resource_not_exists?/i.test(message)) return false;
+  // Match knowledge_store, knowledge-store, knowledge stores, knowledge-stores.
+  return /knowledge[-_ ]?stores?/i.test(message);
 }
 
 function extractResponseText(result: AgentsResponseBody): string | undefined {
