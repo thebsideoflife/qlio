@@ -287,6 +287,10 @@ export interface GenerateExportMetadataRequest {
       tone?: boolean;
     };
     includeIab?: boolean;
+    iabFields?: {
+      formFactor?: boolean;
+      genres?: boolean;
+    };
     includeThumbnails?: boolean;
   };
 }

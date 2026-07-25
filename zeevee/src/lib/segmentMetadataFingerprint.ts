@@ -1,5 +1,12 @@
 /** Mirrors backend export metadata fingerprint (bounds + options). */
 
+import {
+  filterIabTagsForFields,
+  iabHasFormFactor,
+  iabHasGenre,
+  type IabFieldOptions,
+} from "./iabContentTaxonomy";
+
 export type DescriptionLength = "short" | "two_sentences" | "paragraph";
 
 export interface ExportMetadataFingerprintOptions {
@@ -13,6 +20,7 @@ export interface ExportMetadataFingerprintOptions {
     tone?: boolean;
   };
   includeIab?: boolean;
+  iabFields?: IabFieldOptions;
   includeThumbnails?: boolean;
 }
 
@@ -123,8 +131,13 @@ export function isSegmentMetadataStale(
     if (tagOpts.tone && !cached.tags?.tone?.trim()) return true;
   }
 
-  if (options?.includeIab && !cached.tags?.iab?.cat?.length) {
-    return true;
+  if (options?.includeIab) {
+    const wantForm = options.iabFields?.formFactor !== false;
+    const wantGenres = options.iabFields?.genres !== false;
+    const cat = cached.tags?.iab?.cat;
+    if (!cat?.length) return true;
+    if (wantForm && !iabHasFormFactor(cat)) return true;
+    if (wantGenres && !iabHasGenre(cat)) return true;
   }
 
   if (
@@ -137,3 +150,5 @@ export function isSegmentMetadataStale(
 
   return false;
 }
+
+export { filterIabTagsForFields };
