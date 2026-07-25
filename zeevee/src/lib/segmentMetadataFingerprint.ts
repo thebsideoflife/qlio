@@ -12,7 +12,15 @@ export interface ExportMetadataFingerprintOptions {
     theme?: boolean;
     tone?: boolean;
   };
+  includeIab?: boolean;
   includeThumbnails?: boolean;
+}
+
+export interface IabTaxonomyTags {
+  /** OpenRTB cattax — 7 = IAB Content Taxonomy 3.0 */
+  cattax: 7;
+  cat: string[];
+  labels?: string[];
 }
 
 /** Returns undefined for empty / "none"-style placeholders from the model. */
@@ -70,6 +78,7 @@ export interface SegmentMetadataCache {
     mood?: string;
     theme?: string;
     tone?: string;
+    iab?: IabTaxonomyTags;
   };
   thumbnailUrl?: string | null;
   thumbnailKey?: string;
@@ -112,6 +121,10 @@ export function isSegmentMetadataStale(
     if (tagOpts.mood && !cached.tags?.mood?.trim()) return true;
     if (tagOpts.theme && !cached.tags?.theme?.trim()) return true;
     if (tagOpts.tone && !cached.tags?.tone?.trim()) return true;
+  }
+
+  if (options?.includeIab && !cached.tags?.iab?.cat?.length) {
+    return true;
   }
 
   if (

@@ -26,6 +26,11 @@ export interface ExportSceneMetadata {
     mood?: string;
     theme?: string;
     tone?: string;
+    iab?: {
+      cattax: 7;
+      cat: string[];
+      labels?: string[];
+    };
   };
   thumbnailUrl?: string | null;
 }
@@ -83,21 +88,33 @@ function pickTags(
   options: ExportMetadataFingerprintOptions,
 ): ExportSceneMetadata["tags"] | undefined {
   const flags = options.descriptiveTags;
-  if (!flags || !meta?.tags) return undefined;
+  const includeIab = options.includeIab === true;
+  if ((!flags && !includeIab) || !meta?.tags) return undefined;
 
   const out: NonNullable<ExportSceneMetadata["tags"]> = {};
-  const contentAdvisory = normalizeContentAdvisory(meta.tags.content_advisory);
-  if (flags.contentAdvisory && contentAdvisory) {
-    out.content_advisory = contentAdvisory;
+  if (flags) {
+    const contentAdvisory = normalizeContentAdvisory(meta.tags.content_advisory);
+    if (flags.contentAdvisory && contentAdvisory) {
+      out.content_advisory = contentAdvisory;
+    }
+    if (flags.mood && meta.tags.mood) {
+      out.mood = meta.tags.mood;
+    }
+    if (flags.theme && meta.tags.theme) {
+      out.theme = meta.tags.theme;
+    }
+    if (flags.tone && meta.tags.tone) {
+      out.tone = meta.tags.tone;
+    }
   }
-  if (flags.mood && meta.tags.mood) {
-    out.mood = meta.tags.mood;
-  }
-  if (flags.theme && meta.tags.theme) {
-    out.theme = meta.tags.theme;
-  }
-  if (flags.tone && meta.tags.tone) {
-    out.tone = meta.tags.tone;
+  if (includeIab && meta.tags.iab?.cat?.length) {
+    out.iab = {
+      cattax: 7,
+      cat: meta.tags.iab.cat,
+      ...(meta.tags.iab.labels?.length
+        ? { labels: meta.tags.iab.labels }
+        : {}),
+    };
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }

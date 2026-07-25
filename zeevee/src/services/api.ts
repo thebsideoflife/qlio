@@ -264,6 +264,11 @@ export interface SegmentExportMetadata {
     mood?: string;
     theme?: string;
     tone?: string;
+    iab?: {
+      cattax: 7;
+      cat: string[];
+      labels?: string[];
+    };
   };
   thumbnailUrl?: string | null;
   generatedAt?: string;
@@ -281,6 +286,7 @@ export interface GenerateExportMetadataRequest {
       theme?: boolean;
       tone?: boolean;
     };
+    includeIab?: boolean;
     includeThumbnails?: boolean;
   };
 }
@@ -490,7 +496,7 @@ export interface GenerateSegmentsRequest {
   platform?: string;
   /** Pass-through metadata: compact_video | full_video | highlights | trailer | episode_recap | season_recap */
   format?: string;
-  /** Use Jockey pipeline for compact/recap when backend env flags allow */
+  /** Use Enhanced Cut pipeline for compact/recap when backend env flags allow */
   jockeyEnabled?: boolean;
 }
 

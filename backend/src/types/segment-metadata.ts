@@ -1,3 +1,12 @@
+export interface IabTaxonomyTags {
+  /** OpenRTB cattax — 7 = IAB Content Taxonomy 3.0 */
+  cattax: 7;
+  /** IAB category / vector IDs */
+  cat: string[];
+  /** Human-readable labels aligned with cat (optional sugar) */
+  labels?: string[];
+}
+
 export interface StoredSegmentMetadata {
   segmentId: string;
   contentHash: string;
@@ -12,6 +21,7 @@ export interface StoredSegmentMetadata {
     mood?: string;
     theme?: string;
     tone?: string;
+    iab?: IabTaxonomyTags;
   };
   thumbnailKey?: string;
   generatedAt: string;
