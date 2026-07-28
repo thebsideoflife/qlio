@@ -16,7 +16,7 @@ export default function Export() {
 
   if (loading) {
     return (
-      <div className="flex flex-col h-[calc(100dvh-3.5rem)] sm:h-[calc(100dvh-4rem)] min-h-0 p-4 sm:p-6 max-w-6xl mx-auto w-full gap-4 overflow-hidden">
+      <div className="flex flex-col h-[calc(100dvh-3.5rem)] sm:h-[calc(100dvh-4rem)] min-h-0 p-4 sm:p-6 max-w-[90rem] mx-auto w-full gap-4 overflow-hidden">
         <Skeleton className="h-8 w-48" />
         <Skeleton className="flex-1 w-full" />
         <Skeleton className="h-12 w-full" />
@@ -47,7 +47,7 @@ export default function Export() {
   }
 
   return (
-    <div className="flex flex-col h-[calc(100dvh-3.5rem)] sm:h-[calc(100dvh-4rem)] min-h-0 p-4 sm:p-6 max-w-6xl mx-auto w-full overflow-hidden">
+    <div className="flex flex-col h-[calc(100dvh-3.5rem)] sm:h-[calc(100dvh-4rem)] min-h-0 p-4 sm:p-6 max-w-[90rem] mx-auto w-full overflow-hidden">
       <ExportPanel
         projectId={projectId}
         onDone={() => navigate(`/editor/${projectId}`)}

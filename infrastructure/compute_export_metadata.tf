@@ -18,17 +18,19 @@ resource "aws_lambda_function" "generate_export_metadata" {
 
   environment {
     variables = {
-      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
-      ASSETS_TABLE            = aws_dynamodb_table.assets.name
-      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-      SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
-      TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
-      BUCKET_NAME             = aws_s3_bucket.media.bucket
-      CLOUDFRONT_DOMAIN                = aws_cloudfront_distribution.media.domain_name
-      CLOUDFRONT_KEY_PAIR_ID           = aws_cloudfront_public_key.media.id
+      PROJECTS_TABLE = aws_dynamodb_table.projects.name
+      ASSETS_TABLE   = aws_dynamodb_table.assets.name
+      # Read-only. Lets this Lambda refuse a job while the IQ agent owns the cut.
+      AGENT_THREADS_TABLE               = aws_dynamodb_table.agent_threads.name
+      API_PASSWORD_SECRET_ARN           = aws_secretsmanager_secret.api_password.arn
+      SECRET_ARN                        = aws_secretsmanager_secret.twelve_labs_key.arn
+      TWELVE_LABS_INDEX_ID              = var.twelve_labs_index_id
+      BUCKET_NAME                       = aws_s3_bucket.media.bucket
+      CLOUDFRONT_DOMAIN                 = aws_cloudfront_distribution.media.domain_name
+      CLOUDFRONT_KEY_PAIR_ID            = aws_cloudfront_public_key.media.id
       CLOUDFRONT_PRIVATE_KEY_SECRET_ARN = aws_secretsmanager_secret.cloudfront_private_key.arn
       ANTHROPIC_SECRET_ARN              = data.aws_secretsmanager_secret.anthropic_api_key.arn
-      FFMPEG_PATH                      = "/opt/bin/ffmpeg"
+      FFMPEG_PATH                       = "/opt/bin/ffmpeg"
     }
   }
 }

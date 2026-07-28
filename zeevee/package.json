@@ -8,6 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test:fingerprint": "npx tsx src/scripts/test-segment-metadata-fingerprint.ts",
+    "test:agent-thread": "npx tsx --tsconfig tsconfig.app.json src/scripts/test-agent-thread.ts",
+    "test": "npm run test:fingerprint && npm run test:agent-thread",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -37,8 +39,10 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-icons": "^5.3.0",
+    "react-markdown": "^10.1.0",
     "react-redux": "^9.2.0",
     "react-router-dom": "^7.9.6",
+    "remark-breaks": "^4.0.0",
     "remotion": "^4.0.386",
     "tailwind-merge": "^3.4.0",
     "util": "^0.12.5"

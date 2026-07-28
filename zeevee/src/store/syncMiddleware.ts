@@ -29,12 +29,15 @@ function startSyncInterval(store: StoreAPI) {
       localVersion,
       syncedVersion,
       isSyncing,
+      agentRunActive,
     } = state.editor;
 
     // Only sync if: we have a project, there are unsynced changes, and not already syncing
     const hasUnsyncedChanges = localVersion > syncedVersion;
 
-    if (projectId && hasUnsyncedChanges && !isSyncing) {
+    // While the IQ agent has the cut, it writes segments server-side and streams
+    // them back. Pushing our copy over the top would clobber its work.
+    if (projectId && hasUnsyncedChanges && !isSyncing && !agentRunActive) {
       // Capture the version we're about to sync
       const versionToSync = localVersion;
 

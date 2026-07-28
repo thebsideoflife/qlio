@@ -15,6 +15,10 @@ import {
 import { TwelveLabs } from "twelvelabs-js";
 import { createHmac } from "crypto";
 import axios from "axios";
+import {
+  extractTwelveLabsDuration,
+  normalizeTwelveLabsTranscription,
+} from "../utils/transcription";
 
 const s3Client = new S3Client({});
 const dynamoClient = new DynamoDBClient({});
@@ -220,6 +224,17 @@ async function handleSingleVideoCompletion(
   );
   const apiKey = secretVal12Labs.SecretString;
   let transcriptionUrl = null;
+
+  // Duration must come from media metadata (upload client and/or TwelveLabs),
+  // NEVER from transcript word timestamps — TL can return a stretched duplicate
+  // track whose last timestamp is ~2x the real runtime.
+  const existingAsset = await docClient.send(
+    new GetCommand({
+      TableName: TABLE_NAME,
+      Key: { assetId },
+    }),
+  );
+  const existingDuration = Number(existingAsset.Item?.duration) || 0;
   let videoDuration = 0;
 
   if (apiKey && videoId && videoId !== "unknown") {
@@ -232,14 +247,9 @@ async function handleSingleVideoCompletion(
         videoId,
       );
 
-      // 12Labs stores duration in various places depending on API version
-      const anyVideo = video as any;
-      videoDuration =
-        anyVideo.system_metadata?.duration ||
-        anyVideo.metadata?.duration ||
-        anyVideo.hls?.duration ||
-        anyVideo.duration ||
-        0;
+      // 12Labs nests duration under system_metadata or systemMetadata depending
+      // on SDK/API shape — extractTwelveLabsDuration checks both.
+      videoDuration = extractTwelveLabsDuration(video);
 
       console.log(
         "12Labs video duration:",
@@ -266,33 +276,46 @@ async function handleSingleVideoCompletion(
       });
 
       const data = response.data;
+
+      // Same payload often includes system_metadata.duration — use if SDK miss.
+      if (videoDuration <= 0) {
+        videoDuration = extractTwelveLabsDuration(data);
+        if (videoDuration > 0) {
+          console.log(
+            `12Labs duration from transcription response: ${videoDuration}s`,
+          );
+        }
+      }
+
       const transcriptionData = data.transcription;
+      const durationForTranscript =
+        videoDuration > 0
+          ? videoDuration
+          : existingDuration > 0
+            ? existingDuration
+            : undefined;
 
       if (transcriptionData && Array.isArray(transcriptionData)) {
+        const normalized = normalizeTwelveLabsTranscription(transcriptionData, {
+          durationSec: durationForTranscript,
+        });
+
         const key = `transcriptions/${assetId}.json`;
         await s3Client.send(
           new PutObjectCommand({
             Bucket: BUCKET_NAME,
             Key: key,
-            Body: JSON.stringify(transcriptionData),
+            Body: JSON.stringify(normalized.words),
             ContentType: "application/json",
           }),
         );
 
         transcriptionUrl = `s3://${BUCKET_NAME}/${key}`;
-        console.log("Transcription stored at", transcriptionUrl);
-
-        // Fallback: If duration is 0, estimate from last transcript segment
-        if (videoDuration === 0 && transcriptionData.length > 0) {
-          const lastSegment = transcriptionData[transcriptionData.length - 1];
-          const estimatedDuration = lastSegment.end || lastSegment.endTime || 0;
-          if (estimatedDuration > 0) {
-            videoDuration = estimatedDuration;
-            console.log(
-              `Duration estimated from transcript: ${videoDuration}s`,
-            );
-          }
-        }
+        console.log(
+          `Transcription stored at ${transcriptionUrl} ` +
+            `(${normalized.words.length}/${normalized.originalCount} words; ` +
+            `pass=${normalized.selectedPass}, scaledBy=${normalized.scaledBy.toFixed(4)})`,
+        );
       } else {
         console.warn("No transcription data found in response", data);
       }
@@ -301,24 +324,46 @@ async function handleSingleVideoCompletion(
     }
   }
 
-  // Update DynamoDB
+  // Prefer TwelveLabs media duration; else keep whatever upload already stored.
+  // Never write 0 / never invent duration from transcript timestamps.
+  const resolvedDuration =
+    videoDuration > 0 ? videoDuration : existingDuration > 0 ? existingDuration : 0;
+
+  if (resolvedDuration <= 0) {
+    console.warn(
+      `Asset ${assetId}: no authoritative duration from TwelveLabs or upload metadata`,
+    );
+  } else if (videoDuration <= 0 && existingDuration > 0) {
+    console.log(
+      `Asset ${assetId}: keeping upload duration ${existingDuration}s (TwelveLabs duration unavailable)`,
+    );
+  }
+
+  const expressionAttributeNames: Record<string, string> = {
+    "#s": "status",
+  };
+  const expressionAttributeValues: Record<string, unknown> = {
+    ":status": "READY",
+    ":vid": videoId || "unknown",
+    ":trans": transcriptionUrl,
+    ":ua": new Date().toISOString(),
+  };
+  let updateExpression =
+    "SET #s = :status, twelveLabsVideoId = :vid, transcriptionUrl = :trans, updatedAt = :ua";
+
+  if (resolvedDuration > 0) {
+    expressionAttributeNames["#dur"] = "duration";
+    expressionAttributeValues[":dur"] = resolvedDuration;
+    updateExpression += ", #dur = :dur";
+  }
+
   await docClient.send(
     new UpdateCommand({
       TableName: TABLE_NAME,
       Key: { assetId },
-      UpdateExpression:
-        "SET #s = :status, twelveLabsVideoId = :vid, transcriptionUrl = :trans, #dur = :dur, updatedAt = :ua",
-      ExpressionAttributeNames: {
-        "#s": "status",
-        "#dur": "duration",
-      },
-      ExpressionAttributeValues: {
-        ":status": "READY",
-        ":vid": videoId || "unknown",
-        ":trans": transcriptionUrl,
-        ":dur": videoDuration,
-        ":ua": new Date().toISOString(),
-      },
+      UpdateExpression: updateExpression,
+      ExpressionAttributeNames: expressionAttributeNames,
+      ExpressionAttributeValues: expressionAttributeValues,
     }),
   );
 
@@ -453,18 +498,25 @@ async function handleChunkCompletion(
             dedupedTranscriptions.push(segment);
           }
 
+          const sanitized = normalizeTwelveLabsTranscription(
+            dedupedTranscriptions,
+            {
+              durationSec: totalDuration > 0 ? totalDuration : undefined,
+            },
+          );
+
           const key = `transcriptions/${assetId}.json`;
           await s3Client.send(
             new PutObjectCommand({
               Bucket: BUCKET_NAME,
               Key: key,
-              Body: JSON.stringify(dedupedTranscriptions),
+              Body: JSON.stringify(sanitized.words),
               ContentType: "application/json",
             }),
           );
           transcriptionUrl = `s3://${BUCKET_NAME}/${key}`;
           console.log(
-            `Aggregated transcription stored at ${transcriptionUrl} (${dedupedTranscriptions.length} segments from ${allTranscriptions.length} raw)`,
+            `Aggregated transcription stored at ${transcriptionUrl} (${sanitized.words.length} kept from ${allTranscriptions.length} raw; pass=${sanitized.selectedPass}, discardedDupes=${sanitized.discardedDuplicateWords})`,
           );
         }
       } catch (err) {

@@ -36,6 +36,7 @@ import {
   ensureProjectCoverThumbnail,
 } from "../services/project-thumbnails";
 import { enrichSegmentDescriptions } from "../services/export-metadata-enrich";
+import { getActiveAgentRun } from "../services/iq-agent/thread";
 import { fetchTranscriptFromS3 } from "../utils/transcript";
 import type { TranscriptSegment } from "../services/storyiq/types";
 
@@ -104,6 +105,26 @@ function fingerprintOptions(
     ...opts,
     includeThumbnails: opts.includeThumbnails !== false,
   };
+}
+
+/** Just the metadata list, for use as a merge base right before a write. */
+async function readCurrentSegmentMetadata(
+  projectId: string,
+  validSegmentIds: Set<string>,
+): Promise<StoredSegmentMetadata[]> {
+  const result = await docClient.send(
+    new GetCommand({
+      TableName: PROJECTS_TABLE,
+      Key: { projectId },
+      ProjectionExpression: "segmentMetadata",
+      ConsistentRead: true,
+    }),
+  );
+  const raw = result.Item?.segmentMetadata;
+  return pruneSegmentMetadata(
+    Array.isArray(raw) ? (raw as StoredSegmentMetadata[]) : [],
+    validSegmentIds,
+  );
 }
 
 function mergeStoredMetadata(
@@ -255,6 +276,33 @@ async function buildMetadataResponse(
       projectThumbnailUrl,
     }),
   };
+}
+
+/**
+ * The IQ agent owns the cut while it runs, and writes delivery metadata itself
+ * as it wraps up. Letting a Pegasus job run alongside it would spend money
+ * describing bounds that are still moving, and the two writers would race for
+ * the same `segmentMetadata` list.
+ *
+ * Fails open on purpose. This is a courtesy interlock, not a correctness one —
+ * a project with no agent thread, or a DynamoDB blip, must not make Export
+ * unusable.
+ */
+async function agentRunBlockingExport(
+  projectId: string,
+): Promise<{ runId: string; stage: string } | null> {
+  if (!process.env.AGENT_THREADS_TABLE) return null;
+  try {
+    const run = await getActiveAgentRun(projectId);
+    if (!run) return null;
+    return { runId: run.runId, stage: run.stage };
+  } catch (err) {
+    console.warn(
+      "[ExportMetadata] Could not check for an active agent run, allowing export:",
+      err,
+    );
+    return null;
+  }
 }
 
 async function chainRemainingSegments(
@@ -497,7 +545,14 @@ async function executeExportMetadataJob(
       }
     }
 
-    const mergedMetadata = mergeStoredMetadata(prunedCache, generatedUpdates);
+    // `prunedCache` is minutes old by now — Pegasus and FFmpeg happened in
+    // between — and this write replaces the whole list. Re-reading means an IQ
+    // agent run, or the next batch of a chained job, does not have its rows
+    // erased by a merge base from before it wrote them.
+    const mergeBase = await readCurrentSegmentMetadata(projectId, validIds).catch(
+      () => prunedCache,
+    );
+    const mergedMetadata = mergeStoredMetadata(mergeBase, generatedUpdates);
 
     const updateParts = ["segmentMetadata = :meta", "updatedAt = :updatedAt"];
     const exprValues: Record<string, unknown> = {
@@ -547,7 +602,7 @@ async function executeExportMetadataJob(
     }
 
     const completedAt = new Date().toISOString();
-    const finalCache = mergeStoredMetadata(prunedCache, generatedUpdates);
+    const finalCache = mergeStoredMetadata(mergeBase, generatedUpdates);
     const anySucceeded = targetSegments.some((seg) => {
       const cached = finalCache.find((m) => m.segmentId === seg.id);
       return (
@@ -662,6 +717,23 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
         project.thumbnailKey,
         null,
       );
+    }
+
+    // Checked only once there is work to do: reading back metadata the agent
+    // has already written is always fine, even mid-run.
+    const activeAgentRun = await agentRunBlockingExport(projectId);
+    if (activeAgentRun) {
+      return {
+        statusCode: 409,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({
+          error:
+            "The IQ agent is still working on this cut. Metadata will be ready when it finishes.",
+          code: "agent_run_active",
+          agentRunId: activeAgentRun.runId,
+          agentStage: activeAgentRun.stage,
+        }),
+      };
     }
 
     const existingJob = project.exportMetadataJob as

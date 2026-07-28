@@ -4,12 +4,15 @@ import {
   useCallback,
   useMemo,
   useRef,
+  Children,
+  Fragment,
   type ReactNode,
 } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
 import {
   setLastSegmentRenders,
+  setSegments,
   setSegmentMetadata,
   setProjectThumbnailUrl,
 } from "@/store/editorSlice";
@@ -23,6 +26,7 @@ import { Separator } from "@/components/ui/separator";
 import {
   startRender,
   getRenderStatus,
+  getProject,
   getProjectJobStatus,
   generateExportMetadata,
   pollExportMetadataStatus,
@@ -36,6 +40,7 @@ import {
   XCircle,
   Save,
   RefreshCw,
+  Sparkles,
 } from "lucide-react";
 import { cn, formatSegmentLabel } from "@/lib/utils";
 import {
@@ -51,6 +56,7 @@ import {
 import {
   IAB_FORM_FACTOR_IDS,
   IAB_GENRE_IDS,
+  IAB_TOPIC_IDS,
 } from "@/lib/iabContentTaxonomy";
 import {
   buildExportMetadataDocument,
@@ -75,6 +81,10 @@ const DESCRIPTION_LENGTH_OPTIONS: {
   { value: "two_sentences", label: "Two Sentences" },
   { value: "paragraph", label: "Paragraph" },
 ];
+
+/** Scenes : Metadata : Configuration (Configuration was 1fr, now 0.75fr). */
+const DEFAULT_EXPORT_COLUMN_FLEX = [2, 1.75, 0.75] as const;
+const MIN_EXPORT_COLUMN_FLEX = 0.4;
 
 function formatSceneDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -131,6 +141,13 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   segmentMetadataRef.current = segmentMetadata;
   const lastMetadataDownloadJobRef = useRef<string | null>(null);
 
+  // The IQ agent owns the cut while it runs and writes its own metadata as it
+  // wraps up, so everything on this panel stands down until it lets go. The
+  // server enforces this too; this is what stops the UI asking in the first
+  // place, and what tells the user why the buttons are dead.
+  const [agentStage, setAgentStage] = useState<string | null>(null);
+  const agentRunning = agentStage !== null;
+
   const [metadataEnabled, setMetadataEnabled] = useState(true);
   const [includeTitles, setIncludeTitles] = useState(true);
   const [includeDescriptions, setIncludeDescriptions] = useState(true);
@@ -145,6 +162,58 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   const [tone, setTone] = useState(true);
 
   const [videoFormat, setVideoFormat] = useState<VideoFormat>("mp4-h264");
+
+  const [exportColumnFlex, setExportColumnFlex] = useState<number[]>(() => [
+    ...DEFAULT_EXPORT_COLUMN_FLEX,
+  ]);
+  const exportColumnsRef = useRef<HTMLDivElement>(null);
+  const exportColumnFlexRef = useRef(exportColumnFlex);
+  exportColumnFlexRef.current = exportColumnFlex;
+
+  const handleExportColumnResizeStart = useCallback((dividerIndex: number) => {
+    return (event: React.MouseEvent) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidths = [...exportColumnFlexRef.current];
+      const containerWidth =
+        exportColumnsRef.current?.getBoundingClientRect().width ?? 1;
+      const totalFlex = startWidths.reduce((sum, width) => sum + width, 0);
+
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        const deltaPx = moveEvent.clientX - startX;
+        const deltaFlex = (deltaPx / containerWidth) * totalFlex;
+
+        let left = startWidths[dividerIndex] + deltaFlex;
+        let right = startWidths[dividerIndex + 1] - deltaFlex;
+
+        if (left < MIN_EXPORT_COLUMN_FLEX) {
+          right -= MIN_EXPORT_COLUMN_FLEX - left;
+          left = MIN_EXPORT_COLUMN_FLEX;
+        }
+        if (right < MIN_EXPORT_COLUMN_FLEX) {
+          left -= MIN_EXPORT_COLUMN_FLEX - right;
+          right = MIN_EXPORT_COLUMN_FLEX;
+        }
+
+        const next = [...startWidths];
+        next[dividerIndex] = left;
+        next[dividerIndex + 1] = right;
+        setExportColumnFlex(next);
+      };
+
+      const onMouseUp = () => {
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      };
+
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
+    };
+  }, []);
 
   const [adsEnabled, setAdsEnabled] = useState(true);
   const [adLoad, setAdLoad] = useState(8);
@@ -273,6 +342,33 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     [dispatch],
   );
 
+  /**
+   * Pull the cut and its metadata back from the server.
+   *
+   * Used after an agent run ends: the agent rewrote segments, metadata and the
+   * cover thumbnail server-side, and this panel is holding whatever was true
+   * when it mounted. `setSegments` does not mark the editor dirty, so this
+   * cannot push the agent's own work back at it as a stale local edit.
+   */
+  const refreshProjectFromServer = useCallback(async () => {
+    try {
+      const project = await getProject(projectId);
+      if (Array.isArray(project.segments)) {
+        dispatch(setSegments(project.segments));
+      }
+      if (Array.isArray(project.segmentMetadata)) {
+        dispatch(setSegmentMetadata(project.segmentMetadata));
+      }
+      if (project.thumbnailUrl) {
+        dispatch(setProjectThumbnailUrl(project.thumbnailUrl));
+      }
+      setMetadataError(null);
+      setMetadataSegmentErrors(new Map());
+    } catch {
+      // Non-fatal: the panel keeps whatever it already had.
+    }
+  }, [projectId, dispatch]);
+
   const buildMetadataDocument = useCallback(() => {
     const metaMap = new Map<string, SegmentMetadataCache>();
     for (const m of segmentMetadataRef.current || []) {
@@ -315,7 +411,22 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
         });
         applyMetadataResult(result);
       } catch (err: unknown) {
-        const apiError = err as { response?: { data?: { error?: string } } };
+        const apiError = err as {
+          response?: {
+            status?: number;
+            data?: { error?: string; code?: string; agentStage?: string };
+          };
+        };
+        // An agent run started while this panel was open — in another tab, or
+        // between our last poll and this request. Fall into the same waiting
+        // state the poll would have put us in rather than showing a failure.
+        if (
+          apiError.response?.status === 409 &&
+          apiError.response.data?.code === "agent_run_active"
+        ) {
+          setAgentStage(apiError.response.data.agentStage || "thinking");
+          return;
+        }
         setMetadataError(
           apiError.response?.data?.error || "Failed to generate metadata",
         );
@@ -361,6 +472,12 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
           setStatus("rendering");
         }
 
+        if (jobStatus.agentRun) {
+          // Nothing else on this panel should run until the agent lets go.
+          setAgentStage(jobStatus.agentRun.stage);
+          return;
+        }
+
         const metaJob = jobStatus.exportMetadataJob;
         if (
           metaJob &&
@@ -400,10 +517,53 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     };
   }, [projectId, applyMetadataResult]);
 
+  // Watch a live agent run to its end, then take on what it produced.
+  //
+  // Only armed while `agentStage` is set, so the common case — no agent — costs
+  // nothing. Segments and metadata are both rewritten server-side during a run,
+  // so the panel reloads rather than trying to reconcile.
+  useEffect(() => {
+    if (!agentRunning) return;
+
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout>;
+
+    const poll = async () => {
+      try {
+        const jobStatus = await getProjectJobStatus(projectId);
+        if (cancelled) return;
+
+        if (jobStatus.agentRun) {
+          setAgentStage(jobStatus.agentRun.stage);
+        } else {
+          await refreshProjectFromServer();
+          if (cancelled) return;
+          // Last, so the auto-generate effect below sees fresh metadata on the
+          // same render it stops being blocked. Anything the agent could not
+          // finish is still stale, and gets picked up from there.
+          setAgentStage(null);
+          return;
+        }
+      } catch {
+        // A failed poll is not evidence the run ended; keep waiting.
+      }
+      if (!cancelled) timeoutId = setTimeout(poll, 4000);
+    };
+
+    timeoutId = setTimeout(poll, 2000);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [agentRunning, projectId, refreshProjectFromServer]);
+
   // Auto-generate stale metadata when the panel opens or options/selection change
   // Skip auto-retry if there's an active error (user can manually retry)
   useEffect(() => {
     if (!metadataResumeChecked || !metadataEnabled) return;
+    // Bounds are still moving and the agent writes this metadata itself.
+    if (agentRunning) return;
     if (staleMetadataSegmentIds.length === 0) return;
     if (metadataInFlightRef.current || metadataLoading) return;
     if (metadataError) return; // Don't auto-retry on error — avoid API hammering
@@ -411,6 +571,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   }, [
     metadataResumeChecked,
     metadataEnabled,
+    agentRunning,
     staleMetadataKey,
     metadataLoading,
     metadataError,
@@ -666,7 +827,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     globalFraming,
   ]);
 
-  const metadataDisabled = !metadataEnabled || isProcessing;
+  const metadataDisabled = !metadataEnabled || isProcessing || agentRunning;
   const descriptiveChildrenDisabled = !descriptiveTab || metadataDisabled;
   const iabChildrenDisabled = !includeIab || metadataDisabled;
 
@@ -728,7 +889,11 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
 
       <div className="flex flex-col flex-1 min-h-0 rounded-xl border border-border bg-card shadow-sm overflow-hidden">
         <div className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain lg:overflow-hidden">
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.75fr)_minmax(0,1fr)] lg:h-full lg:min-h-0 divide-y lg:divide-y-0 lg:divide-x divide-border">
+          <ExportColumns
+            columnFlex={exportColumnFlex}
+            containerRef={exportColumnsRef}
+            onResizeStart={handleExportColumnResizeStart}
+          >
             {/* Scenes */}
             <ExportColumn className="lg:min-w-0">
               <ColumnHeader
@@ -897,7 +1062,18 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                 }
               />
 
-              {!metadataEnabled ? (
+              {agentRunning ? (
+                // Showing the current rows here would be showing metadata for
+                // scenes the agent may be about to move, retitle or drop.
+                <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 py-12 text-center">
+                  <Sparkles className="h-5 w-5 text-muted-foreground" />
+                  <p className="text-sm font-medium">IQ is building your cut</p>
+                  <p className="max-w-xs text-xs text-muted-foreground">
+                    Descriptions, tags and thumbnails are written as it
+                    finishes. This panel updates on its own.
+                  </p>
+                </div>
+              ) : !metadataEnabled ? (
                 <div className="flex flex-1 items-center justify-center px-6 py-12 text-center">
                   <p className="text-sm text-muted-foreground">
                     Metadata export is off. Toggle on to generate titles,
@@ -1193,12 +1369,14 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                 </ConfigSection>
               </div>
             </ExportColumn>
-          </div>
+          </ExportColumns>
         </div>
 
         <footer className="shrink-0 flex flex-col gap-3 border-t border-border bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-5 sm:py-4">
           <p className="text-xs text-muted-foreground sm:min-w-0 sm:flex-1">
-            {isProcessing
+            {agentRunning
+              ? "IQ is still working on this cut. Export unlocks when it finishes."
+              : isProcessing
               ? "Export in progress — you can leave and return later."
               : status === "completed"
                 ? metadataEnabled
@@ -1234,15 +1412,21 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
               <Button
                 size="sm"
                 onClick={handleStartRender}
-                disabled={!hasAnySelection}
+                disabled={!hasAnySelection || agentRunning}
                 className="w-full sm:w-auto sm:min-w-[120px]"
               >
-                <Save className="h-4 w-4 mr-2" />
-                {status === "failed"
-                  ? "Retry"
-                  : someRendered && hasAnySelection
-                    ? "Re-export"
-                    : "Export"}
+                {agentRunning ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4 mr-2" />
+                )}
+                {agentRunning
+                  ? "IQ is working"
+                  : status === "failed"
+                    ? "Retry"
+                    : someRendered && hasAnySelection
+                      ? "Re-export"
+                      : "Export"}
               </Button>
             )}
           </div>
@@ -1301,23 +1485,22 @@ function MetadataSceneCard({
     ? filterIabTagsForFields(meta?.tags?.iab, {
         formFactor: iabFormFactor,
         genres: iabGenres,
+        // Not a panel toggle: topics only exist on agent-written metadata, and
+        // hiding them would make that metadata look emptier than it is.
+        topics: true,
       })
     : undefined;
 
-  const iabFormFactors =
-    filteredIab?.cat
-      ?.map((id, i) => ({
-        id,
-        label: filteredIab.labels?.[i] ?? id,
-      }))
-      .filter(({ id }) => IAB_FORM_FACTOR_IDS.has(id)) ?? [];
-  const iabGenreTags =
-    filteredIab?.cat
-      ?.map((id, i) => ({
-        id,
-        label: filteredIab.labels?.[i] ?? id,
-      }))
-      .filter(({ id }) => IAB_GENRE_IDS.has(id)) ?? [];
+  const iabEntries =
+    filteredIab?.cat?.map((id, i) => ({
+      id,
+      label: filteredIab.labels?.[i] ?? id,
+    })) ?? [];
+  const iabFormFactors = iabEntries.filter(({ id }) =>
+    IAB_FORM_FACTOR_IDS.has(id),
+  );
+  const iabGenreTags = iabEntries.filter(({ id }) => IAB_GENRE_IDS.has(id));
+  const iabTopicTags = iabEntries.filter(({ id }) => IAB_TOPIC_IDS.has(id));
 
   const hasDescriptiveFields =
     descriptiveTab &&
@@ -1329,7 +1512,10 @@ function MetadataSceneCard({
 
   const hasIabFields =
     includeIab &&
-    (iabFormFactors.length > 0 || iabGenreTags.length > 0 || isGenerating);
+    (iabFormFactors.length > 0 ||
+      iabGenreTags.length > 0 ||
+      iabTopicTags.length > 0 ||
+      isGenerating);
 
   return (
     <div
@@ -1428,8 +1614,25 @@ function MetadataSceneCard({
 
           {hasIabFields && (
             <MetadataFieldGroup title="IAB">
-              {iabFormFactors.length > 0 || iabGenreTags.length > 0 ? (
+              {iabEntries.length > 0 ? (
                 <>
+                  {iabTopicTags.length > 0 && (
+                    <MetadataField
+                      label="Topics"
+                      value={
+                        <span className="flex flex-wrap gap-1">
+                          {iabTopicTags.map((t) => (
+                            <span
+                              key={t.id}
+                              className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-foreground/90"
+                            >
+                              {t.label}
+                            </span>
+                          ))}
+                        </span>
+                      }
+                    />
+                  )}
                   {iabFormFactor && iabFormFactors.length > 0 && (
                     <MetadataField
                       label="Form Factor"
@@ -1525,6 +1728,65 @@ function SceneStatusIcon({
         <div className="h-4 w-4 rounded border border-border bg-muted/50" />
       );
   }
+}
+
+function ExportColumns({
+  children,
+  columnFlex,
+  containerRef,
+  onResizeStart,
+}: {
+  children: ReactNode;
+  columnFlex: number[];
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  onResizeStart: (dividerIndex: number) => (event: React.MouseEvent) => void;
+}) {
+  const columns = Children.toArray(children);
+
+  return (
+    <>
+      <div className="flex flex-col divide-y divide-border lg:hidden">
+        {columns}
+      </div>
+      <div
+        ref={containerRef}
+        className="hidden lg:flex lg:h-full lg:min-h-0 divide-x divide-border"
+      >
+        {columns.map((column, index) => (
+          <Fragment key={index}>
+            <div
+              className="flex min-h-0 min-w-0 flex-col overflow-hidden"
+              style={{ flex: `${columnFlex[index] ?? 1} 1 0%` }}
+            >
+              {column}
+            </div>
+            {index < columns.length - 1 && (
+              <ColumnResizeHandle onMouseDown={onResizeStart(index)} />
+            )}
+          </Fragment>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function ColumnResizeHandle({
+  onMouseDown,
+}: {
+  onMouseDown: (event: React.MouseEvent) => void;
+}) {
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize column"
+      onMouseDown={onMouseDown}
+      className="group relative w-px shrink-0 cursor-col-resize touch-none select-none bg-border"
+    >
+      <div className="absolute inset-y-0 -left-1.5 -right-1.5 z-10" />
+      <div className="absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-primary/0 transition-colors group-hover:bg-primary/40 group-active:bg-primary/60" />
+    </div>
+  );
 }
 
 function ExportColumn({

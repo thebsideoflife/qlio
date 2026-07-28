@@ -10,9 +10,14 @@
     "jockey:eval:suite": "tsx src/scripts/jockey-eval-suite/run.ts",
     "jockey:prewarm": "tsx src/scripts/prewarm-jockey-agents.ts",
     "test:export-metadata": "tsx src/scripts/test-export-metadata-fingerprint.ts",
+    "test:agent-metadata": "tsx src/scripts/test-agent-metadata.ts",
     "test:jockey-coverage": "tsx src/scripts/test-jockey-coverage.ts",
     "test:jockey-v3-gates": "tsx src/scripts/test-jockey-v3-gates.ts",
-    "test": "npm run test:export-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates"
+    "test:iq-agent": "tsx src/scripts/test-iq-agent.ts",
+    "iq-agent:replay": "tsx src/scripts/replay-iq-agent-run.ts",
+    "iq-agent:coverage-cost": "tsx src/scripts/check-coverage-cost.ts",
+    "test:transcription-sanitize": "tsx src/scripts/test-transcription-sanitize.ts",
+    "test": "npm run test:export-metadata && npm run test:agent-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates && npm run test:iq-agent && npm run test:transcription-sanitize"
   },
   "keywords": [],
   "author": "",

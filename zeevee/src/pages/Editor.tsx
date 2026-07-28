@@ -1,9 +1,6 @@
 import React, { useCallback } from "react";
 import { Timeline } from "@/components/editor/Timeline";
-import {
-  MicroseriesGenerator,
-  type GenerateRequest,
-} from "@/components/editor/MicroseriesGenerator";
+import { IQAgentPanel } from "@/components/editor/iq-agent/IQAgentPanel";
 import { CaptionOverlay } from "@/components/editor/CaptionOverlay";
 import { CaptionEditor } from "@/components/editor/CaptionEditor";
 import { FramingSlider } from "@/components/editor/FramingSlider";
@@ -16,25 +13,20 @@ import {
   setDuration,
   setSegments,
   setProjectId,
-  setProjectTitleFromServer,
   resetEditor,
   updateFramingKeyframe,
   updateCaptionWord,
   setGlobalAspectRatio,
   setSquareTopEnabled,
+  setAgentRunActive,
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
 import { useRef, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useProjectData } from "@/hooks/useProjectData";
 import { useSeamlessPlayback } from "@/hooks/useSeamlessPlayback";
-import {
-  generateSegments,
-  pollGenerationStatus,
-  getProject,
-  getProjectJobStatus,
-  type GenerationJob,
-} from "@/services/api";
+import { useIQAgent } from "@/hooks/useIQAgent";
+import { getProject, getProjectJobStatus } from "@/services/api";
 import {
   FileText,
   Wand2,
@@ -85,9 +77,6 @@ export default function Editor() {
   );
   // Track the last projectId we initialized state for — used to reset state on project change
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [generationStatus, setGenerationStatus] =
-    useState<GenerationJob | null>(null);
   const [previewMode, setPreviewMode] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [autoFrameEnabled, setAutoFrameEnabled] = useState(true);
@@ -98,25 +87,39 @@ export default function Editor() {
     projectIdRef.current = projectId;
   }, [projectId]);
 
-  // Stores "projectId:jobId" — naturally unique per project, no reset needed on navigation
-  const resumedGenerationJobRef = useRef<string | null>(null);
-
   // Reset async state when navigating to a different project (during render, avoids cascading effects)
   if (projectId !== activeProjectId) {
     setActiveProjectId(projectId ?? null);
-    setIsGenerating(false);
-    setGenerationStatus(null);
     setPreviewMode(false);
   }
 
   // Custom Hooks
-  const {
-    videoUrl,
-    generationMetadata,
-    generationJob,
-    framingJob,
-    loading,
-  } = useProjectData(projectId);
+  const { videoUrl, generationMetadata, framingJob, loading } =
+    useProjectData(projectId);
+
+  // The agent owns the cut while it runs: it writes segments server-side and
+  // the event stream pushes them here, so autosave has to stand down.
+  const applyAgentSegments = useCallback(
+    (next: Parameters<typeof setSegments>[0]) => {
+      dispatch(setSegments(next));
+    },
+    [dispatch],
+  );
+  const agent = useIQAgent(projectId, applyAgentSegments);
+
+  useEffect(() => {
+    dispatch(setAgentRunActive(agent.isRunning));
+  }, [agent.isRunning, dispatch]);
+
+  // Once the agent produces a cut, drop into preview so the producer sees it.
+  const previewedRunRef = useRef<string | null>(null);
+  useEffect(() => {
+    const runId = agent.run?.runId ?? agent.lastRun?.runId;
+    if (!runId || segments.length === 0) return;
+    if (previewedRunRef.current === runId) return;
+    previewedRunRef.current = runId;
+    setPreviewMode(true);
+  }, [agent.run?.runId, agent.lastRun?.runId, segments.length]);
 
   // Seamless playback only in preview mode
   useSeamlessPlayback(videoRef, previewMode ? segments : []);
@@ -284,136 +287,6 @@ export default function Editor() {
     };
   }, [projectId, dispatch]);
 
-  // Resume polling if there's an in-progress generation job (e.g., after page refresh)
-  useEffect(() => {
-    if (!projectId || !generationJob || loading) return;
-
-    const inProgressStatuses = ["pending", "generating"];
-    if (!inProgressStatuses.includes(generationJob.status)) return;
-
-    // Already generating (user clicked button in this session)
-    if (isGenerating) return;
-
-    // Already handled this job in this session — prevents re-firing when isGenerating resets
-    const resumeKey = `${projectId}:${generationJob.jobId}`;
-    if (resumedGenerationJobRef.current === resumeKey) return;
-    resumedGenerationJobRef.current = resumeKey;
-
-    console.log(
-      `[Editor] Resuming polling for in-progress job: ${generationJob.jobId} (${generationJob.status})`,
-    );
-
-    // Capture projectId at start to check against later
-    const startingProjectId = projectId;
-
-    // Defer state updates out of the synchronous effect body to avoid cascading renders
-    Promise.resolve().then(() => {
-      setIsGenerating(true);
-      setGenerationStatus(generationJob);
-    });
-
-    let framingPollTookOver = false;
-
-    // Resume polling - use shorter initial delay since job is already running
-    pollGenerationStatus(projectId, {
-      initialDelayMs: 5000, // 5s initial delay (job already started)
-      pollIntervalMs: 10000, // 10s intervals
-      onProgress: (job) => {
-        // Only update if still on same project
-        if (projectIdRef.current !== startingProjectId) return;
-        console.log(`[Editor] Generation status: ${job.status}`);
-        setGenerationStatus(job);
-      },
-    })
-      .then(async (result) => {
-        // Guard: only dispatch if still on the same project
-        if (projectIdRef.current !== startingProjectId) {
-          console.log(
-            `[Editor] Ignoring stale generation result for project ${startingProjectId}`,
-          );
-          return;
-        }
-        if (result.segments.length > 0) {
-          dispatch(setSegments(result.segments));
-          if (result.title) {
-            dispatch(setProjectTitleFromServer(result.title));
-          }
-          setPreviewMode(true);
-          console.log(
-            `[Editor] Generation complete (resumed): ${result.segments.length} segments`,
-          );
-        }
-
-        // Check if framing job is running (use slim endpoint)
-        if (projectIdRef.current !== startingProjectId) return;
-        try {
-          const jobStatus = await getProjectJobStatus(startingProjectId);
-          const fJob = jobStatus.framingJob;
-          if (
-            fJob &&
-            (fJob.status === "pending" || fJob.status === "analyzing") &&
-            projectIdRef.current === startingProjectId
-          ) {
-            framingPollTookOver = true;
-            setGenerationStatus({
-              status: "framing",
-              jobId: fJob.jobId || "",
-              startedAt: fJob.startedAt || "",
-            });
-            const POLL = 10000;
-            const MAX = 600000;
-            const start = Date.now();
-            // Poll framing status with slim endpoint
-            (async () => {
-              while (Date.now() - start < MAX) {
-                if (projectIdRef.current !== startingProjectId) break;
-                await new Promise((r) => setTimeout(r, POLL));
-                if (projectIdRef.current !== startingProjectId) break;
-                let status;
-                try {
-                  status = await getProjectJobStatus(startingProjectId);
-                } catch {
-                  break;
-                }
-                if (status.framingJob?.status === "completed") {
-                  // Fetch full project only on completion
-                  try {
-                    const p = await getProject(startingProjectId);
-                    if (p.segments?.length) dispatch(setSegments(p.segments));
-                  } catch {
-                    // Non-fatal
-                  }
-                  break;
-                }
-                if (status.framingJob?.status === "failed") break;
-              }
-              if (projectIdRef.current === startingProjectId) {
-                setIsGenerating(false);
-                setGenerationStatus(null);
-              }
-            })();
-          }
-        } catch {
-          /* non-fatal */
-        }
-      })
-      .catch((error: unknown) => {
-        console.error("Generation failed (resumed):", error);
-        // Don't show alert for resumed jobs that fail - might be stale
-      })
-      .finally(() => {
-        // Only reset state if framing poll didn't take over
-        if (
-          !framingPollTookOver &&
-          projectIdRef.current === startingProjectId
-        ) {
-          setIsGenerating(false);
-          setGenerationStatus(null);
-        }
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- isGenerating intentionally omitted to prevent re-triggering when it changes
-  }, [projectId, generationJob, loading, dispatch]);
-
   // Resume framing poll if there's an in-progress framing job (e.g., after page refresh).
   // One resume per project — active reframes started in-session are polled by Timeline.
   const framingResumeProjectRef = useRef<string | null>(null);
@@ -422,7 +295,8 @@ export default function Editor() {
     if (framingResumeProjectRef.current === projectId) return;
     if (framingJob.status !== "pending" && framingJob.status !== "analyzing")
       return;
-    if (isGenerating) return; // generation flow will handle it
+    // The agent panel mirrors framing progress for runs it started.
+    if (agent.framingActive) return;
 
     framingResumeProjectRef.current = projectId;
     const startingProjectId = projectId;
@@ -464,7 +338,7 @@ export default function Editor() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- isGenerating intentionally omitted to prevent re-triggering when it changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- agent.framingActive is a guard, not a trigger
   }, [projectId, framingJob, loading, dispatch]);
 
   // Don't auto-seek when selecting segments - timeline handles seeking now
@@ -533,133 +407,6 @@ export default function Editor() {
             console.error("Playback error:", error);
           }
         });
-      }
-    }
-  };
-
-  const handleGenerateSegments = async (request: GenerateRequest) => {
-    if (!projectId) return;
-
-    // Capture projectId at start to check against later
-    const startingProjectId = projectId;
-
-    setIsGenerating(true);
-    setGenerationStatus(null);
-
-    const videoDuration = videoRef.current
-      ? videoRef.current.duration
-      : duration;
-
-    try {
-      // Map format to purpose for API
-      const format = request.format;
-      const purpose =
-        format === "highlights"
-          ? "highlights"
-          : format === "full_video"
-            ? "full_video"
-            : format === "episode_recap"
-              ? "episode_recap"
-              : "compact_video";
-
-      // Start async generation job — backend handles auto-framing if requested
-      const { jobId } = await generateSegments(projectId, {
-        userPrompt: request.userPrompt || undefined,
-        videoDuration: videoDuration || undefined,
-        autoFrame: autoFrameEnabled,
-        targetAspectRatio: globalFraming.aspectRatio,
-        purpose,
-        targetPercent: request.targetPercent,
-        minSegmentDuration: request.minSegmentDuration,
-        maxSegmentDuration: request.maxSegmentDuration,
-        assetType: request.assetType,
-        platform: request.platform,
-        format: request.format,
-        jockeyEnabled: request.jockeyEnabled,
-      });
-      console.log(`[Editor] Started generation job: ${jobId}`);
-
-      if (projectIdRef.current !== startingProjectId) return;
-
-      setGenerationStatus({
-        status: "pending",
-        jobId,
-        startedAt: new Date().toISOString(),
-      });
-
-      // Poll until generation completes
-      const result = await pollGenerationStatus(projectId, {
-        onProgress: (job) => {
-          if (projectIdRef.current !== startingProjectId) return;
-          setGenerationStatus(job);
-        },
-      });
-
-      if (projectIdRef.current !== startingProjectId) return;
-
-      if (result.segments.length > 0) {
-        dispatch(setSegments(result.segments));
-        if (result.title) {
-          dispatch(setProjectTitleFromServer(result.title));
-        }
-        dispatch(selectSegment(result.segments[0].id));
-        setPreviewMode(true);
-        console.log(
-          `[Editor] Generation complete: ${result.segments.length} segments`,
-        );
-
-        // If auto-frame was requested, poll for framing completion (slim)
-        if (autoFrameEnabled) {
-          setGenerationStatus({
-            status: "framing",
-            jobId,
-            startedAt: new Date().toISOString(),
-          });
-          const FRAMING_POLL = 10000;
-          const FRAMING_MAX = 600000;
-          const framingStart = Date.now();
-          while (Date.now() - framingStart < FRAMING_MAX) {
-            if (projectIdRef.current !== startingProjectId) break;
-            await new Promise((r) => setTimeout(r, FRAMING_POLL));
-            if (projectIdRef.current !== startingProjectId) break;
-            // Use slim endpoint for polling
-            let jobStatus;
-            try {
-              jobStatus = await getProjectJobStatus(startingProjectId);
-            } catch {
-              break;
-            }
-            const job = jobStatus.framingJob;
-            if (!job) break;
-            if (job.status === "completed") {
-              // Fetch full project only on completion
-              try {
-                const project = await getProject(startingProjectId);
-                if (project.segments?.length)
-                  dispatch(setSegments(project.segments));
-              } catch {
-                // Non-fatal
-              }
-              break;
-            }
-            if (job.status === "failed") break;
-          }
-        }
-      }
-
-      setIsGenerating(false);
-      setGenerationStatus(null);
-    } catch (error: unknown) {
-      // Only show error if still on same project
-      if (projectIdRef.current === startingProjectId) {
-        console.error("Failed to generate segments:", error);
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Failed to generate segments. Please try again.";
-        alert(message);
-        setIsGenerating(false);
-        setGenerationStatus(null);
       }
     }
   };
@@ -990,15 +737,15 @@ export default function Editor() {
                 ))}
               </div>
 
-              <div className="flex-1 overflow-y-auto relative">
-                {activeTab === "ai" && (
-                  <MicroseriesGenerator
-                    onGenerate={handleGenerateSegments}
-                    isGenerating={isGenerating}
-                    generationStatus={generationStatus}
+              <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                {activeTab === "ai" && projectId && (
+                  <IQAgentPanel
+                    projectId={projectId}
+                    agent={agent}
                     savedInputs={generationMetadata}
                     autoFrameEnabled={autoFrameEnabled}
                     onAutoFrameChange={setAutoFrameEnabled}
+                    targetAspectRatio={globalFraming.aspectRatio}
                     onPlatformChange={(platform) => {
                       dispatch(
                         setGlobalAspectRatio(platformToAspectRatio(platform)),
@@ -1006,16 +753,22 @@ export default function Editor() {
                     }}
                   />
                 )}
-                {activeTab === "captions" && <CaptionEditor />}
+                {activeTab === "captions" && (
+                  <div className="flex-1 min-h-0 overflow-y-auto">
+                    <CaptionEditor />
+                  </div>
+                )}
                 {activeTab === "transcript" && (
-                  <TranscriptPanel
-                    segments={segments}
-                    currentTime={currentTime}
-                    duration={duration}
-                    previewMode={previewMode}
-                    onWordClick={handleWordClick}
-                    loading={loading}
-                  />
+                  <div className="flex-1 min-h-0 overflow-y-auto">
+                    <TranscriptPanel
+                      segments={segments}
+                      currentTime={currentTime}
+                      duration={duration}
+                      previewMode={previewMode}
+                      onWordClick={handleWordClick}
+                      loading={loading}
+                    />
+                  </div>
                 )}
               </div>
             </>
