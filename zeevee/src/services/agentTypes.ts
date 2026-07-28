@@ -46,6 +46,7 @@ export interface AgentBrief {
   userPrompt?: string;
   autoFrame?: boolean;
   targetAspectRatio?: string;
+  isSports?: boolean;
 }
 
 export interface AgentLedger {
