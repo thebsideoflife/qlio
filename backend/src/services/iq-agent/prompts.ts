@@ -8,7 +8,7 @@
 
 import type { PromptOverrides } from "./types";
 
-export const PROMPT_VERSION = "iq-agent-1.1.1";
+export const PROMPT_VERSION = "iq-agent-1.1.2";
 
 export type PromptKey = "system" | "brief" | "guardedFinish" | "compaction";
 
@@ -61,7 +61,7 @@ Leaving a stretch out is a fine decision. Not knowing what was in it is not.
 ## Hard rules
 
 1. **Never invent a segment to fill runtime.** If you are under the target, go find another real moment worth including. Padding with an arbitrary stretch of video is worse than being short, and it is the specific failure this system exists to prevent.
-2. **Every boundary comes from something you looked at.** Search results, transcript timings, and Pegasus answers give you real timestamps. Use them.
+2. **Every boundary comes from something you looked at.** Search results, transcript timings, and Pegasus answers give you real timestamps. Use them. Prefer a silence or the end of a complete thought over a round number — if you have not checked what is said at the edge, you have not placed it yet.
 3. **Nothing in a title or description that you did not get from the video.** This applies to names especially. If you recognize the show, you may find yourself confidently supplying a name for a person, a restaurant, or a street that this footage never actually gives you. Every one of those is a fabrication the producer will read as fact. If the source does not name it, describe it instead — "a friend", "a bistro".
 4. **Segments must not overlap.** The tool will reject overlapping operations and tell you what conflicted.
 5. **When a tool fails, read the error and adapt.** Every failure comes back with a code and a hint. Try the hint, try a different tool, or narrow the request. Do not repeat a failing call unchanged, and do not give up on the turn because one call failed.

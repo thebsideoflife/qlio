@@ -4,6 +4,8 @@ import {
   useCallback,
   useMemo,
   useRef,
+  Children,
+  Fragment,
   type ReactNode,
 } from "react";
 import { useSelector, useDispatch } from "react-redux";
@@ -79,6 +81,10 @@ const DESCRIPTION_LENGTH_OPTIONS: {
   { value: "two_sentences", label: "Two Sentences" },
   { value: "paragraph", label: "Paragraph" },
 ];
+
+/** Scenes : Metadata : Configuration (Configuration was 1fr, now 0.75fr). */
+const DEFAULT_EXPORT_COLUMN_FLEX = [2, 1.75, 0.75] as const;
+const MIN_EXPORT_COLUMN_FLEX = 0.4;
 
 function formatSceneDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -156,6 +162,58 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   const [tone, setTone] = useState(true);
 
   const [videoFormat, setVideoFormat] = useState<VideoFormat>("mp4-h264");
+
+  const [exportColumnFlex, setExportColumnFlex] = useState<number[]>(() => [
+    ...DEFAULT_EXPORT_COLUMN_FLEX,
+  ]);
+  const exportColumnsRef = useRef<HTMLDivElement>(null);
+  const exportColumnFlexRef = useRef(exportColumnFlex);
+  exportColumnFlexRef.current = exportColumnFlex;
+
+  const handleExportColumnResizeStart = useCallback((dividerIndex: number) => {
+    return (event: React.MouseEvent) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidths = [...exportColumnFlexRef.current];
+      const containerWidth =
+        exportColumnsRef.current?.getBoundingClientRect().width ?? 1;
+      const totalFlex = startWidths.reduce((sum, width) => sum + width, 0);
+
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        const deltaPx = moveEvent.clientX - startX;
+        const deltaFlex = (deltaPx / containerWidth) * totalFlex;
+
+        let left = startWidths[dividerIndex] + deltaFlex;
+        let right = startWidths[dividerIndex + 1] - deltaFlex;
+
+        if (left < MIN_EXPORT_COLUMN_FLEX) {
+          right -= MIN_EXPORT_COLUMN_FLEX - left;
+          left = MIN_EXPORT_COLUMN_FLEX;
+        }
+        if (right < MIN_EXPORT_COLUMN_FLEX) {
+          left -= MIN_EXPORT_COLUMN_FLEX - right;
+          right = MIN_EXPORT_COLUMN_FLEX;
+        }
+
+        const next = [...startWidths];
+        next[dividerIndex] = left;
+        next[dividerIndex + 1] = right;
+        setExportColumnFlex(next);
+      };
+
+      const onMouseUp = () => {
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      };
+
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
+    };
+  }, []);
 
   const [adsEnabled, setAdsEnabled] = useState(true);
   const [adLoad, setAdLoad] = useState(8);
@@ -831,7 +889,11 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
 
       <div className="flex flex-col flex-1 min-h-0 rounded-xl border border-border bg-card shadow-sm overflow-hidden">
         <div className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain lg:overflow-hidden">
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,1.75fr)_minmax(0,1fr)] lg:h-full lg:min-h-0 divide-y lg:divide-y-0 lg:divide-x divide-border">
+          <ExportColumns
+            columnFlex={exportColumnFlex}
+            containerRef={exportColumnsRef}
+            onResizeStart={handleExportColumnResizeStart}
+          >
             {/* Scenes */}
             <ExportColumn className="lg:min-w-0">
               <ColumnHeader
@@ -1307,7 +1369,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                 </ConfigSection>
               </div>
             </ExportColumn>
-          </div>
+          </ExportColumns>
         </div>
 
         <footer className="shrink-0 flex flex-col gap-3 border-t border-border bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-5 sm:py-4">
@@ -1666,6 +1728,65 @@ function SceneStatusIcon({
         <div className="h-4 w-4 rounded border border-border bg-muted/50" />
       );
   }
+}
+
+function ExportColumns({
+  children,
+  columnFlex,
+  containerRef,
+  onResizeStart,
+}: {
+  children: ReactNode;
+  columnFlex: number[];
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  onResizeStart: (dividerIndex: number) => (event: React.MouseEvent) => void;
+}) {
+  const columns = Children.toArray(children);
+
+  return (
+    <>
+      <div className="flex flex-col divide-y divide-border lg:hidden">
+        {columns}
+      </div>
+      <div
+        ref={containerRef}
+        className="hidden lg:flex lg:h-full lg:min-h-0 divide-x divide-border"
+      >
+        {columns.map((column, index) => (
+          <Fragment key={index}>
+            <div
+              className="flex min-h-0 min-w-0 flex-col overflow-hidden"
+              style={{ flex: `${columnFlex[index] ?? 1} 1 0%` }}
+            >
+              {column}
+            </div>
+            {index < columns.length - 1 && (
+              <ColumnResizeHandle onMouseDown={onResizeStart(index)} />
+            )}
+          </Fragment>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function ColumnResizeHandle({
+  onMouseDown,
+}: {
+  onMouseDown: (event: React.MouseEvent) => void;
+}) {
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize column"
+      onMouseDown={onMouseDown}
+      className="group relative w-px shrink-0 cursor-col-resize touch-none select-none bg-border"
+    >
+      <div className="absolute inset-y-0 -left-1.5 -right-1.5 z-10" />
+      <div className="absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-primary/0 transition-colors group-hover:bg-primary/40 group-active:bg-primary/60" />
+    </div>
+  );
 }
 
 function ExportColumn({
