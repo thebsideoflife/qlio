@@ -535,5 +535,6 @@ function sanitizeBrief(brief: Brief): Brief {
         : undefined,
     autoFrame: brief.autoFrame !== false,
     targetAspectRatio: brief.targetAspectRatio,
+    isSports: brief.isSports === true,
   };
 }
