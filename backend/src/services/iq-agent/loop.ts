@@ -1,0 +1,972 @@
+/**
+ * The agent loop — an explicit state machine, no framework (12-factor #5).
+ *
+ *   rehydrate → assemble context → call Claude
+ *     → emit prose blocks
+ *     → for each tool_use: emit started, execute, emit finished
+ *     → commit mutations and emit state.updated
+ *     → heartbeat
+ *     → loop, suspend on ask_user, complete on finish_turn,
+ *       or persist and self-invoke a continuation before the Lambda expires
+ *
+ * The worker holds nothing across invocations. Every entry point rehydrates
+ * from DynamoDB, so a run survives a Lambda timeout, a cancel, or a crash.
+ */
+
+import { randomUUID } from "crypto";
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
+import {
+  CONTINUATION_RESERVE_MS,
+  HEARTBEAT_MS,
+  MAX_ITERATIONS,
+  MAX_OUTPUT_TOKENS,
+  MODEL_TEMPERATURE,
+} from "./config";
+import { callClaude, classifyModelError, errorText } from "./claude";
+import {
+  assembleMessages,
+  buildSystemBlocks,
+  compactHistory,
+  describeBounds,
+  describeTarget,
+  renderLiveState,
+} from "./context";
+import { appendEvent, appendEvents } from "./events";
+import { executeTool, type ExecContext, type ExecControl } from "./executor";
+import { computeLedger, fmt } from "./ledger";
+import { getPrompt, renderTemplate, PROMPT_VERSION } from "./prompts";
+import {
+  commitSegments,
+  getTwelveLabsClient,
+  loadProjectContext,
+  ProjectContextError,
+} from "./project";
+import {
+  claimRunEpoch,
+  clearPendingMessages,
+  getThread,
+  heartbeat,
+  LockLostError,
+  persistRunState,
+  releaseRun,
+  setFramingMirror,
+} from "./thread";
+import { TOOL_SCHEMAS, toolLabel } from "./tools";
+import { TOOL_NAMES } from "./types";
+import type {
+  AgentEventBody,
+  AgentSegment,
+  Brief,
+  Ledger,
+  PendingMessage,
+  RunStage,
+  RunState,
+  StoredTurn,
+  ToolName,
+  ToolResult,
+} from "./types";
+import type { ClaudeContentBlock, ClaudeMessage } from "./claude";
+
+const lambdaClient = new LambdaClient({});
+const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
+const ANALYZE_FRAMING_FUNCTION_NAME = process.env.ANALYZE_FRAMING_FUNCTION_NAME;
+const BUCKET_NAME = process.env.BUCKET_NAME;
+
+/** How many recent turns keep their images in context. */
+const IMAGE_RETENTION_TURNS = 2;
+
+/** Nudges allowed when the model stops without calling finish_turn. */
+const MAX_NO_TOOL_NUDGES = 1;
+
+export interface RunTurnParams {
+  projectId: string;
+  runId: string;
+  getRemainingTimeMs: () => number;
+}
+
+export async function runAgentTurn(params: RunTurnParams): Promise<void> {
+  const { projectId, runId } = params;
+
+  const thread = await getThread(projectId);
+  if (!thread || thread.activeRunId !== runId || !thread.run) {
+    console.log(
+      `[IQAgent] run ${runId} is no longer the active run on ${projectId}; nothing to do.`,
+    );
+    return;
+  }
+
+  // Async Lambda invokes are at-least-once. Claiming an epoch means a duplicate
+  // delivery of the same runId fences this invocation out on its next write
+  // instead of the two of them interleaving tool calls and segment commits.
+  const claimed = await claimRunEpoch(projectId, runId);
+  if (claimed === null) {
+    console.log(`[IQAgent] run ${runId} was released before this worker started.`);
+    return;
+  }
+  const epoch: number = claimed;
+
+  const run: RunState = { ...thread.run, epoch };
+  let stage: RunStage = run.stage;
+
+  const emit = async (...bodies: AgentEventBody[]) => {
+    if (bodies.length > 0) await appendEvents(projectId, runId, bodies);
+  };
+
+  const setStage = async (next: RunStage, note?: string) => {
+    if (next === stage) return;
+    stage = next;
+    run.stage = next;
+    await emit({ type: "stage.changed", stage: next, note });
+  };
+
+  const beat = setInterval(() => {
+    void heartbeat(projectId, runId, epoch);
+  }, HEARTBEAT_MS);
+
+  // Hoisted so the crash handler can still persist whatever the run got done
+  // before it fell over — otherwise a mid-iteration failure throws away every
+  // tool call since the last checkpoint and "pick up where it stopped" resumes
+  // from stale history.
+  let turns: StoredTurn[] = thread.turns.map((t) => ({ ...t }));
+  let summary = thread.summary;
+  const toolLedger = [...thread.toolLedger];
+  let ctxRef: ExecContext | null = null;
+  const pendingChangedIds = new Set<string>(run.reframeIds ?? []);
+
+  /**
+   * Claude rejects two messages with the same role in a row. Draining a queued
+   * message right after a tool-result turn, or draining two at once, would
+   * produce exactly that, so same-role content is folded into one turn.
+   */
+  const pushTurn = (turn: StoredTurn) => {
+    const last = turns[turns.length - 1];
+    if (last && last.role === turn.role) {
+      turns[turns.length - 1] = {
+        role: last.role,
+        content: [...last.content, ...turn.content],
+      };
+      return;
+    }
+    turns.push(turn);
+  };
+
+  try {
+    const project = await loadProjectContext(projectId).catch((err) => {
+      throw err instanceof ProjectContextError
+        ? err
+        : new ProjectContextError("project_load_failed", errorText(err));
+    });
+
+    // Explicit undefined in a later layer must not erase an earlier value.
+    const brief: Brief = mergeBrief(
+      { format: "compact_video" },
+      project.savedBrief,
+      thread.brief,
+    );
+
+    if (project.assetIssue) {
+      await emit({
+        type: "notice",
+        level: "warn",
+        message: project.assetIssue,
+      });
+    }
+
+    const client = await getTwelveLabsClient();
+    if (!client) {
+      await emit({
+        type: "notice",
+        level: "warn",
+        message:
+          "The TwelveLabs API key is not configured, so semantic search and clip watching are unavailable this run.",
+      });
+    }
+
+    // The project row is the source of truth for segments: it picks up any
+    // manual edits the producer made between runs.
+    const ctx: ExecContext = {
+      client,
+      facts: project.facts,
+      cacheBucket: BUCKET_NAME,
+      brief,
+      segments: project.segments,
+      cost: { ...thread.cost },
+      watchHistory: [],
+      transcriptWords: null,
+      askCount: run.askCount ?? 0,
+      finishRefusals: run.finishRefusals ?? 0,
+      promptOverrides: thread.promptOverrides,
+      onProgress: async () => undefined,
+      deadlineAt: Date.now() + params.getRemainingTimeMs(),
+    };
+    ctxRef = ctx;
+
+    let ledger: Ledger = computeLedger(ctx.segments, brief, project.facts.duration);
+    let noToolNudges = 0;
+    let finishOutcome: { summary: string; concerns: string[] } | null = null;
+    let askOutcome: { question: string; suggestions: string[]; questionId: string } | null =
+      null;
+    let cancelled = false;
+
+    // ---- Drain anything the producer queued before or during this run -------
+    const drain = async (): Promise<boolean> => {
+      const current = await getThread(projectId);
+      const pending = current?.pendingMessages ?? [];
+      if (pending.length === 0) return false;
+      // Consume exactly what we read; anything that lands while we work stays
+      // queued for the next drain rather than disappearing.
+      await clearPendingMessages(projectId, pending.length);
+
+      for (const message of pending) {
+        const rendered = renderPending(message, brief, project, ctx.promptOverrides);
+        await emit({
+          type: "message.user",
+          text: rendered.display,
+          brief: message.brief,
+          isBrief: message.isBrief,
+        });
+        pushTurn({
+          role: "user",
+          content: [{ type: "text", text: rendered.forModel }],
+        });
+      }
+      return true;
+    };
+
+    await drain();
+
+    if (turns.length === 0) {
+      throw new ProjectContextError(
+        "nothing_to_do",
+        "The run started with no message to act on.",
+      );
+    }
+
+    // ---- Main loop ---------------------------------------------------------
+    while (true) {
+      const live = await getThread(projectId);
+      if (!live || live.activeRunId !== runId) {
+        console.log(`[IQAgent] run ${runId} lost the lock; stopping.`);
+        return;
+      }
+      if ((live.run?.epoch ?? epoch) !== epoch) {
+        console.log(
+          `[IQAgent] run ${runId} was picked up by a newer invocation; standing down.`,
+        );
+        return;
+      }
+      if (live.run?.cancelRequested) {
+        cancelled = true;
+        break;
+      }
+
+      if (run.iterations >= MAX_ITERATIONS) {
+        finishOutcome = {
+          summary:
+            "I hit this run's step limit before I was finished. The cut below is where I got to — send me a message and I'll pick it back up.",
+          concerns: [`Stopped after ${MAX_ITERATIONS} tool steps.`],
+        };
+        break;
+      }
+
+      if (params.getRemainingTimeMs() < CONTINUATION_RESERVE_MS) {
+        await persistLoopState();
+        await continueInNewInvocation(projectId, runId);
+        return;
+      }
+
+      // Everything downstream races the same clock. Handing the model and the
+      // tools a hard deadline stops a single slow vendor call from running past
+      // the Lambda ceiling, which would kill the run mid-iteration and lose the
+      // work instead of checkpointing and continuing.
+      ctx.deadlineAt = Date.now() + params.getRemainingTimeMs() - CONTINUATION_RESERVE_MS;
+
+      const compaction = await compactHistory({
+        turns,
+        summary,
+        overrides: ctx.promptOverrides,
+      });
+      if (compaction.compacted) {
+        turns = compaction.turns;
+        summary = compaction.summary;
+        if (compaction.note) {
+          console.log(`[IQAgent] ${compaction.note}`);
+        }
+      }
+
+      stripOldImages(turns, IMAGE_RETENTION_TURNS);
+
+      await setStage("thinking");
+
+      const messages = assembleMessages({
+        turns,
+        summary,
+        toolLedger,
+        liveState: renderLiveState({
+          segments: ctx.segments,
+          ledger,
+          cost: ctx.cost,
+          iterations: run.iterations,
+        }),
+      });
+
+      let response;
+      try {
+        response = await callClaude({
+          system: buildSystemBlocks({
+            facts: project.facts,
+            brief,
+            overrides: ctx.promptOverrides,
+          }),
+          messages,
+          tools: TOOL_SCHEMAS,
+          maxTokens: MAX_OUTPUT_TOKENS,
+          temperature: MODEL_TEMPERATURE,
+          deadlineAt: ctx.deadlineAt,
+        });
+      } catch (err) {
+        const classified = classifyModelError(err);
+        if (classified.code === "model_deadline") {
+          // Out of time rather than out of luck: check in and let a fresh
+          // invocation retry the same call with a full clock.
+          await persistLoopState();
+          await continueInNewInvocation(projectId, runId);
+          return;
+        }
+        await finalizeFailure(
+          classified.code,
+          classified.message,
+          errorText(err),
+          classified.retryable,
+        );
+        return;
+      }
+
+      run.iterations += 1;
+      ctx.cost.tokensIn += response.usage.inputTokens;
+      ctx.cost.tokensOut += response.usage.outputTokens;
+      ctx.cost.cacheReadTokens += response.usage.cacheReadTokens;
+
+      const proseBlocks = response.blocks.filter(
+        (b) => (b as { type?: string }).type === "text",
+      ) as Array<{ text?: string }>;
+      const toolUses = response.blocks.filter(
+        (b) => (b as { type?: string }).type === "tool_use",
+      ) as Array<{ id: string; name: string; input: Record<string, unknown> }>;
+
+      for (const block of proseBlocks) {
+        const text = String(block.text ?? "").trim();
+        if (text.length > 0) {
+          await emit({ type: "message.assistant", text });
+        }
+      }
+
+      pushTurn({ role: "assistant", content: response.blocks });
+
+      if (toolUses.length === 0) {
+        if (noToolNudges < MAX_NO_TOOL_NUDGES) {
+          noToolNudges += 1;
+          pushTurn({
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "You stopped without using a tool. If you are done, call finish_turn with a summary. If something is blocking you, call finish_turn and say what it is. Otherwise, keep working.",
+              },
+            ],
+          });
+          continue;
+        }
+        finishOutcome = {
+          summary:
+            proseBlocks
+              .map((b) => String(b.text ?? "").trim())
+              .filter(Boolean)
+              .join("\n\n") || "Turn ended.",
+          concerns: ["The editor ended the turn without calling finish_turn."],
+        };
+        break;
+      }
+
+      const toolResultBlocks: ClaudeContentBlock[] = [];
+      let control: ExecControl | undefined;
+
+      for (const use of toolUses) {
+        const name = normalizeToolName(use.name);
+        const callId = use.id;
+        const label = name ? toolLabel(name, use.input) : `Unknown tool ${use.name}`;
+
+        await setStage(stageForTool(name));
+        await emit({
+          type: "tool.started",
+          callId,
+          name: name ?? "unknown",
+          input: use.input,
+          label,
+        });
+
+        const startedAt = Date.now();
+        // Progress notes are cosmetic. A failed write must never take the tool
+        // call down with it, and callers fire these without awaiting.
+        ctx.onProgress = async (note: string) => {
+          try {
+            await emit({ type: "tool.progress", callId, note });
+          } catch (err) {
+            console.warn("[IQAgent] progress note dropped:", errorText(err));
+          }
+        };
+
+        let outcome;
+        if (!name) {
+          outcome = {
+            result: {
+              ok: false as const,
+              code: "unknown_tool",
+              message: `There is no tool called "${use.name}".`,
+              hint: "Use one of the tools you were given.",
+              summary: `Unknown tool "${use.name}"`,
+            },
+          };
+        } else {
+          outcome = await executeTool(name, use.input ?? {}, ctx);
+        }
+
+        const ms = Date.now() - startedAt;
+        const result = outcome.result;
+
+        if (outcome.ledger) ledger = outcome.ledger;
+
+        if (outcome.segmentsChanged) {
+          for (const id of outcome.changedIds ?? []) pendingChangedIds.add(id);
+          await commitSegments({
+            projectId,
+            segments: ctx.segments,
+            changedIds: outcome.changedIds,
+            brief,
+            currentTitle: project.projectTitle,
+          });
+        }
+
+        await emit({
+          type: "tool.finished",
+          callId,
+          name: name ?? "unknown",
+          ok: result.ok,
+          summary: result.summary,
+          digest: result.ok ? result.digest : undefined,
+          warnings: result.ok ? result.warnings : undefined,
+          error: result.ok
+            ? undefined
+            : {
+                code: result.code,
+                message: result.message,
+                hint: result.hint,
+                detail: result.detail,
+              },
+          ms,
+        });
+
+        if (outcome.segmentsChanged) {
+          await emit({
+            type: "state.updated",
+            segments: ctx.segments,
+            ledger,
+            cost: ctx.cost,
+          });
+        }
+
+        toolLedger.push({
+          name: name ?? "unknown",
+          line: `${label} → ${result.summary}`,
+          ok: result.ok,
+        });
+
+        toolResultBlocks.push(buildToolResultBlock(callId, result));
+
+        // First signal wins. A finish_turn issued in the same block as an
+        // ask_user must not bury the question the producer needs to answer.
+        if (outcome.control && !control) control = outcome.control;
+      }
+
+      pushTurn({ role: "user", content: toolResultBlocks });
+      run.askCount = ctx.askCount;
+      run.finishRefusals = ctx.finishRefusals;
+
+      if (control?.kind === "ask_user") {
+        askOutcome = {
+          question: control.question,
+          suggestions: control.suggestions,
+          questionId: randomUUID(),
+        };
+        break;
+      }
+
+      if (control?.kind === "finish") {
+        const drained = await drain();
+        if (drained) {
+          // The producer typed while we were working — keep going instead of
+          // ending the run and making them wait for a fresh one.
+          ctx.finishRefusals = 0;
+          run.finishRefusals = 0;
+          continue;
+        }
+        finishOutcome = { summary: control.summary, concerns: control.concerns };
+        break;
+      }
+
+      await persistLoopState();
+    }
+
+    // ---- Terminal handling -------------------------------------------------
+    // The heartbeat keeps running through framing and the final release: those
+    // can take minutes, and a silent run gets reaped out from under us.
+
+    if (cancelled) {
+      await setStage("finished");
+      await emit({
+        type: "run.cancelled",
+        note:
+          pendingChangedIds.size > 0
+            ? "Stopped. Edits already applied to the cut were kept."
+            : "Stopped before any changes were made.",
+      });
+      await finish({
+        status: "cancelled",
+        runState: { ...run, status: "cancelled", stage: "finished" },
+      });
+      return;
+    }
+
+    if (askOutcome) {
+      await setStage("waiting_on_you");
+      await emit(
+        {
+          type: "question.asked",
+          questionId: askOutcome.questionId,
+          text: askOutcome.question,
+          suggestions:
+            askOutcome.suggestions.length > 0 ? askOutcome.suggestions : undefined,
+        },
+        { type: "run.awaiting_input" },
+      );
+      await finish({
+        status: "awaiting_input",
+        runState: { ...run, status: "awaiting_input", stage: "waiting_on_you" },
+        openQuestionId: askOutcome.questionId,
+        skipFraming: true,
+      });
+      return;
+    }
+
+    if (finishOutcome) {
+      await emit({
+        type: "state.updated",
+        segments: ctx.segments,
+        ledger,
+        cost: ctx.cost,
+      });
+      await setStage("finished");
+      await emit({
+        type: "run.completed",
+        summary: finishOutcome.summary,
+        concerns:
+          finishOutcome.concerns.length > 0 ? finishOutcome.concerns : undefined,
+      });
+      await finish({
+        status: "completed",
+        runState: { ...run, status: "completed", stage: "finished" },
+      });
+      return;
+    }
+
+    // ---- Helpers that close over loop state --------------------------------
+    async function persistLoopState(): Promise<void> {
+      await persistRunState(
+        projectId,
+        runId,
+        {
+          turns: persistableTurns(turns),
+          summary,
+          toolLedger,
+          segments: ctx.segments,
+          ledger,
+          cost: ctx.cost,
+          brief,
+          run: { ...run, reframeIds: Array.from(pendingChangedIds) },
+        },
+        epoch,
+      );
+    }
+
+    async function finalizeFailure(
+      code: string,
+      message: string,
+      detail: string,
+      retryable: boolean,
+    ): Promise<void> {
+      console.error(`[IQAgent] run ${runId} failed (${code}): ${detail}`);
+      await emit({ type: "run.failed", code, message, detail, retryable });
+      await finish({
+        status: "failed",
+        runState: {
+          ...run,
+          status: "failed",
+          stage: "finished",
+          error: { code, message, detail },
+        },
+        skipFraming: true,
+      });
+    }
+
+    async function finish(opts: {
+      status: RunState["status"];
+      runState: RunState;
+      openQuestionId?: string;
+      skipFraming?: boolean;
+    }): Promise<void> {
+      const changed = Array.from(pendingChangedIds);
+      const finalRun: RunState = {
+        ...opts.runState,
+        endedAt: new Date().toISOString(),
+        reframeIds: changed,
+      };
+
+      if (!opts.skipFraming && brief.autoFrame && changed.length > 0) {
+        await startFraming({
+          projectId,
+          runId,
+          segments: ctx.segments,
+          changedIds: changed,
+          aspectRatio: brief.targetAspectRatio ?? "9:16",
+          emit,
+        });
+      }
+
+      await releaseRun(
+        projectId,
+        runId,
+        finalRun,
+        {
+          turns: persistableTurns(turns),
+          summary,
+          toolLedger,
+          segments: ctx.segments,
+          ledger,
+          cost: ctx.cost,
+          openQuestionId: opts.openQuestionId ?? null,
+        },
+        epoch,
+      );
+    }
+  } catch (err) {
+    if (err instanceof LockLostError) {
+      console.log(`[IQAgent] run ${runId}: ${err.message} Leaving it to the owner.`);
+      return;
+    }
+    const code = err instanceof ProjectContextError ? err.code : "worker_error";
+    const message =
+      err instanceof ProjectContextError
+        ? err.message
+        : `The agent hit an unexpected error: ${errorText(err)}`;
+    console.error(`[IQAgent] run ${runId} crashed:`, err);
+    await appendEvent(projectId, runId, {
+      type: "run.failed",
+      code,
+      message,
+      detail: errorText(err),
+      retryable: !(err instanceof ProjectContextError),
+    }).catch(() => undefined);
+    // Keep whatever the run managed to do. Without this, a crash three tool
+    // calls into an iteration resumes from the last checkpoint and repeats all
+    // of them — including the expensive ones.
+    await releaseRun(
+      projectId,
+      runId,
+      {
+        ...run,
+        status: "failed",
+        stage: "finished",
+        endedAt: new Date().toISOString(),
+        reframeIds: Array.from(pendingChangedIds),
+        error: { code, message, detail: errorText(err) },
+      },
+      {
+        turns: persistableTurns(turns),
+        summary,
+        toolLedger,
+        segments: ctxRef?.segments,
+        cost: ctxRef?.cost,
+      },
+      epoch,
+    ).catch((e) => {
+      console.error(`[IQAgent] run ${runId}: could not record the failure:`, e);
+    });
+  } finally {
+    clearInterval(beat);
+  }
+}
+
+/** Layered brief merge where a later `undefined` never erases an earlier value. */
+function mergeBrief(...layers: Array<Partial<Brief> | undefined>): Brief {
+  const out: Record<string, unknown> = {};
+  for (const layer of layers) {
+    if (!layer) continue;
+    for (const [key, value] of Object.entries(layer)) {
+      if (value !== undefined) out[key] = value;
+    }
+  }
+  return out as unknown as Brief;
+}
+
+// ============================================================================
+// Autoframing — a deterministic post-run step, never a tool the model can skip
+// ============================================================================
+
+async function startFraming(params: {
+  projectId: string;
+  runId: string;
+  segments: AgentSegment[];
+  changedIds: string[];
+  aspectRatio: string;
+  emit: (...bodies: AgentEventBody[]) => Promise<void>;
+}): Promise<void> {
+  if (!ANALYZE_FRAMING_FUNCTION_NAME) {
+    await params.emit({
+      type: "notice",
+      level: "warn",
+      message:
+        "Auto-framing is switched on but the framing service is not configured, so it was skipped.",
+    });
+    return;
+  }
+
+  const changed = new Set(params.changedIds);
+  const batch = params.segments
+    .filter((s) => changed.has(s.id))
+    .map((s) => ({ id: s.id, startTime: s.startTime, endTime: s.endTime }));
+
+  if (batch.length === 0) return;
+
+  await params.emit({ type: "framing.started", total: batch.length });
+
+  try {
+    const response = await lambdaClient.send(
+      new InvokeCommand({
+        FunctionName: ANALYZE_FRAMING_FUNCTION_NAME,
+        InvocationType: "RequestResponse",
+        Payload: JSON.stringify({
+          isDirectBatchStart: true,
+          projectId: params.projectId,
+          segments: batch,
+          targetAspectRatio: params.aspectRatio,
+        }),
+      }),
+    );
+
+    if (response.FunctionError) {
+      throw new Error(`framing lambda error: ${response.FunctionError}`);
+    }
+
+    const payload = response.Payload
+      ? (JSON.parse(Buffer.from(response.Payload).toString()) as {
+          statusCode?: number;
+          body?: string;
+        })
+      : null;
+
+    if ((payload?.statusCode ?? 200) >= 400) {
+      throw new Error(payload?.body ?? `status ${payload?.statusCode}`);
+    }
+
+    const jobId = parseJobId(payload?.body);
+    await setFramingMirror(params.projectId, {
+      jobId: jobId ?? "unknown",
+      status: "running",
+      total: batch.length,
+      lastCompleted: 0,
+      runId: params.runId,
+      startedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    await params.emit({
+      type: "framing.completed",
+      completed: 0,
+      total: batch.length,
+      failed: batch.length,
+      error: `Auto-framing could not be started: ${errorText(err)}`,
+    });
+  }
+}
+
+function parseJobId(body: string | undefined): string | undefined {
+  if (!body) return undefined;
+  try {
+    const parsed = JSON.parse(body) as { jobId?: string };
+    return parsed.jobId;
+  } catch {
+    return undefined;
+  }
+}
+
+// ============================================================================
+// Continuation
+// ============================================================================
+
+async function continueInNewInvocation(
+  projectId: string,
+  runId: string,
+): Promise<void> {
+  if (!SELF_FUNCTION_NAME) {
+    throw new Error("Cannot continue: AWS_LAMBDA_FUNCTION_NAME is not set.");
+  }
+  console.log(`[IQAgent] continuing run ${runId} in a fresh invocation`);
+  await lambdaClient.send(
+    new InvokeCommand({
+      FunctionName: SELF_FUNCTION_NAME,
+      InvocationType: "Event",
+      Payload: JSON.stringify({ projectId, runId, isContinuation: true }),
+    }),
+  );
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function normalizeToolName(name: string): ToolName | null {
+  return (TOOL_NAMES as string[]).includes(name) ? (name as ToolName) : null;
+}
+
+function stageForTool(name: ToolName | null): RunStage {
+  switch (name) {
+    case "edit_segments":
+      return "cutting";
+    case "check_budget":
+    case "finish_turn":
+      return "reviewing";
+    case "ask_user":
+      return "waiting_on_you";
+    default:
+      return "researching";
+  }
+}
+
+function buildToolResultBlock(
+  callId: string,
+  result: ToolResult,
+): ClaudeContentBlock {
+  if (!result.ok) {
+    return {
+      type: "tool_result",
+      tool_use_id: callId,
+      is_error: true,
+      content: [
+        {
+          type: "text",
+          text: `ERROR (${result.code}): ${result.message}\nWhat to do: ${result.hint}`,
+        },
+      ],
+    };
+  }
+
+  const content: ClaudeContentBlock[] = [];
+  const warningText =
+    result.warnings && result.warnings.length > 0
+      ? `\n\nWarnings:\n${result.warnings.map((w) => `- ${w}`).join("\n")}`
+      : "";
+  content.push({ type: "text", text: `${result.text}${warningText}` });
+
+  for (const image of result.images ?? []) {
+    content.push({ type: "text", text: `Frame at ${image.label}:` });
+    content.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: image.mediaType,
+        data: image.base64,
+      },
+    });
+  }
+
+  return { type: "tool_result", tool_use_id: callId, content };
+}
+
+/** Replace image blocks with a placeholder in all but the most recent turns. */
+export function stripOldImages(turns: StoredTurn[], keepLast: number): void {
+  const cutoff = Math.max(0, turns.length - keepLast);
+  for (let i = 0; i < cutoff; i++) {
+    turns[i] = { ...turns[i], content: stripImagesFromContent(turns[i].content) };
+  }
+}
+
+export function persistableTurns(turns: StoredTurn[]): StoredTurn[] {
+  return turns.map((t) => ({
+    role: t.role,
+    content: stripImagesFromContent(t.content),
+  }));
+}
+
+function stripImagesFromContent(content: unknown[]): unknown[] {
+  let removed = 0;
+  const mapped = content.map((raw) => {
+    const block = raw as Record<string, unknown>;
+    if (block.type === "image") {
+      removed += 1;
+      return { type: "text", text: "[frame image dropped from history]" };
+    }
+    if (block.type === "tool_result" && Array.isArray(block.content)) {
+      const inner = (block.content as unknown[]).map((c) => {
+        const item = c as Record<string, unknown>;
+        if (item.type === "image") {
+          removed += 1;
+          return { type: "text", text: "[frame image dropped from history]" };
+        }
+        return item;
+      });
+      return { ...block, content: inner };
+    }
+    return block;
+  });
+  return removed > 0 ? mapped : content;
+}
+
+function renderPending(
+  message: PendingMessage,
+  brief: Brief,
+  project: { facts: { title: string; duration: number; chunks: unknown[] } },
+  overrides: ExecContext["promptOverrides"],
+): { display: string; forModel: string } {
+  if (!message.isBrief) {
+    const prefix = message.answerTo ? "Answering your question: " : "";
+    return {
+      display: message.text,
+      forModel: `${prefix}${message.text}`,
+    };
+  }
+
+  const { text: template } = getPrompt("brief", overrides);
+  const chunkNote =
+    project.facts.chunks.length > 1
+      ? ` · indexed as ${project.facts.chunks.length} chunks (handled for you)`
+      : "";
+  const instructions = brief.userPrompt?.trim()
+    ? `**The producer also says:** ${brief.userPrompt.trim()}\n\n`
+    : "";
+
+  const text = renderTemplate(template, {
+    title: project.facts.title,
+    durationHuman: fmt(project.facts.duration),
+    durationSeconds: project.facts.duration.toFixed(0),
+    chunkNote,
+    format: brief.format ?? "compact_video",
+    platform: brief.platform ?? "unspecified",
+    assetType: brief.assetType ?? "unspecified",
+    targetLine: describeTarget(brief, project.facts.duration),
+    boundsLine: describeBounds(brief),
+    instructionsBlock: instructions,
+  });
+
+  return { display: text, forModel: text };
+}
+
+export { PROMPT_VERSION };
