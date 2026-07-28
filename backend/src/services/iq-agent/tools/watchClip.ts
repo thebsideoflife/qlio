@@ -157,7 +157,7 @@ export async function runWatchClip(params: {
       toolError(
         "window_too_large",
         `A ${Math.round((end - start) / 60)}-minute window is not a question, it is the whole video.`,
-        `Split it into windows of ${CLIP_WINDOW_WARN_SEC}s or less, or use search_video to narrow down first.`,
+        `Ask about a scene or a sequence instead, up to ${Math.round(MAX_CLIP_WINDOW_SEC / 60)} minutes. To find out what is in a stretch this long, read_transcript over it.`,
       ),
     );
   }
@@ -175,8 +175,12 @@ export async function runWatchClip(params: {
   }
 
   if (end - start > CLIP_WINDOW_WARN_SEC) {
+    // Not about latency, which measures near-flat across window sizes — the call
+    // is dominated by fixed overhead. It is about resolution: Pegasus returns an
+    // answer of roughly constant length however much footage it is given, so a
+    // very wide window buys breadth by spending detail.
     warnings.push(
-      `Watching ${Math.round((end - start) / 60)} minutes in one call takes a while and the producer is waiting. Narrower windows come back faster and answer more sharply.`,
+      `This window is ${Math.round((end - start) / 60)} minutes long, and the answer will be about as long as it would be for one minute — so expect a summary with individual moments averaged out of it. Fine for the shape of a sequence. If you are after a specific moment or a boundary, ask about a window that brackets it.`,
     );
   }
 

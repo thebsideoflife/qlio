@@ -95,6 +95,11 @@ export interface SystemBlock {
   cache_control?: { type: "ephemeral" };
 }
 
+export type ClaudeToolChoice =
+  | { type: "auto" }
+  | { type: "any" }
+  | { type: "tool"; name: string };
+
 export async function callClaude(params: {
   system: SystemBlock[];
   messages: ClaudeMessage[];
@@ -103,6 +108,8 @@ export async function callClaude(params: {
   temperature: number;
   /** Epoch-ms ceiling; attempts are trimmed to fit inside it. */
   deadlineAt?: number;
+  /** Omitted means `auto`, which is what the main loop wants. */
+  toolChoice?: ClaudeToolChoice;
 }): Promise<ClaudeResponse> {
   const tools = params.tools.map((t) => ({
     name: t.name,
@@ -133,8 +140,11 @@ export async function callClaude(params: {
         system: promptCacheSupported
           ? params.system
           : stripCacheControl(params.system),
-        messages: params.messages,
+        messages: promptCacheSupported
+          ? params.messages
+          : stripMessageCacheControl(params.messages),
         tools,
+        toolChoice: params.toolChoice,
         maxTokens: params.maxTokens,
         temperature: params.temperature,
         timeoutMs,
@@ -195,9 +205,13 @@ export async function callClaude(params: {
 
   try {
     return await invokeAnthropicApi({
-      system: stripCacheControl(params.system),
+      // Caching is decided inside, independently of `promptCacheSupported`:
+      // that flag records what Bedrock rejected, which says nothing about what
+      // the Anthropic API accepts.
+      system: params.system,
       messages: params.messages,
       tools,
+      toolChoice: params.toolChoice,
       maxTokens: params.maxTokens,
       temperature: params.temperature,
       timeoutMs: fallbackBudget,
@@ -217,6 +231,7 @@ async function invokeBedrock(params: {
   system: SystemBlock[];
   messages: ClaudeMessage[];
   tools: unknown[];
+  toolChoice?: ClaudeToolChoice;
   maxTokens: number;
   temperature: number;
   timeoutMs: number;
@@ -228,6 +243,7 @@ async function invokeBedrock(params: {
     system: params.system,
     messages: params.messages,
     tools: params.tools,
+    ...(params.toolChoice ? { tool_choice: params.toolChoice } : {}),
   });
 
   const controller = new AbortController();
@@ -280,6 +296,7 @@ async function invokeAnthropicApi(params: {
   system: SystemBlock[];
   messages: ClaudeMessage[];
   tools: unknown[];
+  toolChoice?: ClaudeToolChoice;
   maxTokens: number;
   temperature: number;
   timeoutMs: number;
@@ -296,18 +313,53 @@ async function invokeAnthropicApi(params: {
   }
 
   const client = new Anthropic({ apiKey: key.value, timeout: params.timeoutMs });
-  const message = (await client.messages.create({
-    model: ANTHROPIC_API_MODEL,
-    max_tokens: params.maxTokens,
-    temperature: params.temperature,
-    system: params.system as never,
-    messages: params.messages as never,
-    tools: params.tools as never,
-  })) as unknown as {
+
+  interface ApiResponse {
     content: ClaudeContentBlock[];
     stop_reason?: string;
-    usage?: { input_tokens?: number; output_tokens?: number };
-  };
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+  }
+
+  const send = (cached: boolean) =>
+    client.messages.create({
+      model: ANTHROPIC_API_MODEL,
+      max_tokens: params.maxTokens,
+      temperature: params.temperature,
+      system: (cached ? params.system : stripCacheControl(params.system)) as never,
+      messages: (cached
+        ? params.messages
+        : stripMessageCacheControl(params.messages)) as never,
+      tools: params.tools as never,
+      ...(params.toolChoice ? { tool_choice: params.toolChoice as never } : {}),
+    }) as unknown as Promise<ApiResponse>;
+
+  // Cached on this path too. The fallback fires when Bedrock is throttled,
+  // which is exactly when the request most needs to be cheap — and the two
+  // providers keep separate caches, so a run that has flipped over benefits
+  // from warming this one.
+  let message: ApiResponse;
+  try {
+    message = await send(true);
+  } catch (err) {
+    // This is the last line of defence for the run. If caching is the thing the
+    // API objects to, drop it and take the expensive answer over no answer.
+    // `cache_control_unsupported` is the specific classification for that
+    // complaint and is checked ahead of the generic 400, so it has to be listed
+    // here too or the retry never fires for the case it was written for.
+    const code = classifyModelError(err).code;
+    if (code !== "model_invalid_request" && code !== "cache_control_unsupported") {
+      throw err;
+    }
+    console.warn(
+      `[IQAgent] Anthropic rejected the cached request, retrying uncached: ${errorText(err)}`,
+    );
+    message = await send(false);
+  }
 
   if (!Array.isArray(message.content) || message.content.length === 0) {
     throw new ModelError(
@@ -323,8 +375,8 @@ async function invokeAnthropicApi(params: {
     usage: {
       inputTokens: message.usage?.input_tokens ?? 0,
       outputTokens: message.usage?.output_tokens ?? 0,
-      cacheReadTokens: 0,
-      cacheCreationTokens: 0,
+      cacheReadTokens: message.usage?.cache_read_input_tokens ?? 0,
+      cacheCreationTokens: message.usage?.cache_creation_input_tokens ?? 0,
     },
     source: "anthropic_api",
   };
@@ -418,6 +470,18 @@ export function classifyModelError(err: unknown): {
 
 function stripCacheControl(system: SystemBlock[]): SystemBlock[] {
   return system.map(({ type, text }) => ({ type, text }));
+}
+
+function stripMessageCacheControl(messages: ClaudeMessage[]): ClaudeMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    content: message.content.map((block) => {
+      if (typeof block !== "object" || block === null) return block;
+      if (!("cache_control" in block)) return block;
+      const { cache_control: _dropped, ...rest } = block as Record<string, unknown>;
+      return rest as ClaudeContentBlock;
+    }),
+  }));
 }
 
 export function errorText(err: unknown): string {

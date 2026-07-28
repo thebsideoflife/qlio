@@ -75,7 +75,8 @@ export async function generateWithStoryIQ(
     );
   }
 
-  // Get video duration - prioritize input (from frontend/asset), then 12Labs, then transcript
+  // Get video duration from asset / TwelveLabs media metadata only.
+  // Never derive duration from transcript timestamps.
   let videoDuration = input.videoDuration || 0;
 
   if (videoDuration > 0) {

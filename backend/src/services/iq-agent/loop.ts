@@ -17,6 +17,7 @@ import { randomUUID } from "crypto";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import {
   CONTINUATION_RESERVE_MS,
+  FINALIZE_RESERVE_MS,
   HEARTBEAT_MS,
   MAX_ITERATIONS,
   MAX_OUTPUT_TOKENS,
@@ -34,6 +35,7 @@ import {
 import { appendEvent, appendEvents } from "./events";
 import { executeTool, type ExecContext, type ExecControl } from "./executor";
 import { computeLedger, fmt } from "./ledger";
+import { finalizeDeliveryMetadata } from "./metadata";
 import { getPrompt, renderTemplate, PROMPT_VERSION } from "./prompts";
 import {
   commitSegments,
@@ -41,6 +43,7 @@ import {
   loadProjectContext,
   ProjectContextError,
 } from "./project";
+import { loadTranscriptWords } from "./tools/transcript";
 import {
   claimRunEpoch,
   clearPendingMessages,
@@ -71,6 +74,7 @@ const lambdaClient = new LambdaClient({});
 const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 const ANALYZE_FRAMING_FUNCTION_NAME = process.env.ANALYZE_FRAMING_FUNCTION_NAME;
 const BUCKET_NAME = process.env.BUCKET_NAME;
+const PROJECTS_TABLE = process.env.PROJECTS_TABLE;
 
 /** How many recent turns keep their images in context. */
 const IMAGE_RETENTION_TURNS = 2;
@@ -193,17 +197,33 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
       cost: { ...thread.cost },
       watchHistory: [],
       transcriptWords: null,
+      // Carried forward across runs: a follow-up should not have to re-read the
+      // timeline to prove it already knows what is on it.
+      examined: thread.examined ?? [],
       askCount: run.askCount ?? 0,
       finishRefusals: run.finishRefusals ?? 0,
+      searchMisses: 0,
+      searchSeen: [],
+      blindSpotRefusals: 0,
       promptOverrides: thread.promptOverrides,
       onProgress: async () => undefined,
       deadlineAt: Date.now() + params.getRemainingTimeMs(),
     };
     ctxRef = ctx;
 
-    let ledger: Ledger = computeLedger(ctx.segments, brief, project.facts.duration);
+    let ledger: Ledger = computeLedger(ctx.segments, brief, project.facts.duration, {
+      examined: ctx.examined,
+      hasTranscript: Boolean(project.facts.transcriptS3Uri),
+    });
     let noToolNudges = 0;
-    let finishOutcome: { summary: string; concerns: string[] } | null = null;
+    // A run that was already told to finish, but ran out of clock before it
+    // could write delivery metadata, resumes here rather than re-entering the
+    // loop and asking the model to decide all over again.
+    let finishOutcome: { summary: string; concerns: string[] } | null =
+      run.pendingFinish ?? null;
+    // Cleared if the resumed finish gets abandoned below, so that a *new* finish
+    // decided later in this same invocation still gets a full clock of its own.
+    let resumedPendingFinish = finishOutcome !== null;
     let askOutcome: { question: string; suggestions: string[]; questionId: string } | null =
       null;
     let cancelled = false;
@@ -233,7 +253,21 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
       return true;
     };
 
-    await drain();
+    const drainedOnEntry = await drain();
+
+    // The producer typed while we were wrapping up. Their message is worth more
+    // than the finish we were holding, so drop it and go back to work.
+    if (drainedOnEntry && finishOutcome) {
+      finishOutcome = null;
+      resumedPendingFinish = false;
+      run.pendingFinish = null;
+      ctx.finishRefusals = 0;
+      run.finishRefusals = 0;
+      // Persisted now rather than at the end of the first iteration: if this
+      // invocation dies in between, the next one must not resume a finish the
+      // producer has already overtaken.
+      await persistLoopState();
+    }
 
     if (turns.length === 0) {
       throw new ProjectContextError(
@@ -259,6 +293,11 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
         cancelled = true;
         break;
       }
+
+      // A resumed finish comes in already decided. Everything above still has to
+      // run first — the lock, the epoch fence and a cancel all outrank it — but
+      // there is no work left to do below.
+      if (finishOutcome) break;
 
       if (run.iterations >= MAX_ITERATIONS) {
         finishOutcome = {
@@ -346,6 +385,7 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
       ctx.cost.tokensIn += response.usage.inputTokens;
       ctx.cost.tokensOut += response.usage.outputTokens;
       ctx.cost.cacheReadTokens += response.usage.cacheReadTokens;
+      ctx.cost.cacheWriteTokens += response.usage.cacheCreationTokens;
 
       const proseBlocks = response.blocks.filter(
         (b) => (b as { type?: string }).type === "text",
@@ -454,6 +494,10 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
           ok: result.ok,
           summary: result.summary,
           digest: result.ok ? result.digest : undefined,
+          // What the model was actually told. A watch_clip answer otherwise
+          // survives only in the model's context and the S3 cache, which makes
+          // it impossible to audit later why a boundary was chosen.
+          output: result.ok ? truncateOutput(result.text) : undefined,
           warnings: result.ok ? result.warnings : undefined,
           error: result.ok
             ? undefined
@@ -559,12 +603,58 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
     }
 
     if (finishOutcome) {
+      // Delivery metadata is minutes of model calls and FFmpeg work. Rather
+      // than start it on a clock that cannot finish it — and be killed halfway
+      // through, leaving the run holding the lock — hand the whole wrap-up to a
+      // fresh invocation. Only ever once: `resumedPendingFinish` is already
+      // true on the continuation, so this cannot become a loop.
+      if (
+        !resumedPendingFinish &&
+        params.getRemainingTimeMs() < FINALIZE_RESERVE_MS
+      ) {
+        run.pendingFinish = finishOutcome;
+        await persistLoopState();
+        await continueInNewInvocation(projectId, runId);
+        return;
+      }
+
       await emit({
         type: "state.updated",
         segments: ctx.segments,
         ledger,
         cost: ctx.cost,
       });
+
+      // Not "finished" yet: the run still holds the lock through this, and
+      // anything polling the thread needs to see that.
+      await setStage("reviewing");
+      await writeDeliveryMetadata();
+
+      // Wrapping up now takes minutes, and a message sent during it is queued
+      // behind a run that is seconds from releasing the lock and never reading
+      // the queue again. Fold it into history and hand it to a fresh worker
+      // with a full clock, rather than restarting work on whatever is left of
+      // this one. This cannot ping-pong: the drain consumes what it reads, so a
+      // continuation only happens again if the producer types again.
+      if (await drain()) {
+        finishOutcome = null;
+        run.pendingFinish = null;
+        ctx.finishRefusals = 0;
+        run.finishRefusals = 0;
+        await persistLoopState();
+        await continueInNewInvocation(projectId, runId);
+        return;
+      }
+
+      // Again, because the metadata pass spends tokens and the panel would
+      // otherwise show a cost that quietly understates the run.
+      await emit({
+        type: "state.updated",
+        segments: ctx.segments,
+        ledger,
+        cost: ctx.cost,
+      });
+
       await setStage("finished");
       await emit({
         type: "run.completed",
@@ -574,7 +664,12 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
       });
       await finish({
         status: "completed",
-        runState: { ...run, status: "completed", stage: "finished" },
+        runState: {
+          ...run,
+          status: "completed",
+          stage: "finished",
+          pendingFinish: null,
+        },
       });
       return;
     }
@@ -591,11 +686,79 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
           segments: ctx.segments,
           ledger,
           cost: ctx.cost,
+          examined: ctx.examined,
           brief,
           run: { ...run, reframeIds: Array.from(pendingChangedIds) },
         },
         epoch,
       );
+    }
+
+    /**
+     * Describe the finished cut while the run still knows what is in it.
+     *
+     * Wrapped so that nothing in here can stop the run completing: a producer
+     * whose cut is done must not be told the run failed because a tag was
+     * missing. Anything not written stays detectably incomplete, and the
+     * Export pipeline fills it in on the old path.
+     */
+    async function writeDeliveryMetadata(): Promise<void> {
+      try {
+        // The metadata pass reads the dialogue for every segment it describes.
+        // A run that only searched and watched never loaded it.
+        if (ctx.transcriptWords === null && project.facts.transcriptS3Uri) {
+          ctx.transcriptWords = await loadTranscriptWords(
+            project.facts.transcriptS3Uri,
+          ).catch((err) => {
+            console.warn(
+              `[IQAgent] metadata: transcript unavailable: ${errorText(err)}`,
+            );
+            return [];
+          });
+        }
+
+        const result = await finalizeDeliveryMetadata({
+          projectId,
+          facts: project.facts,
+          brief,
+          segments: ctx.segments,
+          transcriptWords: ctx.transcriptWords,
+          bucketName: BUCKET_NAME,
+          projectsTable: PROJECTS_TABLE,
+          // Leave the release itself room to land even if this runs long.
+          deadlineAt:
+            Date.now() +
+            Math.max(0, params.getRemainingTimeMs() - CONTINUATION_RESERVE_MS),
+          onProgress: (note) => {
+            void emit({ type: "notice", level: "info", message: note }).catch(
+              () => undefined,
+            );
+          },
+          onUsage: (usage) => {
+            ctx.cost.tokensIn += usage.inputTokens;
+            ctx.cost.tokensOut += usage.outputTokens;
+            ctx.cost.cacheReadTokens += usage.cacheReadTokens;
+            ctx.cost.cacheWriteTokens += usage.cacheCreationTokens;
+          },
+        });
+
+        if (result.targeted > 0) {
+          await emit({
+            type: "notice",
+            level: result.incomplete > 0 ? "warn" : "info",
+            message: result.note,
+          });
+        }
+      } catch (err) {
+        console.error(`[IQAgent] run ${runId}: delivery metadata failed:`, err);
+        await emit({
+          type: "notice",
+          level: "warn",
+          message:
+            "Your cut is saved, but the delivery metadata could not be written this run. Open Export and it will be generated there.",
+          detail: errorText(err),
+        }).catch(() => undefined);
+      }
     }
 
     async function finalizeFailure(
@@ -653,6 +816,7 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
           segments: ctx.segments,
           ledger,
           cost: ctx.cost,
+          examined: ctx.examined,
           openQuestionId: opts.openQuestionId ?? null,
         },
         epoch,
@@ -696,6 +860,7 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
         toolLedger,
         segments: ctxRef?.segments,
         cost: ctxRef?.cost,
+        examined: ctxRef?.examined,
       },
       epoch,
     ).catch((e) => {
@@ -835,6 +1000,18 @@ async function continueInNewInvocation(
 
 function normalizeToolName(name: string): ToolName | null {
   return (TOOL_NAMES as string[]).includes(name) ? (name as ToolName) : null;
+}
+
+/**
+ * Event rows are capped, and a transcript read can be 60 KB on its own. Keep
+ * enough to reconstruct a decision without letting one read crowd the log.
+ */
+const MAX_EVENT_OUTPUT_CHARS = 6000;
+
+function truncateOutput(text: string): string {
+  return text.length > MAX_EVENT_OUTPUT_CHARS
+    ? `${text.slice(0, MAX_EVENT_OUTPUT_CHARS)}\n… (${text.length - MAX_EVENT_OUTPUT_CHARS} more characters)`
+    : text;
 }
 
 function stageForTool(name: ToolName | null): RunStage {

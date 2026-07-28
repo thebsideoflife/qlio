@@ -9,9 +9,11 @@
  * the agent picks or where it places a boundary.
  */
 
+import { blindSpotFloor, findBlindSpots, mergeIntervals, totalSeconds } from "./examined";
 import type {
   AgentSegment,
   Brief,
+  Interval,
   Ledger,
   LedgerOverlap,
   SegmentBoundViolation,
@@ -77,10 +79,18 @@ export function segmentDuration(seg: Pick<AgentSegment, "startTime" | "endTime">
   return Math.max(0, seg.endTime - seg.startTime);
 }
 
+export interface CoverageInput {
+  /** Everything the agent has looked at this session. */
+  examined: Interval[];
+  /** Drives how strict the blind-spot floor is; examining is dear without one. */
+  hasTranscript: boolean;
+}
+
 export function computeLedger(
   segments: AgentSegment[],
   brief: Brief | undefined,
   videoDuration: number,
+  coverage?: CoverageInput,
 ): Ledger {
   const sorted = [...segments].sort((a, b) => a.startTime - b.startTime);
   const totalDuration = sorted.reduce((sum, s) => sum + segmentDuration(s), 0);
@@ -127,7 +137,7 @@ export function computeLedger(
   }
 
   const overlaps = findOverlaps(sorted);
-  const coverage = computeCoverage(sorted, videoDuration);
+  const coverageReport = computeCoverage(sorted, videoDuration, coverage);
 
   const blocking: string[] = [];
   const warnings: string[] = [];
@@ -162,7 +172,7 @@ export function computeLedger(
     blocking.push(`Segments ${o.a} and ${o.b} overlap by ${fmt(o.seconds)}.`);
   }
 
-  if (coverage.spreadWarning) warnings.push(coverage.spreadWarning);
+  if (coverageReport.spreadWarning) warnings.push(coverageReport.spreadWarning);
 
   if (status === "no_target" && sorted.length > 0) {
     warnings.push(
@@ -184,7 +194,7 @@ export function computeLedger(
     },
     perSegment: { min, max, violations },
     overlaps,
-    coverage,
+    coverage: coverageReport,
     blocking,
     warnings,
   };
@@ -211,6 +221,7 @@ export function findOverlaps(sortedSegments: AgentSegment[]): LedgerOverlap[] {
 function computeCoverage(
   sorted: AgentSegment[],
   videoDuration: number,
+  input?: CoverageInput,
 ): Ledger["coverage"] {
   const quartiles: [number, number, number, number] = [0, 0, 0, 0];
 
@@ -249,7 +260,26 @@ function computeCoverage(
     }
   }
 
-  return { quartiles, largestGap, spreadWarning };
+  const examined = mergeIntervals(input?.examined ?? []);
+  const examinedSeconds = totalSeconds(examined);
+  const blindSpots = input
+    ? findBlindSpots({
+        examined,
+        segments: sorted,
+        videoDuration,
+        floorSec: blindSpotFloor(videoDuration, input.hasTranscript),
+      })
+    : [];
+
+  return {
+    quartiles,
+    largestGap,
+    spreadWarning,
+    blindSpots,
+    examinedSeconds: round(examinedSeconds),
+    examinedPercent:
+      videoDuration > 0 ? round((examinedSeconds / videoDuration) * 100) : 0,
+  };
 }
 
 function ordinal(n: number): string {
@@ -324,6 +354,18 @@ export function renderLedger(ledger: Ledger): string {
         : ""),
   );
 
+  lines.push(
+    `Examined so far: ${fmt(ledger.coverage.examinedSeconds)} of the source (${ledger.coverage.examinedPercent.toFixed(0)}%).`,
+  );
+
+  if (ledger.coverage.blindSpots.length > 0) {
+    lines.push(
+      "",
+      "NOT YET LOOKED AT (you cannot finish while any of these remain):",
+      renderBlindSpots(ledger.coverage.blindSpots),
+    );
+  }
+
   if (ledger.blocking.length > 0) {
     lines.push("", "BLOCKING (must be resolved before you finish):");
     for (const b of ledger.blocking) lines.push(`  - ${b}`);
@@ -337,6 +379,17 @@ export function renderLedger(ledger: Ledger): string {
   }
 
   return lines.join("\n");
+}
+
+export function renderBlindSpots(
+  spots: Array<{ start: number; end: number; seconds: number }>,
+): string {
+  return spots
+    .map(
+      (s) =>
+        `  - ${fmtTimecode(s.start)}–${fmtTimecode(s.end)} (${fmt(s.seconds)}) — never examined, nothing cut from it`,
+    )
+    .join("\n");
 }
 
 /** The segment table rendered for Claude. Regenerated fresh every iteration. */

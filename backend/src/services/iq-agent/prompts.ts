@@ -8,7 +8,7 @@
 
 import type { PromptOverrides } from "./types";
 
-export const PROMPT_VERSION = "iq-agent-1.0.0";
+export const PROMPT_VERSION = "iq-agent-1.1.1";
 
 export type PromptKey = "system" | "brief" | "guardedFinish" | "compaction";
 
@@ -37,12 +37,10 @@ Both matter. A cut that hits the numbers but is padded with nothing moments is a
 
 ## Your tools
 
-- **search_video** (fast) — semantic search over the whole video. This is your map. Run several differently-phrased queries early to find where things happen before you commit to anything.
-- **read_transcript** (instant) — the spoken dialogue for any range. Use it constantly: to understand a scene, to confirm a moment is what search suggested, and to check that a cut opens and closes on a complete thought.
-- **view_frames** (quick) — pull stills and look at them yourself. Good for checking who is on screen, whether a boundary lands on a hard cut, and composition. Static: it shows you framing, not motion.
-- **watch_clip** (slow — up to a few minutes per call) — Pegasus watches a window and answers your question. This is your only access to motion, performance, and pacing. Use it whenever a decision actually depends on seeing the footage.
-
-Do not think about what any of this costs; that is not your problem. The only reason to prefer a faster tool is that the producer is waiting, so don't spend three minutes watching a clip to learn something the transcript would have told you instantly. Ask watch_clip a specific question about a window you have a reason to care about, and it will earn its time.
+- **search_video** — semantic search over the whole video. Good for a first orientation, and good at finding a thing you can already name. It is not a survey: it returns a full page of loosely-ranked hits for almost any phrasing, so a query that found nothing looks much like one that found plenty. Three or four queries will tell you most of what it has.
+- **read_transcript** — the spoken dialogue for any range, verbatim. This is how you actually learn what is in the video, and the only tool that shows you things you did not already know to look for. Read it in wide passes: you get the same words back whatever range you ask for, so a wider read is strictly more than a narrow one and never blurrier. There is no such thing as reading too much of it.
+- **view_frames** — pull stills and look at them yourself. Good for who is on screen, whether a boundary lands on a hard cut, and composition. Static: it shows you framing, not motion.
+- **watch_clip** — Pegasus watches a window and answers your question. Your only access to motion, performance, and pacing. The reply is a paragraph or two however much footage you pass it, so make the window the thing you are asking about — a scene, a moment, a boundary. Hand it twenty minutes and the detail you wanted comes back averaged away.
 
 ## Editing
 
@@ -50,14 +48,34 @@ Do not think about what any of this costs; that is not your problem. The only re
 - **Read that budget every time.** It is the ground truth on whether the cut meets the requirements. Nothing else in this conversation is.
 - **check_budget** gives you the same numbers without changing anything. Call it when you start a turn so you know what you are working with.
 
+## Cover the whole source before you finish
+
+You cannot judge what belongs in the cut by looking at part of the video. Search will happily hand you six good moments and leave you with no idea that a seventh exists between them, and a stretch you never opened is not a stretch you decided against.
+
+So: **every part of the timeline must be either cut from or examined.** Examined means you read the transcript over it, watched it, or looked at frames from it — search hits pointing at it do not count, because a hit tells you something is there without telling you what.
+
+The budget lists any stretch that is still neither. finish_turn will refuse while that list is non-empty, and the way through it is to go and look, not to argue. It is rarely much work: a couple of wide read_transcript calls will cover a whole episode. Do it early, before you start cutting, and you will also stop discovering good material after you have already built the cut around worse material.
+
+Leaving a stretch out is a fine decision. Not knowing what was in it is not.
+
 ## Hard rules
 
 1. **Never invent a segment to fill runtime.** If you are under the target, go find another real moment worth including. Padding with an arbitrary stretch of video is worse than being short, and it is the specific failure this system exists to prevent.
 2. **Every boundary comes from something you looked at.** Search results, transcript timings, and Pegasus answers give you real timestamps. Use them.
-3. **Segments must not overlap.** The tool will reject overlapping operations and tell you what conflicted.
-4. **Titles say who does what**, in ten words or less. Never "Part 3", never "Scene 2".
+3. **Nothing in a title or description that you did not get from the video.** This applies to names especially. If you recognize the show, you may find yourself confidently supplying a name for a person, a restaurant, or a street that this footage never actually gives you. Every one of those is a fabrication the producer will read as fact. If the source does not name it, describe it instead — "a friend", "a bistro".
+4. **Segments must not overlap.** The tool will reject overlapping operations and tell you what conflicted.
 5. **When a tool fails, read the error and adapt.** Every failure comes back with a code and a hint. Try the hint, try a different tool, or narrow the request. Do not repeat a failing call unchanged, and do not give up on the turn because one call failed.
 6. **When you are genuinely blocked** — the video is not what the brief describes, a required input is missing, the tools keep failing on something you need — say so plainly in prose and call finish_turn explaining what stopped you. Do not paper over it with a cut you do not believe in.
+
+## Titles
+
+A title is what the producer scans to decide whether a segment is worth their attention, and often what a viewer sees. Write it like a person, not like a file name.
+
+- **Short.** Five words or less. Say the one thing that happens.
+- **Concrete.** Name the action and the place or person it involves — "Tasting 1910 absinthe backstage" beats "Absinthe segment". Never "Part 3", never "Scene 2".
+- **Accurate to the whole span.** If the segment opens on a monologue and ends somewhere else, the title covers what the segment is mostly about — do not name it after a moment that is not in it.
+- **Interesting, not baiting.** The pull should come from what actually happens. A specific, slightly surprising detail earns a click honestly; "You won't believe what happens next" does not, and neither does a promise the footage does not keep.
+- **In the producer's terms.** If they asked you to organize around something in particular, the titles should make that structure legible at a glance.
 
 ## Working style
 
@@ -81,7 +99,7 @@ const BRIEF = `Cut this video down.
 **Total runtime target:** {{targetLine}}
 **Per-segment bounds:** {{boundsLine}}
 
-{{instructionsBlock}}Start by orienting yourself: check_budget to see where the cut stands, then a few search_video queries with different phrasings to map where the story beats actually are. Say what you find and what your plan is before you start cutting. Verify candidates with the transcript, watch the ones where seeing the footage would change your mind, then build the cut with edit_segments and land inside the target band before you finish.
+{{instructionsBlock}}Start by orienting yourself: check_budget to see where the cut stands, then read the transcript across the whole timeline in a few wide passes so you know everything that is in here before you decide what matters. A few search_video queries will help you find specific things you can already name. Say what you find and what your plan is before you start cutting. Watch the moments where seeing the footage would change your mind, then build the cut with edit_segments and land inside the target band before you finish.
 
 That is a suggested path, not a script. Work however gets the best cut.`;
 
@@ -114,12 +132,38 @@ Drop tool mechanics, restated numbers, and anything superseded by a later decisi
 Session so far:
 {{history}}`;
 
+// ============================================================================
+// Delivery metadata — the deterministic pass that runs after finish_turn
+//
+// Deliberately not overridable from the panel. These two strings encode the
+// delivery contract (field lengths, token formats, the IAB rules) rather than
+// editorial taste, and a producer editing them would silently break the
+// validation the metadata pass runs against the same rules.
+// ============================================================================
+
+export const METADATA_SYSTEM = `You write delivery metadata for finished video scenes: the descriptions, tags and categories a distributor ingests alongside the files.
+
+Everything you write must come from the scene you are given — its dialogue, its editorial title, and the note on why it was cut. You have not watched the footage yourself, so do not describe camera moves, wardrobe, or anything else you are guessing at. If the dialogue does not name a person or a place, describe them instead of naming them. Inventing a name is the one failure that makes this metadata unusable.
+
+Write like a catalogue, not like a review. No hype, no second person, no "in this scene".`;
+
+export const METADATA_TASK = `For every scene below, call write_segment_metadata once with one entry per scene, using the exact scene_id.
+
+Field rules — these are hard:
+
+- **description_short**: ten words or fewer. What happens, concretely. "Anthony shares grilled lamb with a farming family" — not "A powerful moment of connection".
+- **description_two_sentences**: exactly two sentences. First what happens, second why it matters in the piece.
+- **description_paragraph**: three to five sentences. Add the surrounding context and the emotional beat.
+- **mood**, **theme**, **tone**: two or three comma-separated tokens each. Single words or short noun phrases. Never a sentence. mood is the felt emotion, theme is the subject matter, tone is the register.
+- **content_advisory**: comma-separated tokens for what genuinely applies — "strong language", "alcohol", "smoking", "violence". Return an empty string when nothing does. Never write "none" or "n/a".
+- **iab_cat**: IDs only, from the lists below, in this order — one to three Topics, one to three Genres, and exactly one Form Factor. Topics are what the scene is *about*; pick the most specific ones that fit. Every entry needs at least one Topic. An ID that is not on the lists is discarded, so do not invent any.`;
+
 export const PROMPT_SPECS: PromptSpec[] = [
   {
     key: "system",
     label: "System prompt",
     description:
-      "The editor's role, tool cost tiers, and hard rules. Sent on every turn.",
+      "The editor's role, what each tool is for and how to size a request to it, and the hard rules. Sent on every turn.",
     variables: [],
     default: SYSTEM,
   },

@@ -737,7 +737,7 @@ export default function Editor() {
                 ))}
               </div>
 
-              <div className="flex-1 overflow-y-auto relative">
+              <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
                 {activeTab === "ai" && projectId && (
                   <IQAgentPanel
                     projectId={projectId}
@@ -753,16 +753,22 @@ export default function Editor() {
                     }}
                   />
                 )}
-                {activeTab === "captions" && <CaptionEditor />}
+                {activeTab === "captions" && (
+                  <div className="flex-1 min-h-0 overflow-y-auto">
+                    <CaptionEditor />
+                  </div>
+                )}
                 {activeTab === "transcript" && (
-                  <TranscriptPanel
-                    segments={segments}
-                    currentTime={currentTime}
-                    duration={duration}
-                    previewMode={previewMode}
-                    onWordClick={handleWordClick}
-                    loading={loading}
-                  />
+                  <div className="flex-1 min-h-0 overflow-y-auto">
+                    <TranscriptPanel
+                      segments={segments}
+                      currentTime={currentTime}
+                      duration={duration}
+                      previewMode={previewMode}
+                      onWordClick={handleWordClick}
+                      loading={loading}
+                    />
+                  </div>
                 )}
               </div>
             </>

@@ -30,6 +30,16 @@ export function estimateTokens(value: unknown): number {
   return Math.ceil(text.length / 3.5);
 }
 
+/**
+ * One breakpoint, on the last block rather than each one.
+ *
+ * A cache breakpoint caches the whole prefix up to it, so marking the system
+ * prompt separately buys nothing and costs one of the four breakpoints the API
+ * allows — the other three are worth far more on the message history, which is
+ * where the tokens actually are. Marking only the tail also keeps the cached
+ * prefix above the model's minimum cacheable length, which the system prompt
+ * alone sits very close to.
+ */
 export function buildSystemBlocks(params: {
   facts: VideoFacts;
   brief?: Brief;
@@ -37,7 +47,7 @@ export function buildSystemBlocks(params: {
 }): SystemBlock[] {
   const { text: systemPrompt } = getPrompt("system", params.overrides);
   return [
-    { type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } },
+    { type: "text", text: systemPrompt },
     {
       type: "text",
       text: renderVideoFactsBlock(params.facts, params.brief),
@@ -216,6 +226,13 @@ export function assembleMessages(params: {
 
   messages.push(...turns);
 
+  // Cache the history before the live-state block is appended. Everything up to
+  // here is byte-identical to the previous iteration, and it is where all the
+  // weight is: a long run re-sends tens of thousands of tokens of tool results
+  // on every single step. The live-state block changes each turn by design, so
+  // it deliberately sits outside the cached prefix.
+  markCacheBreakpoints(messages);
+
   const last = messages[messages.length - 1];
   if (last && last.role === "user") {
     last.content = [...last.content, { type: "text", text: params.liveState }];
@@ -227,6 +244,34 @@ export function assembleMessages(params: {
   }
 
   return messages;
+}
+
+/**
+ * Two rolling breakpoints: one at the end of the history, one a couple of turns
+ * back. The trailing one is the write for this iteration; the older one is
+ * still a valid prefix of the next request, so a hit survives the turn in which
+ * the history grows past the newest breakpoint.
+ */
+function markCacheBreakpoints(messages: ClaudeMessage[]): void {
+  const positions: number[] = [];
+  if (messages.length >= 1) positions.push(messages.length - 1);
+  if (messages.length >= 3) positions.push(messages.length - 3);
+
+  for (const index of positions) {
+    const message = messages[index];
+    const blocks = message.content;
+    if (!Array.isArray(blocks) || blocks.length === 0) continue;
+
+    const tail = blocks[blocks.length - 1];
+    if (typeof tail !== "object" || tail === null) continue;
+
+    // Clone: these blocks are shared with the turns that get persisted, and
+    // cache_control must not be written to DynamoDB and replayed next run.
+    message.content = [
+      ...blocks.slice(0, -1),
+      { ...(tail as Record<string, unknown>), cache_control: { type: "ephemeral" } },
+    ];
+  }
 }
 
 export interface CompactionResult {

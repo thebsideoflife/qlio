@@ -220,25 +220,48 @@ export function runReadTranscript(params: {
           ? ` Nearest silence boundary: ${fmtTimecode(before.gapStart)}–${fmtTimecode(before.gapEnd)}.`
           : ""),
       summary: `No dialogue ${fmtTimecode(start)}–${fmtTimecode(end)}`,
-      digest: { start, end, words: 0 },
+      // Silence is a real observation about the whole range, not a short read.
+      digest: { start, end, coveredEnd: end, words: 0 },
     };
   }
 
-  let body: string;
-  if (granularity === "words") {
-    body = inRange
-      .map((w) => `${w.start.toFixed(2)}–${w.end.toFixed(2)} ${w.value}`)
-      .join("\n");
-  } else {
-    body = groupWordsIntoLines(inRange)
-      .map((line) => `[${fmtTimecode(line.start)}] ${line.text}`)
-      .join("\n");
+  const rendered: Array<{ text: string; end: number }> =
+    granularity === "words"
+      ? inRange.map((w) => ({
+          text: `${w.start.toFixed(2)}–${w.end.toFixed(2)} ${w.value}`,
+          end: w.end,
+        }))
+      : groupWordsIntoLines(inRange).map((line) => ({
+          text: `[${fmtTimecode(line.start)}] ${line.text}`,
+          end: line.end,
+        }));
+
+  // Truncation has to report the timestamp it stopped at, not just that it
+  // happened. The caller credits this range as examined, and crediting a range
+  // whose second half was cut off would let a long source pass the coverage
+  // gate on a read nobody actually saw the end of.
+  const kept: string[] = [];
+  let chars = 0;
+  let coveredEnd = end;
+  for (const line of rendered) {
+    if (chars + line.text.length + 1 > TRANSCRIPT_MAX_CHARS) {
+      coveredEnd = kept.length > 0 ? rendered[kept.length - 1].end : start;
+      break;
+    }
+    kept.push(line.text);
+    chars += line.text.length + 1;
   }
 
-  if (body.length > TRANSCRIPT_MAX_CHARS) {
-    body = `${body.slice(0, TRANSCRIPT_MAX_CHARS)}\n… (truncated)`;
+  const truncated = kept.length < rendered.length;
+  let body = kept.join("\n");
+  if (truncated) {
+    body = `${body}\n… (truncated)`;
     warnings.push(
-      `Output truncated at ${TRANSCRIPT_MAX_CHARS} characters. Read a narrower range for the rest.`,
+      `Output truncated at ${TRANSCRIPT_MAX_CHARS} characters — this covers ${fmtTimecode(
+        start,
+      )}–${fmtTimecode(coveredEnd)}, not the full range you asked for. Read from ${fmtTimecode(
+        coveredEnd,
+      )} onward for the rest.`,
     );
   }
 
@@ -258,16 +281,20 @@ export function runReadTranscript(params: {
     );
   }
 
-  const header = `Dialogue ${fmtTimecode(start)}–${fmtTimecode(end)} (${inRange.length} words):`;
+  const header = `Dialogue ${fmtTimecode(start)}–${fmtTimecode(coveredEnd)} (${
+    kept.length
+  } of ${rendered.length} ${granularity === "words" ? "words" : "lines"}):`;
   const footer = edges.length > 0 ? `\n\nEdges — ${edges.join("; ")}.` : "";
 
   return {
     ok: true,
     text: `${header}\n${body}${footer}`,
-    summary: `Read dialogue ${fmtTimecode(start)}–${fmtTimecode(end)} · ${inRange.length} words`,
+    summary: `Read dialogue ${fmtTimecode(start)}–${fmtTimecode(coveredEnd)} · ${inRange.length} words`,
     digest: {
       start,
       end,
+      /** How far the output actually reaches, which truncation can cut short. */
+      coveredEnd,
       words: inRange.length,
       firstLine: groupWordsIntoLines(inRange)[0]?.text?.slice(0, 90),
     },

@@ -234,6 +234,9 @@ export async function runSearchVideo(params: {
       query,
       matches: results.length,
       best: `${fmtTimecode(best.start)}–${fmtTimecode(best.end)}`,
+      // Where the hits landed, so the caller can tell a search that opened up
+      // new territory from one that only re-found what is already known.
+      hits: results.map((h) => ({ start: h.start, end: h.end })),
     },
     warnings: warnings.length > 0 ? warnings : undefined,
   };

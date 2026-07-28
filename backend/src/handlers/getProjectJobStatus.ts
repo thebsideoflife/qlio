@@ -6,6 +6,7 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { checkAuth } from "../utils/auth";
+import { getActiveAgentRun } from "../services/iq-agent/thread";
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
@@ -30,6 +31,14 @@ interface JobStatus {
   }>;
 }
 
+/** Just enough for a client to know the agent owns the cut right now. */
+interface AgentRunStatus {
+  runId: string;
+  status: string;
+  stage: string;
+  startedAt?: string;
+}
+
 interface ProjectJobStatusResponse {
   projectId: string;
   generationJob: JobStatus | null;
@@ -37,6 +46,29 @@ interface ProjectJobStatusResponse {
   exportMetadataJob: JobStatus | null;
   // Include active render job if any
   activeRenderJobId: string | null;
+  /** Null when no live agent run owns this project. Also null if the lookup failed. */
+  agentRun: AgentRunStatus | null;
+}
+
+/**
+ * Fails open: a project with no agent thread, or an unreachable table, reads as
+ * "no agent running" rather than breaking the poll every other panel depends on.
+ */
+async function readAgentRun(projectId: string): Promise<AgentRunStatus | null> {
+  if (!process.env.AGENT_THREADS_TABLE) return null;
+  try {
+    const run = await getActiveAgentRun(projectId);
+    if (!run) return null;
+    return {
+      runId: run.runId,
+      status: run.status,
+      stage: run.stage,
+      startedAt: run.startedAt,
+    };
+  } catch (err) {
+    console.warn("[JobStatus] agent run lookup failed:", err);
+    return null;
+  }
 }
 
 /**
@@ -62,14 +94,17 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   }
 
   try {
-    const result = await docClient.send(
-      new GetCommand({
-        TableName: PROJECTS_TABLE,
-        Key: { projectId },
-        // Only fetch job-related fields
-        ProjectionExpression: "projectId, generationJob, framingJob, exportMetadataJob, activeRenderJobId",
-      })
-    );
+    const [result, agentRun] = await Promise.all([
+      docClient.send(
+        new GetCommand({
+          TableName: PROJECTS_TABLE,
+          Key: { projectId },
+          // Only fetch job-related fields
+          ProjectionExpression: "projectId, generationJob, framingJob, exportMetadataJob, activeRenderJobId",
+        })
+      ),
+      readAgentRun(projectId),
+    ]);
 
     if (!result.Item) {
       return {
@@ -177,6 +212,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         "exportMetadataJob",
       ),
       activeRenderJobId: project.activeRenderJobId || null,
+      agentRun,
     };
 
     return {

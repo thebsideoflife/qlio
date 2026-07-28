@@ -101,12 +101,22 @@ export interface JobStatus {
   }>;
 }
 
+/** Present only while an IQ agent run owns this project's cut. */
+export interface AgentRunStatus {
+  runId: string;
+  status: string;
+  stage: string;
+  startedAt?: string;
+}
+
 export interface ProjectJobStatus {
   projectId: string;
   generationJob: JobStatus | null;
   framingJob: JobStatus | null;
   exportMetadataJob: JobStatus | null;
   activeRenderJobId: string | null;
+  /** Absent on older deployments, so treat undefined as "no agent running". */
+  agentRun?: AgentRunStatus | null;
 }
 
 export const getProjectJobStatus = async (
@@ -290,6 +300,8 @@ export interface GenerateExportMetadataRequest {
     iabFields?: {
       formFactor?: boolean;
       genres?: boolean;
+      /** Content-aboutness categories. Written by the IQ agent, not requested here. */
+      topics?: boolean;
     };
     includeThumbnails?: boolean;
   };

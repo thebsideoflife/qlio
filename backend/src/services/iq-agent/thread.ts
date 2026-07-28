@@ -20,6 +20,7 @@ import type {
   Brief,
   CostMeter,
   FramingMirror,
+  Interval,
   Ledger,
   PendingMessage,
   PromptOverrides,
@@ -88,7 +89,10 @@ export async function getThread(
     toolLedger: parseJson<ToolLedgerEntry[]>(item.toolLedgerJson, []),
     segments: parseJson<AgentSegment[]>(item.segmentsJson, []),
     ledger: parseJson<Ledger | undefined>(item.ledgerJson, undefined),
-    cost: (item.cost as CostMeter | undefined) ?? emptyCostMeter(),
+    // Spread over the empty meter: a row written before a counter existed would
+    // otherwise hand back `undefined` and turn every later increment into NaN.
+    cost: { ...emptyCostMeter(), ...((item.cost as Partial<CostMeter>) ?? {}) },
+    examined: parseJson<Interval[]>(item.examinedJson, []),
     pendingMessages: (item.pendingMessages as PendingMessage[] | undefined) ?? [],
     promptVersion: item.promptVersion ? String(item.promptVersion) : undefined,
     promptOverrides: item.promptOverrides as PromptOverrides | undefined,
@@ -266,6 +270,9 @@ const WORKER_OWNED_RUN_FIELDS = [
   "askCount",
   "finishRefusals",
   "reframeIds",
+  // Written as `null` to clear it, which is why the loop below tests for
+  // `undefined` rather than for falsiness.
+  "pendingFinish",
 ] as const;
 
 export interface PersistPayload {
@@ -275,6 +282,7 @@ export interface PersistPayload {
   segments?: AgentSegment[];
   ledger?: Ledger;
   cost?: CostMeter;
+  examined?: Interval[];
   brief?: Brief;
   run?: RunState;
   openQuestionId?: string | null;
@@ -325,6 +333,10 @@ export async function persistRunState(
   if (payload.cost) {
     sets.push("cost = :cost");
     values[":cost"] = payload.cost;
+  }
+  if (payload.examined) {
+    sets.push("examinedJson = :examined");
+    values[":examined"] = JSON.stringify(payload.examined);
   }
   if (payload.brief) {
     sets.push("brief = :brief");
@@ -477,6 +489,10 @@ export async function releaseRun(
     sets.push("cost = :cost");
     values[":cost"] = extra.cost;
   }
+  if (extra.examined) {
+    sets.push("examinedJson = :examined");
+    values[":examined"] = JSON.stringify(extra.examined);
+  }
 
   const removes = ["activeRunId", "#run"];
   names["#run"] = "run";
@@ -534,6 +550,35 @@ export async function requestCancel(
     }
     throw err;
   }
+}
+
+/**
+ * Is the agent holding this project right now?
+ *
+ * Deliberately narrow and deliberately cheap: services outside the agent (the
+ * export-metadata Lambda, the job-status poll) need this answer without reading
+ * a row that carries the whole conversation. Returns null when nothing owns the
+ * project — including when the owning run has stopped writing heartbeats, since
+ * a dead run must not block export forever.
+ */
+export async function getActiveAgentRun(
+  projectId: string,
+): Promise<RunState | null> {
+  if (!THREADS_TABLE) return null;
+  const result = await docClient.send(
+    new GetCommand({
+      TableName: THREADS_TABLE,
+      Key: { projectId },
+      ProjectionExpression: "activeRunId, #run",
+      ExpressionAttributeNames: { "#run": "run" },
+      ConsistentRead: true,
+    }),
+  );
+  const item = result.Item;
+  if (!item?.activeRunId || !item.run) return null;
+  const run = item.run as RunState;
+  if (isRunDead(run)) return null;
+  return run;
 }
 
 export function isRunDead(run: RunState | undefined): boolean {

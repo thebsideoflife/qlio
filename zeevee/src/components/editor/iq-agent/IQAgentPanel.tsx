@@ -1,9 +1,8 @@
 /**
  * The IQ Editor panel: a conversation with the agent that is cutting the video.
  *
- * Layout, top to bottom — brief (collapses once work starts), the budget,
- * the thread, then the composer. The thread is the product; everything else
- * gets out of its way.
+ * Layout, top to bottom — brief (collapses once work starts), the thread,
+ * then the composer. The thread is the product; everything else gets out of its way.
  */
 
 import { useLayoutEffect, useRef, useState } from "react";
@@ -25,7 +24,6 @@ import {
 import { cn } from "@/lib/utils";
 import { AgentThread } from "./AgentThread";
 import { BriefControls } from "./BriefControls";
-import { LedgerBar } from "./LedgerBar";
 import { PromptsEditor } from "./PromptsEditor";
 import { STAGE_LABELS, type AgentBrief } from "@/services/agentTypes";
 import type { IQAgentState } from "@/hooks/useIQAgent";
@@ -106,7 +104,7 @@ export function IQAgentPanel({
   };
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex flex-col flex-1 min-h-0 bg-background">
       <Header
         agent={agent}
         projectId={projectId}
@@ -126,12 +124,10 @@ export function IQAgentPanel({
         </Banner>
       )}
 
-      {agent.ledger && <LedgerBar ledger={agent.ledger} />}
-
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto"
+        className="flex-1 min-h-0 overflow-y-auto"
       >
         <div className="p-4 space-y-4">
           {/* --- The brief ------------------------------------------------ */}
@@ -208,7 +204,7 @@ export function IQAgentPanel({
       </div>
 
       {/* --- Composer ---------------------------------------------------- */}
-      <div className="border-t bg-muted/30">
+      <div className="shrink-0 border-t bg-muted/30">
         {agent.openQuestion && agent.openQuestion.suggestions.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-3 pt-3">
             {agent.openQuestion.suggestions.map((suggestion) => (
@@ -243,8 +239,8 @@ export function IQAgentPanel({
             </Button>
           </div>
         ) : (
-          <div className="p-3 space-y-2">
-            <div className="flex items-end gap-2">
+          <div className="p-3">
+            <div className="rounded-lg border-2 border-border bg-card focus-within:border-blue-400/70 transition-colors">
               <textarea
                 value={draft}
                 onChange={(e) => setDraft(e.target.value.slice(0, 8000))}
@@ -263,69 +259,66 @@ export function IQAgentPanel({
                       ? "Send a note — it goes in at the next turn…"
                       : "Ask for a change, or answer a question…"
                 }
-                className="flex-1 resize-none rounded-lg border-2 border-border bg-card px-3 py-2 text-sm focus:border-blue-400 focus:outline-none placeholder:text-muted-foreground/50"
+                className="w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-sm focus:outline-none placeholder:text-muted-foreground/50"
               />
-              <Button
-                size="icon"
-                className="h-9 w-9 shrink-0"
-                disabled={!draft.trim() || agent.sending}
-                onClick={() =>
-                  submitDraft(draft, agent.openQuestion?.questionId)
-                }
-              >
-                {agent.sending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <ArrowUp className="h-4 w-4" />
-                )}
-              </Button>
-            </div>
 
-            <div className="flex items-center gap-2">
-              {agent.isRunning ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-xs"
-                  disabled={agent.run?.cancelRequested}
-                  onClick={() => void agent.cancel()}
-                >
-                  <CircleSlash className="h-3 w-3 mr-1.5" />
-                  {agent.run?.cancelRequested ? "Stopping…" : "Stop"}
-                </Button>
-              ) : (
-                <>
+              <div className="flex items-center gap-1 px-2 pb-2">
+                {agent.isRunning ? (
                   <Button
-                    variant="outline"
+                    variant="ghost"
                     size="sm"
-                    className="h-7 text-xs"
-                    disabled={!brief || busy}
-                    onClick={startRun}
-                    title="Send the brief settings again as a fresh instruction"
+                    className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                    disabled={agent.run?.cancelRequested}
+                    onClick={() => void agent.cancel()}
                   >
-                    <Sparkles className="h-3 w-3 mr-1.5" />
-                    Apply brief changes
+                    <CircleSlash className="h-3.5 w-3.5 mr-1.5" />
+                    {agent.run?.cancelRequested ? "Stopping…" : "Stop"}
                   </Button>
-                  {retryable && (
+                ) : (
+                  <div className="flex items-center gap-0.5">
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       size="sm"
-                      className="h-7 text-xs"
-                      disabled={busy}
-                      onClick={() => submitDraft(RETRY_MESSAGE)}
+                      className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                      disabled={!brief || busy}
+                      onClick={startRun}
+                      title="Send the brief settings again as a fresh instruction"
                     >
-                      <RotateCw className="h-3 w-3 mr-1.5" />
-                      Pick up where it stopped
+                      <Sparkles className="h-3 w-3 mr-1.5" />
+                      Apply brief
                     </Button>
+                    {retryable && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                        disabled={busy}
+                        onClick={() => submitDraft(RETRY_MESSAGE)}
+                      >
+                        <RotateCw className="h-3 w-3 mr-1.5" />
+                        Retry
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex-1" />
+
+                <Button
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  disabled={!draft.trim() || agent.sending}
+                  onClick={() =>
+                    submitDraft(draft, agent.openQuestion?.questionId)
+                  }
+                >
+                  {agent.sending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <ArrowUp className="h-4 w-4" />
                   )}
-                </>
-              )}
-              {agent.cost && agent.cost.toolCalls > 0 && (
-                <span className="ml-auto text-[10px] text-muted-foreground/70 tabular-nums">
-                  {agent.cost.toolCalls} tool calls
-                  {agent.cost.toolErrors > 0 && ` · ${agent.cost.toolErrors} failed`}
-                </span>
-              )}
+                </Button>
+              </div>
             </div>
           </div>
         )}
@@ -359,25 +352,28 @@ function Header({
             : null;
 
   return (
-    <div className="border-b bg-muted/50">
-      <div className="flex items-center gap-2 px-4 py-3">
-        <div className="p-1.5 rounded-md bg-blue-500/10">
+    <div className="border-b bg-muted/50 shrink-0">
+      <div className="flex items-center gap-2 px-4 py-3 min-w-0">
+        <div className="p-1.5 rounded-md bg-blue-500/10 shrink-0">
           <Wand2 className="h-4 w-4 text-blue-500" />
         </div>
-        <span className="font-semibold">IQ Editor</span>
-        <div className="ml-auto flex items-center gap-2">
+        <span className="font-semibold shrink-0">IQ Editor</span>
+        <div className="ml-auto flex items-center gap-2 min-w-0">
           {pill && (
             <span
               className={cn(
-                "flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
+                "flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider min-w-0 max-w-[10rem]",
                 pill.tone === "active" && "bg-blue-500/15 text-blue-500",
                 pill.tone === "attention" && "bg-amber-500/15 text-amber-600 dark:text-amber-400",
                 pill.tone === "error" && "bg-destructive/15 text-destructive",
                 pill.tone === "idle" && "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
               )}
+              title={pill.label}
             >
-              {pill.tone === "active" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
-              {pill.label}
+              {pill.tone === "active" && (
+                <Loader2 className="h-2.5 w-2.5 animate-spin shrink-0" />
+              )}
+              <span className="truncate">{pill.label}</span>
             </span>
           )}
           <PromptsEditor projectId={projectId} disabled={promptsDisabled} />

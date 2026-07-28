@@ -23,6 +23,7 @@ import {
   isDefaultProjectTitle,
 } from "../../utils/projectTitle";
 import { buildChunkFacts } from "./chunks";
+import type { StoredSegmentMetadata } from "../../types/segment-metadata";
 import type { AgentSegment, Brief, VideoFacts } from "./types";
 
 const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
@@ -259,6 +260,58 @@ export async function commitSegments(params: {
       UpdateExpression: `SET ${sets.join(", ")}`,
       ExpressionAttributeNames: names,
       ExpressionAttributeValues: values,
+    }),
+  );
+}
+
+export interface ProjectMetadataState {
+  segmentMetadata: StoredSegmentMetadata[];
+  thumbnailKey?: string;
+  thumbnailContentHash?: string;
+}
+
+/** Just the delivery-metadata fields, so the agent never pulls a whole project row. */
+export async function readProjectMetadataState(
+  projectId: string,
+): Promise<ProjectMetadataState> {
+  const result = await docClient.send(
+    new GetCommand({
+      TableName: PROJECTS_TABLE,
+      Key: { projectId },
+      ProjectionExpression:
+        "segmentMetadata, thumbnailKey, thumbnailContentHash",
+    }),
+  );
+  const item = result.Item ?? {};
+  return {
+    segmentMetadata: Array.isArray(item.segmentMetadata)
+      ? (item.segmentMetadata as StoredSegmentMetadata[])
+      : [],
+    thumbnailKey:
+      typeof item.thumbnailKey === "string" ? item.thumbnailKey : undefined,
+    thumbnailContentHash:
+      typeof item.thumbnailContentHash === "string"
+        ? item.thumbnailContentHash
+        : undefined,
+  };
+}
+
+export async function writeProjectSegmentMetadata(
+  projectId: string,
+  metadata: StoredSegmentMetadata[],
+): Promise<void> {
+  await docClient.send(
+    new UpdateCommand({
+      TableName: PROJECTS_TABLE,
+      Key: { projectId },
+      UpdateExpression: "SET segmentMetadata = :meta, updatedAt = :now",
+      // The project must already exist; creating one from here would produce a
+      // row with metadata and nothing else.
+      ConditionExpression: "attribute_exists(projectId)",
+      ExpressionAttributeValues: {
+        ":meta": metadata,
+        ":now": new Date().toISOString(),
+      },
     }),
   );
 }

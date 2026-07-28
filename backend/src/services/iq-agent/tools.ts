@@ -18,16 +18,21 @@ import { fmtTimecode } from "./ledger";
 import type { ToolName } from "./types";
 
 export interface ToolSchema {
-  name: ToolName;
+  /**
+   * Widened from `ToolName` because the delivery-metadata pass runs its own
+   * single-tool call outside the loop's tool set. `TOOL_SCHEMAS` below is still
+   * pinned to `ToolName`, so a typo in the agent's own tools is still caught.
+   */
+  name: string;
   description: string;
   input_schema: Record<string, unknown>;
 }
 
-export const TOOL_SCHEMAS: ToolSchema[] = [
+export const TOOL_SCHEMAS: (ToolSchema & { name: ToolName })[] = [
   {
     name: "search_video",
     description:
-      "Semantic search over the video for moments matching a natural-language query. Returns ranked clips with real timestamps on the source timeline. Fast — prefer it over watch_clip for discovery, and run several differently-phrased queries to map the video before you start cutting.",
+      "Semantic search over the video for moments matching a natural-language query. Returns ranked clips with real timestamps on the source timeline. Good at finding a thing you can already name, but it is not a survey — it returns a full page of loosely ranked hits for almost any phrasing. Three or four queries will give you most of what it has; read_transcript is what actually tells you what is in the video.",
     input_schema: {
       type: "object",
       properties: {
@@ -68,7 +73,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: "read_transcript",
     description:
-      "Read the spoken dialogue for a time range. Instant — use it liberally to understand what is said, verify a cut lands between sentences, and check that a segment opens and closes cleanly. Also reports the nearest silences on either side of the range, which is where clean edges usually are.",
+      "Read the spoken dialogue for a time range, verbatim. Detail does not drop off as the range grows — you get the same words either way — so ask for wide spans rather than creeping through a scene in small pieces. Use it to survey the whole source, to understand what is said, and to check that a cut opens and closes on a complete thought. Also reports the nearest silences on either side of the range, which is where clean edges usually are. If the output runs long it is truncated and tells you the timestamp it reached, so you continue from there rather than starting over narrower.",
     input_schema: {
       type: "object",
       properties: {
@@ -86,14 +91,14 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   },
   {
     name: "watch_clip",
-    description: `Watch a specific window of the video and answer a question about it. Your only access to motion, performance, and pacing, and by far the slowest tool — a long window can take minutes while the producer waits. Use search_video and read_transcript to find candidates first, then watch the window a decision actually turns on. Windows must be at least ${MIN_CLIP_SEC}s; a shorter one is widened automatically.`,
+    description: `Watch a window of the video and answer a question about it. Your only access to motion, performance, and pacing. The answer is a paragraph or two regardless of how much footage you pass, so size the window to the thing you are asking about: one call over a whole scene beats several over adjacent slices of it, but a window far wider than your question returns a summary with the detail averaged out. Windows must be at least ${MIN_CLIP_SEC}s; a shorter one is widened automatically.`,
     input_schema: {
       type: "object",
       properties: {
         start: { type: "number", description: "Source-timeline seconds." },
         end: {
           type: "number",
-          description: `Source-timeline seconds. Long windows are allowed but slow; anything over ${MAX_CLIP_WINDOW_SEC}s is rejected as a mistake.`,
+          description: `Source-timeline seconds. Should bracket the moment or scene the question is about. Over ${MAX_CLIP_WINDOW_SEC}s is rejected as a mistake.`,
         },
         question: {
           type: "string",
@@ -106,7 +111,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   },
   {
     name: "view_frames",
-    description: `Extract still frames from the video and look at them yourself. Use it to check framing, confirm a hard cut at a boundary, see who is on screen, or judge visual quality. Far quicker than watch_clip, but static — it shows composition, not motion. Up to ${FRAMES_PER_CALL} frames per call.`,
+    description: `Extract still frames from the video and look at them yourself. Use it to check framing, confirm a hard cut at a boundary, see who is on screen, or judge visual quality. Static — it shows composition, not motion. Up to ${FRAMES_PER_CALL} frames per call.`,
     input_schema: {
       type: "object",
       properties: {
@@ -145,7 +150,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
               title: {
                 type: "string",
                 description:
-                  "Ten words or less, WHO does WHAT. Never 'Part N' or 'Scene N'.",
+                  "Five words or less, WHO does WHAT. Never 'Part N' or 'Scene N'.",
               },
               description: {
                 type: "string",
@@ -166,7 +171,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: "check_budget",
     description:
-      "Read the current segment table and budget without changing anything. Instant. Use it to orient at the start of a turn and to sanity-check before finishing.",
+      "Read the current segment table and budget without changing anything. Use it to orient at the start of a turn and to sanity-check before finishing.",
     input_schema: { type: "object", properties: {} },
   },
   {

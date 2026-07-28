@@ -41,6 +41,43 @@ export const ITERATIONS_WARNING_AT = 10;
 /** Clarifying questions per run, so the agent cannot stall on interrogation. */
 export const MAX_ASKS_PER_RUN = 3;
 
+/**
+ * Coverage gate. An unexamined, uncut stretch longer than the floor blocks
+ * finish_turn. Clearing it is cheap — one wide read_transcript covers most
+ * sources — so the floor can be tight where a transcript exists.
+ */
+export const BLIND_SPOT_FLOOR_SEC = 120;
+export const BLIND_SPOT_FLOOR_LONG_SEC = 300;
+export const BLIND_SPOT_LONG_FRACTION = 0.02;
+/**
+ * No transcript means every look costs Pegasus minutes rather than a free read,
+ * so the floor is both much higher and scaled by length — a three-hour source
+ * with no dialogue track cannot be swept at the same resolution as a
+ * forty-minute one inside a single run's step budget.
+ */
+export const BLIND_SPOT_FLOOR_UNAIDED_SEC = 600;
+export const BLIND_SPOT_UNAIDED_FRACTION = 0.08;
+/**
+ * Escape hatch. The gate is otherwise unconditional, but a run that cannot
+ * satisfy it must still end rather than burn every remaining step arguing.
+ */
+export const MAX_BLIND_SPOT_REFUSALS = 3;
+
+/**
+ * Search circuit breaker. A query is unproductive when almost every window it
+ * returns was already returned by an earlier query — the sign of rephrasing in
+ * circles rather than of searching somewhere new.
+ */
+export const SEARCH_UNPRODUCTIVE_WARN_AT = 3;
+export const SEARCH_UNPRODUCTIVE_STOP_AT = 5;
+/** Two hits this close together are the same moment found twice. */
+export const SEARCH_HIT_SAME_WINDOW_SEC = 5;
+/** Below this share of previously unseen hits, a query told us nothing new. */
+export const SEARCH_NOVELTY_FLOOR = 0.2;
+
+/** How much of the timeline one viewed frame is credited with showing. */
+export const FRAME_EXAMINE_PAD_SEC = 5;
+
 /** Verbatim turns kept in context before older ones are compacted. */
 export const TURN_WINDOW = 8;
 
@@ -61,6 +98,14 @@ export const DEAD_RUN_MS = 90_000;
 
 /** Persist and self-invoke a continuation when less than this remains. */
 export const CONTINUATION_RESERVE_MS = 150_000;
+
+/**
+ * Wrapping up costs more than another loop iteration: delivery metadata is
+ * several model calls plus one FFmpeg frame extract per segment. When finish
+ * lands with less than this on the clock, the whole wrap-up moves to a fresh
+ * invocation rather than being started on time it cannot finish in.
+ */
+export const FINALIZE_RESERVE_MS = 300_000;
 
 /** Thread rows expire after 90 days; event rows after 30. */
 export const THREAD_TTL_DAYS = 90;

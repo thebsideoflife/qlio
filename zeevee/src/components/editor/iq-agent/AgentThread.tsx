@@ -36,6 +36,7 @@ import {
   type ThreadItem,
   type ToolItem,
 } from "./threadItems";
+import { MarkdownText } from "./MarkdownText";
 
 const TOOL_ICONS: Record<ToolName, typeof Search> = {
   search_video: Search,
@@ -77,21 +78,19 @@ function ThreadRow({ item }: { item: ThreadItem }) {
       return <UserBubble text={item.text} isBrief={item.isBrief} />;
 
     case "assistant":
-      return (
-        <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground">
-          {item.text}
-        </p>
-      );
+      return <MarkdownText>{item.text}</MarkdownText>;
 
     case "stage":
       return (
-        <div className="flex items-center gap-2 pt-1">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-500/80">
+        <div className="flex items-center gap-2 pt-1 min-w-0">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-500/80 shrink-0">
             {item.label}
           </span>
-          <div className="h-px flex-1 bg-blue-500/15" />
+          <div className="h-px flex-1 bg-blue-500/15 min-w-4" />
           {item.note && (
-            <span className="text-[10px] text-muted-foreground">{item.note}</span>
+            <span className="text-[10px] text-muted-foreground truncate min-w-0">
+              {item.note}
+            </span>
           )}
         </div>
       );
@@ -108,7 +107,7 @@ function ThreadRow({ item }: { item: ThreadItem }) {
               Needs your call
             </span>
           </div>
-          <p className="text-sm leading-relaxed">{item.text}</p>
+          <MarkdownText>{item.text}</MarkdownText>
         </div>
       );
 
@@ -144,7 +143,7 @@ function ThreadRow({ item }: { item: ThreadItem }) {
               Turn complete
             </span>
           </div>
-          <p className="text-sm leading-relaxed whitespace-pre-wrap">{item.summary}</p>
+          <MarkdownText>{item.summary}</MarkdownText>
           {item.concerns.length > 0 && (
             <ul className="space-y-1 pt-1 border-t">
               {item.concerns.map((c, i) => (
@@ -268,7 +267,7 @@ function ToolRow({ item }: { item: ToolItem }) {
         type="button"
         onClick={() => hasDetail && setOpen((v) => !v)}
         disabled={!hasDetail}
-        className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left disabled:cursor-default"
+        className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left disabled:cursor-default min-w-0"
       >
         {!item.done ? (
           <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-500" />
@@ -278,7 +277,10 @@ function ToolRow({ item }: { item: ToolItem }) {
           <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
         )}
 
-        <span className={cn("truncate", !item.done && "text-foreground")}>
+        <span
+          className={cn("min-w-0 flex-1 truncate", !item.done && "text-foreground")}
+          title={item.done && item.ok ? item.summary || item.label : item.label}
+        >
           {item.done && item.ok ? item.summary || item.label : item.label}
         </span>
 

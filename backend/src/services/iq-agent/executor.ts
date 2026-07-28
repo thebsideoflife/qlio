@@ -7,8 +7,26 @@
  */
 
 import type { TwelveLabs } from "twelvelabs-js";
-import { MAX_ASKS_PER_RUN } from "./config";
-import { computeLedger, renderLedger, renderSegmentTable } from "./ledger";
+import {
+  FRAME_EXAMINE_PAD_SEC,
+  MAX_ASKS_PER_RUN,
+  MAX_BLIND_SPOT_REFUSALS,
+  SEARCH_HIT_SAME_WINDOW_SEC,
+  SEARCH_NOVELTY_FLOOR,
+  SEARCH_UNPRODUCTIVE_STOP_AT,
+  SEARCH_UNPRODUCTIVE_WARN_AT,
+} from "./config";
+import { recordExamined, totalSeconds } from "./examined";
+import { buildVocabulary, findUngroundedNames } from "./grounding";
+import {
+  computeLedger,
+  fmt,
+  fmtTimecode,
+  renderBlindSpots,
+  renderLedger,
+  renderSegmentTable,
+  type CoverageInput,
+} from "./ledger";
 import { getPrompt, renderTemplate } from "./prompts";
 import { applyEdits, renderEditOutcome, type EditOp } from "./tools/edit";
 import { runViewFrames } from "./tools/frames";
@@ -24,6 +42,7 @@ import {
   type AgentSegment,
   type Brief,
   type CostMeter,
+  type Interval,
   type Ledger,
   type PromptOverrides,
   type ToolName,
@@ -41,8 +60,15 @@ export interface ExecContext {
   watchHistory: WatchHistoryEntry[];
   transcriptWords: TranscriptWord[] | null;
   transcriptError?: string;
+  /** Every stretch looked at, carried across runs on the thread. */
+  examined: Interval[];
   askCount: number;
   finishRefusals: number;
+  /** Consecutive searches that surfaced no window an earlier query had not. */
+  searchMisses: number;
+  /** Start times already returned by some search this run. */
+  searchSeen: number[];
+  blindSpotRefusals: number;
   promptOverrides?: PromptOverrides;
   onProgress: (note: string) => Promise<void>;
   /**
@@ -63,6 +89,35 @@ export interface ExecOutcome {
   segmentsChanged?: boolean;
   changedIds?: string[];
   ledger?: Ledger;
+}
+
+/**
+ * The coverage inputs for the ledger, or `undefined` to switch the gate off.
+ *
+ * It goes off only when the run has no way to examine anything: no transcript
+ * and no TwelveLabs client. Blocking a finish on looking at footage the run
+ * cannot open would deadlock it rather than improve it.
+ */
+function coverageFor(ctx: ExecContext): CoverageInput | undefined {
+  const transcriptLoadFailed = ctx.transcriptWords?.length === 0;
+  const hasTranscript = Boolean(ctx.facts.transcriptS3Uri) && !transcriptLoadFailed;
+  if (!hasTranscript && !ctx.client) return undefined;
+  return { examined: ctx.examined, hasTranscript };
+}
+
+function ledgerFor(ctx: ExecContext): Ledger {
+  return computeLedger(ctx.segments, ctx.brief, ctx.facts.duration, coverageFor(ctx));
+}
+
+function markExamined(ctx: ExecContext, start: number, end: number): void {
+  const before = totalSeconds(ctx.examined);
+  ctx.examined = recordExamined(ctx.examined, start, end, ctx.facts.duration);
+  // Looking somewhere genuinely new re-arms the search breaker. Without this,
+  // tripping it would disable search for the rest of the run: the counter only
+  // clears on a productive search, and there can be no productive search while
+  // it is tripped. "Stop searching and go look" has to mean you may search
+  // again once you have looked. Re-reading known ground does not count.
+  if (totalSeconds(ctx.examined) > before + 1) ctx.searchMisses = 0;
 }
 
 export async function executeTool(
@@ -137,6 +192,22 @@ async function execSearch(
       "Use read_transcript and view_frames to work without semantic search.",
     );
   }
+  // Circuit breaker for search spinning. Marengo returns a full page of loosely
+  // ranked hits for almost any phrasing, so a query that found nothing looks
+  // exactly like one that found plenty and the agent has no way to tell it is
+  // going in circles. The measure is whether a query surfaced any window an
+  // earlier query did not — deliberately not whether the window has been
+  // examined, because searching for a visual moment inside a stretch you have
+  // only read the dialogue of is a perfectly good thing to do.
+  if (ctx.searchMisses >= SEARCH_UNPRODUCTIVE_STOP_AT) {
+    return toolError(
+      "search_exhausted",
+      `The last ${ctx.searchMisses} searches came back with the same windows earlier queries already returned. Rephrasing again is not going to surface anything new.`,
+      "Read the timeline directly instead — read_transcript over a stretch you have not looked at will tell you what is actually there. The budget lists any stretch still unexamined.",
+      { summary: `Search paused · ${ctx.searchMisses} repeats in a row` },
+    );
+  }
+
   const result = await runSearchVideo({
     client: ctx.client,
     facts: ctx.facts,
@@ -146,7 +217,32 @@ async function execSearch(
     limit: input.limit,
     timeRange: input.timeRange as { start?: number; end?: number } | undefined,
   });
-  if (result.ok) ctx.cost.searches += 1;
+
+  if (!result.ok) return result;
+  ctx.cost.searches += 1;
+
+  const hits =
+    (result.digest as { hits?: Array<{ start: number; end: number }> } | undefined)?.hits ?? [];
+  const fresh = hits.filter(
+    (h) => !ctx.searchSeen.some((seen) => Math.abs(seen - h.start) <= SEARCH_HIT_SAME_WINDOW_SEC),
+  );
+  for (const h of fresh) ctx.searchSeen.push(h.start);
+
+  if (hits.length > 0 && fresh.length / hits.length < SEARCH_NOVELTY_FLOOR) {
+    ctx.searchMisses += 1;
+    if (ctx.searchMisses >= SEARCH_UNPRODUCTIVE_WARN_AT) {
+      return {
+        ...result,
+        warnings: [
+          ...(result.warnings ?? []),
+          `That is ${ctx.searchMisses} queries in a row returning windows your earlier searches already found. Search has given you what it has; read_transcript across a stretch you have not looked at will tell you more.`,
+        ],
+      };
+    }
+  } else {
+    ctx.searchMisses = 0;
+  }
+
   return result;
 }
 
@@ -184,7 +280,18 @@ async function execTranscript(
     granularity: input.granularity === "words" ? "words" : "sentences",
     videoDuration: ctx.facts.duration,
   });
-  if (result.ok) ctx.cost.transcriptReads += 1;
+  if (result.ok) {
+    ctx.cost.transcriptReads += 1;
+    // Only as far as the output actually reached. A read that was truncated at
+    // the character cap showed the agent the first half of the range and
+    // nothing after it, and crediting the rest would be a coverage false pass.
+    const digest = result.digest as { start?: number; coveredEnd?: number } | undefined;
+    markExamined(
+      ctx,
+      digest?.start ?? Number(input.start),
+      digest?.coveredEnd ?? Number(input.end),
+    );
+  }
   return result;
 }
 
@@ -222,7 +329,13 @@ async function execWatch(
       ctx.cost.pegasusSeconds += outcome.videoSecondsWatched;
     }
   }
-  if (outcome.recorded) ctx.watchHistory.push(outcome.recorded);
+  // Credit the window Pegasus actually watched, which can differ from the one
+  // that was asked for once it is widened to the 4s floor or clipped to the
+  // indexed duration.
+  if (outcome.recorded) {
+    ctx.watchHistory.push(outcome.recorded);
+    markExamined(ctx, outcome.recorded.start, outcome.recorded.end);
+  }
 
   return outcome.result;
 }
@@ -237,7 +350,16 @@ async function execFrames(
     timestamps: input.timestamps,
     purpose: String(input.purpose ?? "visual check"),
   });
-  if (result.ok && result.images) ctx.cost.frames += result.images.length;
+  if (result.ok && result.images) {
+    ctx.cost.frames += result.images.length;
+    const stamps = Array.isArray(input.timestamps) ? input.timestamps : [];
+    for (const raw of stamps) {
+      const t = Number(raw);
+      if (Number.isFinite(t)) {
+        markExamined(ctx, t - FRAME_EXAMINE_PAD_SEC, t + FRAME_EXAMINE_PAD_SEC);
+      }
+    }
+  }
   return result;
 }
 
@@ -264,7 +386,7 @@ function execEdit(
   const outcome = applyEdits(ctx.segments, rawOps, ctx.facts.duration, bounds);
   ctx.segments = outcome.segments;
 
-  const ledger = computeLedger(ctx.segments, ctx.brief, ctx.facts.duration);
+  const ledger = ledgerFor(ctx);
   const body = `${renderEditOutcome(outcome)}\n\nBUDGET AFTER THIS EDIT\n${renderLedger(ledger)}`;
 
   if (outcome.applied.length === 0) {
@@ -297,6 +419,7 @@ function execEdit(
   for (const rejected of outcome.rejected) {
     warnings.push(`Rejected ${rejected.op}: ${rejected.reason}`);
   }
+  warnings.push(...groundingWarnings(rawOps, ctx));
 
   return {
     result: {
@@ -316,8 +439,39 @@ function execEdit(
   };
 }
 
+/**
+ * Flag proper nouns in a title that the source never says. Advisory only: ASR
+ * mangles names, so an unmatched one is a prompt to check rather than a fault.
+ */
+function groundingWarnings(ops: EditOp[], ctx: ExecContext): string[] {
+  const titles = ops
+    .map((op) => (typeof op.title === "string" ? op.title.trim() : ""))
+    .filter(Boolean);
+  if (titles.length === 0) return [];
+  // Only meaningful once the transcript is loaded; a title written before any
+  // read would be flagged against an empty vocabulary.
+  if (!ctx.transcriptWords || ctx.transcriptWords.length === 0) return [];
+
+  const vocab = buildVocabulary({
+    transcriptWords: ctx.transcriptWords,
+    title: ctx.facts.title,
+    userPrompt: ctx.brief?.userPrompt,
+  });
+
+  const warnings: string[] = [];
+  for (const title of titles) {
+    const unknown = findUngroundedNames(vocab, title);
+    if (unknown.length > 0) {
+      warnings.push(
+        `"${title}" names ${unknown.map((n) => `"${n}"`).join(", ")}, which the transcript never says. Speech-to-text garbles proper nouns, so it may still be right — but if you are recalling that name from outside this video rather than reading it here, take it out.`,
+      );
+    }
+  }
+  return warnings;
+}
+
 function execCheckBudget(ctx: ExecContext): ExecOutcome {
-  const ledger = computeLedger(ctx.segments, ctx.brief, ctx.facts.duration);
+  const ledger = ledgerFor(ctx);
   return {
     result: {
       ok: true,
@@ -384,7 +538,35 @@ function execFinish(
     ? input.concerns.map((c) => String(c)).filter(Boolean)
     : [];
 
-  const ledger = computeLedger(ctx.segments, ctx.brief, ctx.facts.duration);
+  const ledger = ledgerFor(ctx);
+
+  // The coverage gate, checked before the budget and answerable only by going
+  // and looking. Unlike the arithmetic below there is no second attempt that
+  // waves it through on the strength of an argument: an editorial judgment can
+  // outrank a runtime target, but there is no judgment to be had about footage
+  // nobody has seen. The refusal cap exists so a run that genuinely cannot
+  // examine anything still ends instead of spending every step here.
+  const blindSpots = ledger.coverage.blindSpots;
+  if (blindSpots.length > 0 && ctx.blindSpotRefusals < MAX_BLIND_SPOT_REFUSALS) {
+    ctx.blindSpotRefusals += 1;
+    const unseen = blindSpots.reduce((sum, s) => sum + s.seconds, 0);
+    return {
+      result: toolError(
+        "unexamined_footage",
+        `Not finishing yet. ${
+          blindSpots.length === 1 ? "This stretch" : "These stretches"
+        } of the source have never been looked at, and nothing was cut from ${
+          blindSpots.length === 1 ? "it" : "them"
+        }:\n\n${renderBlindSpots(blindSpots)}\n\nYou cannot know whether the cut is missing something from footage you have not opened. The producer asked for a cut of this video, not of the part of it you happened to search into.`,
+        "read_transcript over each stretch above is the simplest way to clear this — one wide read usually covers all of it. Use watch_clip or view_frames where the moment is visual and the dialogue will not tell you. Then finish.",
+        {
+          summary: `Finish blocked · ${Math.round(unseen)}s never examined`,
+          retryable: false,
+        },
+      ),
+      ledger,
+    };
+  }
 
   // Guarded finish: refuse once while the budget is blocking, with the specific
   // numbers attached. On the second attempt the finish goes through and the
@@ -407,10 +589,16 @@ function execFinish(
     };
   }
 
-  const allConcerns =
-    ledger.blocking.length > 0
-      ? [...concerns, ...ledger.blocking.map((b) => `Unresolved: ${b}`)]
-      : concerns;
+  const allConcerns = [
+    ...concerns,
+    ...ledger.blocking.map((b) => `Unresolved: ${b}`),
+    // Only reachable via the refusal cap, and the producer needs to know the
+    // cut was signed off with part of the source never opened.
+    ...blindSpots.map(
+      (s) =>
+        `Never examined: ${fmtTimecode(s.start)}–${fmtTimecode(s.end)} (${fmt(s.seconds)} of the source).`,
+    ),
+  ];
 
   return {
     result: {

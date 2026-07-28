@@ -77,6 +77,10 @@ export interface AgentLedger {
     quartiles: [number, number, number, number];
     largestGap: { start: number; end: number; seconds: number } | null;
     spreadWarning: string | null;
+    /** Stretches neither cut from nor ever examined. Blocks the agent finishing. */
+    blindSpots: Array<{ start: number; end: number; seconds: number }>;
+    examinedSeconds: number;
+    examinedPercent: number;
   };
   blocking: string[];
   warnings: string[];
@@ -92,6 +96,7 @@ export interface AgentCost {
   tokensIn: number;
   tokensOut: number;
   cacheReadTokens: number;
+  cacheWriteTokens: number;
   toolCalls: number;
   toolErrors: number;
 }
@@ -123,6 +128,8 @@ export type AgentEventBody =
       ok: boolean;
       summary: string;
       digest?: unknown;
+      /** What the tool told the model, truncated. Kept for auditing a run. */
+      output?: string;
       warnings?: string[];
       error?: AgentToolError;
       ms: number;

@@ -83,10 +83,25 @@ export interface LedgerOverlap {
   seconds: number;
 }
 
+/** A closed range on the source timeline, in seconds. */
+export interface Interval {
+  start: number;
+  end: number;
+}
+
 export interface LedgerCoverage {
   quartiles: [number, number, number, number];
   largestGap: { start: number; end: number; seconds: number } | null;
   spreadWarning: string | null;
+  /**
+   * Stretches neither cut from nor ever examined. Kept separate from `blocking`
+   * because the two gates mean different things: an editorial judgment can
+   * override the arithmetic, but there is no judgment to make about footage
+   * nobody looked at.
+   */
+  blindSpots: Array<{ start: number; end: number; seconds: number }>;
+  examinedSeconds: number;
+  examinedPercent: number;
 }
 
 export interface Ledger {
@@ -128,6 +143,9 @@ export interface CostMeter {
   tokensIn: number;
   tokensOut: number;
   cacheReadTokens: number;
+  /** Paired with cacheReadTokens: zero writes and zero reads means caching is
+   * off, which reads very differently from writes landing but never being hit. */
+  cacheWriteTokens: number;
   toolCalls: number;
   toolErrors: number;
 }
@@ -143,6 +161,7 @@ export function emptyCostMeter(): CostMeter {
     tokensIn: 0,
     tokensOut: 0,
     cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     toolCalls: 0,
     toolErrors: 0,
   };
@@ -267,6 +286,12 @@ export type AgentEventBody =
       ok: boolean;
       summary: string;
       digest?: unknown;
+      /**
+       * What the tool actually told the model, truncated. Without this a
+       * watch_clip answer survives only in the model's context and the S3 cache,
+       * so the event log cannot explain why a cut was made.
+       */
+      output?: string;
       warnings?: string[];
       error?: { code: string; message: string; hint: string; detail?: string };
       ms: number;
@@ -334,6 +359,12 @@ export interface ToolLedgerEntry {
 /** Why a run exists. Shown in the panel so a run's origin is never a mystery. */
 export type RunTrigger = "initial" | "message" | "answer" | "followup";
 
+/** What finish_turn decided, held across a continuation. */
+export interface PendingFinish {
+  summary: string;
+  concerns: string[];
+}
+
 export interface RunState {
   runId: string;
   status: RunStatus;
@@ -347,6 +378,13 @@ export interface RunState {
   trigger: RunTrigger;
   endedAt?: string;
   error?: { code: string; message: string; detail?: string };
+  /**
+   * Set when the model called finish_turn but the invocation had too little
+   * clock left to write delivery metadata. A fresh worker picks this up, skips
+   * straight to wrapping up, and clears it. `null` means explicitly cleared;
+   * `undefined` means the field was never written.
+   */
+  pendingFinish?: PendingFinish | null;
   /** Segment ids whose timing changed during this run — drives diff framing. */
   reframeIds?: string[];
   /**
@@ -397,6 +435,12 @@ export interface ThreadState {
   segments: AgentSegment[];
   ledger?: Ledger;
   cost: CostMeter;
+  /**
+   * Everything looked at in this session, accumulated across runs. A follow-up
+   * run inherits it: the editor has seen what it has seen, and re-reading it to
+   * satisfy the coverage gate would be busywork.
+   */
+  examined: Interval[];
   pendingMessages: PendingMessage[];
   promptVersion?: string;
   promptOverrides?: PromptOverrides;

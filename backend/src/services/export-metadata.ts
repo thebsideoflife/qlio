@@ -13,6 +13,7 @@ import {
   iabAllowlistPromptBlock,
   iabHasFormFactor,
   iabHasGenre,
+  iabHasTopic,
   iabPickInstruction,
   normalizeIabTags,
   type IabFieldOptions,
@@ -166,20 +167,26 @@ export function computeMissingMetadataOptions(
     const iabFields = options.iabFields;
     const wantForm = iabFields?.formFactor !== false;
     const wantGenres = iabFields?.genres !== false;
+    // Opt-in, unlike the other two: the Pegasus path never asks for topics, and
+    // defaulting them on would mark every previously generated segment stale.
+    const wantTopics = iabFields?.topics === true;
     const cachedIab = cached?.tags?.iab;
     const missingForm = wantForm && !iabHasFormFactor(cachedIab);
     const missingGenres = wantGenres && !iabHasGenre(cachedIab);
-    if (missingForm || missingGenres || !cachedIab?.cat?.length) {
+    const missingTopics = wantTopics && !iabHasTopic(cachedIab);
+    if (missingForm || missingGenres || missingTopics || !cachedIab?.cat?.length) {
       missing.includeIab = true;
       missing.iabFields = {
         ...(missingForm ? { formFactor: true } : {}),
         ...(missingGenres ? { genres: true } : {}),
+        ...(missingTopics ? { topics: true } : {}),
       };
       // If cache is empty, request whatever the user currently has enabled.
       if (!cachedIab?.cat?.length) {
         missing.iabFields = {
           formFactor: wantForm,
           genres: wantGenres,
+          topics: wantTopics,
         };
       }
       hasMissing = true;
@@ -424,7 +431,7 @@ export function buildExportMetadataPrompt(
 Base all fields only on what happens in this clip.${iabBlock}`;
 }
 
-function normalizeContentAdvisory(value: string): string | undefined {
+export function normalizeContentAdvisory(value: string): string | undefined {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
   const lower = trimmed.toLowerCase();

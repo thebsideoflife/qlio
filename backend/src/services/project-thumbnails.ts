@@ -61,7 +61,9 @@ export interface EnsureProjectCoverResult {
 export async function ensureProjectCoverThumbnail(params: {
   projectId: string;
   segments: ProjectSegmentBounds[];
-  asset: AssetInfo;
+  /** Callers that already resolved the source object can pass `sourceKey` instead. */
+  asset?: AssetInfo;
+  sourceKey?: string;
   bucketName: string;
   projectsTable: string;
   existingThumbnailKey?: string;
@@ -85,9 +87,12 @@ export async function ensureProjectCoverThumbnail(params: {
   const thumbTimestamp = projectThumbnailTimestamp(segments);
   if (thumbTimestamp === null) return null;
 
-  const sourceKey = resolveAssetSourceKey(asset);
+  const sourceKey =
+    params.sourceKey || (asset ? resolveAssetSourceKey(asset) : undefined);
   if (!sourceKey) {
-    console.warn(`[Thumbnails] No source key for asset ${asset.assetId}`);
+    console.warn(
+      `[Thumbnails] No source key for project ${projectId}${asset ? ` (asset ${asset.assetId})` : ""}`,
+    );
     return null;
   }
 
