@@ -141,6 +141,20 @@ Session so far:
 // validation the metadata pass runs against the same rules.
 // ============================================================================
 
+// ============================================================================
+// Sports highlights — injected into system context when brief.isSports is true
+// ============================================================================
+
+export const SPORTS_HIGHLIGHTS = `This is a sports highlight reel. Your priority moments are:
+- Scoring plays and game-changing actions
+- Replay sequences (often shown after the live action)
+- Momentum shifts and dramatic athletic moments
+- Key commentary that explains the significance
+
+When searching, look for phrases like "replay", "watch this", "unbelievable",
+and listen for the crowd/commentator energy spikes. A highlight should feel
+like the best 5–30 seconds of a play, not a summary of the whole game.`;
+
 export const METADATA_SYSTEM = `You write delivery metadata for finished video scenes: the descriptions, tags and categories a distributor ingests alongside the files.
 
 Everything you write must come from the scene you are given — its dialogue, its editorial title, and the note on why it was cut. You have not watched the footage yourself, so do not describe camera moves, wardrobe, or anything else you are guessing at. If the dialogue does not name a person or a place, describe them instead of naming them. Inventing a name is the one failure that makes this metadata unusable.
