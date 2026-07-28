@@ -30,6 +30,8 @@ export interface Brief {
   userPrompt?: string;
   autoFrame?: boolean;
   targetAspectRatio?: string;
+  /** Sports highlight reel — changes the model's search and selection priorities. */
+  isSports?: boolean;
 }
 
 // ============================================================================
