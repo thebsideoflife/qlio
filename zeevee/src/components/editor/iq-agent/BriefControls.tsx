@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from "react";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
   TooltipContent,
@@ -119,6 +120,7 @@ export function BriefControls({
     SEGMENT_DURATION_DEFAULTS[DEFAULT_FORMAT].max,
   );
   const [userPrompt, setUserPrompt] = useState("");
+  const [isSports, setIsSports] = useState(false);
 
   // Restore whatever was used last time this project ran.
   useEffect(() => {
@@ -158,6 +160,7 @@ export function BriefControls({
       onPlatformChange?.(saved.platform);
     }
     setUserPrompt(saved.userPrompt?.trim() ?? "");
+    setIsSports(saved.isSports === true);
     // Restore only when the project's saved state arrives.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedBrief, savedInputs]);
@@ -172,9 +175,10 @@ export function BriefControls({
       minSegmentDuration: minDuration,
       maxSegmentDuration: maxDuration,
       userPrompt: userPrompt.trim() || undefined,
+      isSports: isSports || undefined,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [format, assetType, platform, retain, minDuration, maxDuration, userPrompt]);
+  }, [format, assetType, platform, retain, minDuration, maxDuration, userPrompt, isSports]);
 
   const handleFormatChange = (next: string) => {
     setFormat(next);
@@ -207,6 +211,23 @@ export function BriefControls({
       <Field label="Format">
         <OptionGrid options={FORMATS} value={format} onSelect={handleFormatChange} />
       </Field>
+
+      {format === "highlights" && (
+        <div className="flex items-center justify-between">
+          <Label
+            htmlFor="agent-is-sports"
+            className="text-xs font-semibold text-muted-foreground cursor-pointer"
+          >
+            Sports content
+          </Label>
+          <Switch
+            id="agent-is-sports"
+            checked={isSports}
+            onCheckedChange={setIsSports}
+            disabled={disabled}
+          />
+        </div>
+      )}
 
       {format === "compact_video" && (
         <Field label="Retain" hint="How much of the source should survive the cut">
