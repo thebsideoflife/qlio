@@ -535,6 +535,8 @@ function sanitizeBrief(brief: Brief): Brief {
         : undefined,
     autoFrame: brief.autoFrame !== false,
     targetAspectRatio: brief.targetAspectRatio,
-    isSports: brief.isSports === true,
+    // Sports mode is only meaningful for highlight reels; strip it from
+    // anything else so a stale client state can't smuggle it in.
+    isSports: brief.format === "highlights" && brief.isSports === true,
   };
 }

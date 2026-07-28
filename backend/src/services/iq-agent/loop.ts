@@ -242,13 +242,16 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
         if (!candidate) return;
         const keys = Object.keys(candidate) as Array<keyof Brief>;
         for (const key of keys) {
-          if (candidate[key] !== undefined && candidate[key] !== (brief as Record<string, unknown>)[key as string]) {
+          if (candidate[key] !== undefined && candidate[key] !== (brief as unknown as Record<string, unknown>)[key as string]) {
             briefChanged = true;
             break;
           }
         }
         if (briefChanged) {
           brief = mergeBrief(brief, candidate);
+          // Tools read ctx.brief (ledger, bounds, userPrompt) — keep the
+          // executor's view in sync or the model sees two targets.
+          ctx.brief = brief;
         }
       };
 

@@ -175,7 +175,9 @@ export function BriefControls({
       minSegmentDuration: minDuration,
       maxSegmentDuration: maxDuration,
       userPrompt: userPrompt.trim() || undefined,
-      isSports: isSports || undefined,
+      // Sports mode only applies to highlight reels; never leak it into other
+      // formats, where the toggle isn't even visible.
+      isSports: format === "highlights" ? isSports || undefined : undefined,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [format, assetType, platform, retain, minDuration, maxDuration, userPrompt, isSports]);
@@ -187,6 +189,7 @@ export function BriefControls({
     setMinDuration(defaults.min);
     setMaxDuration(defaults.max);
     if (next === "compact_video") setRetain("auto");
+    if (next !== "highlights") setIsSports(false);
   };
 
   const maxLength = 8000;

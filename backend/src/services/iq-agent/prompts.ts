@@ -152,7 +152,7 @@ export const SPORTS_HIGHLIGHTS = `This is a sports highlight reel. Your priority
 - Key commentary that explains the significance
 
 When searching, look for phrases like "replay", "watch this", "unbelievable",
-and listen for the crowd/commentator energy spikes. A highlight should feel
+and for surges of excited commentary in the transcript. A highlight should feel
 like the best 5–30 seconds of a play, not a summary of the whole game.`;
 
 export const METADATA_SYSTEM = `You write delivery metadata for finished video scenes: the descriptions, tags and categories a distributor ingests alongside the files.
