@@ -162,7 +162,7 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
     });
 
     // Explicit undefined in a later layer must not erase an earlier value.
-    const brief: Brief = mergeBrief(
+    let brief: Brief = mergeBrief(
       { format: "compact_video" },
       project.savedBrief,
       thread.brief,
@@ -237,7 +237,30 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
       // queued for the next drain rather than disappearing.
       await clearPendingMessages(projectId, pending.length);
 
+      let briefChanged = false;
+      const maybeRefreshBrief = (candidate: Partial<Brief> | undefined) => {
+        if (!candidate) return;
+        const keys = Object.keys(candidate) as Array<keyof Brief>;
+        for (const key of keys) {
+          if (candidate[key] !== undefined && candidate[key] !== (brief as Record<string, unknown>)[key as string]) {
+            briefChanged = true;
+            break;
+          }
+        }
+        if (briefChanged) {
+          brief = mergeBrief(brief, candidate);
+        }
+      };
+
+      // Thread-level brief update (e.g. from a prior message that saved to the thread)
+      if (current?.brief) {
+        maybeRefreshBrief(current.brief);
+      }
+
       for (const message of pending) {
+        if (message.brief) {
+          maybeRefreshBrief(message.brief);
+        }
         const rendered = renderPending(message, brief, project, ctx.promptOverrides);
         await emit({
           type: "message.user",
@@ -250,6 +273,21 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
           content: [{ type: "text", text: rendered.forModel }],
         });
       }
+
+      if (briefChanged) {
+        ledger = computeLedger(ctx.segments, brief, project.facts.duration, {
+          examined: ctx.examined,
+          hasTranscript: Boolean(project.facts.transcriptS3Uri),
+        });
+        await emit({
+          type: "notice",
+          level: "info",
+          message: `Brief updated: ${describeTarget(brief, project.facts.duration)} · ${describeBounds(brief)}`,
+        });
+        // Persist so a resumed run sees the new brief
+        await persistLoopState();
+      }
+
       return true;
     };
 
