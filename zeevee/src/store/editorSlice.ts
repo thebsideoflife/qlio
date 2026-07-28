@@ -43,6 +43,8 @@ interface EditorState {
   localVersion: number; // Increments on each local edit
   syncedVersion: number; // Tracks last successfully synced version
   isSyncing: boolean;
+  /** While the IQ agent is running it owns the cut server-side — autosave stands down. */
+  agentRunActive: boolean;
   // Caption state
   transcriptWords: CaptionWord[];
   captions: CaptionLine[];
@@ -78,6 +80,7 @@ const initialState: EditorState = {
   localVersion: 0,
   syncedVersion: 0,
   isSyncing: false,
+  agentRunActive: false,
   // Caption state
   transcriptWords: [],
   captions: [],
@@ -486,6 +489,14 @@ export const editorSlice = createSlice({
     setSyncing: (state, action: PayloadAction<boolean>) => {
       state.isSyncing = action.payload;
     },
+    setAgentRunActive: (state, action: PayloadAction<boolean>) => {
+      state.agentRunActive = action.payload;
+      if (action.payload) {
+        // The agent's writes are authoritative; anything queued locally would
+        // only overwrite them with a staler copy.
+        state.syncedVersion = state.localVersion;
+      }
+    },
     markSynced: (state, action: PayloadAction<number>) => {
       // Only update syncedVersion to the version that was actually synced
       // This prevents race conditions where edits made during sync are lost
@@ -869,6 +880,7 @@ export const {
   deleteSegment,
   setSyncing,
   markSynced,
+  setAgentRunActive,
   setCurrentTime,
   setDuration,
   // Caption actions

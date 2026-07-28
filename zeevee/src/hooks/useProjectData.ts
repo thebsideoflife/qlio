@@ -10,15 +10,11 @@ import {
   setSegmentMetadata,
   setProjectThumbnailUrl,
 } from "@/store/editorSlice";
-import {
-  getProject,
-  type GenerationJob,
-  type FramingJob,
-} from "@/services/api";
+import { getProject, type FramingJob } from "@/services/api";
 import { DEFAULT_CAPTION_SETTINGS, DEFAULT_GLOBAL_FRAMING } from "@/remotion/types";
 import type { CaptionWord, GlobalFramingSettings } from "@/remotion/types";
 
-// Last generation inputs persisted on the project (written by generateSegments)
+// Last brief the project was cut with, persisted server-side.
 export interface GenerationMetadata {
   userPrompt?: string | null;
   purpose?: string | null;
@@ -36,9 +32,6 @@ export function useProjectData(projectId: string | undefined) {
   const [transcription, setTranscription] = useState<CaptionWord[]>([]);
   const [generationMetadata, setGenerationMetadata] =
     useState<GenerationMetadata | null>(null);
-  const [generationJob, setGenerationJob] = useState<GenerationJob | null>(
-    null,
-  );
   const [framingJob, setFramingJob] = useState<FramingJob | null>(null);
   const [activeRenderJobId, setActiveRenderJobId] = useState<string | null>(
     null,
@@ -106,11 +99,6 @@ export function useProjectData(projectId: string | undefined) {
         setGenerationMetadata(project.metadata);
       }
 
-      // Load generation job status (for resuming polling after page refresh)
-      if (project.generationJob) {
-        setGenerationJob(project.generationJob);
-      }
-
       // Load framing job status (for resuming polling after page refresh)
       if (project.framingJob) {
         setFramingJob(project.framingJob);
@@ -164,7 +152,6 @@ export function useProjectData(projectId: string | undefined) {
     videoUrl,
     transcription,
     generationMetadata,
-    generationJob,
     framingJob,
     activeRenderJobId,
     loading,

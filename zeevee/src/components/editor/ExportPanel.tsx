@@ -728,7 +728,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
 
       <div className="flex flex-col flex-1 min-h-0 rounded-xl border border-border bg-card shadow-sm overflow-hidden">
         <div className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain lg:overflow-hidden">
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.75fr)_minmax(0,1fr)] lg:h-full lg:min-h-0 divide-y lg:divide-y-0 lg:divide-x divide-border">
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,1.75fr)_minmax(0,1fr)] lg:h-full lg:min-h-0 divide-y lg:divide-y-0 lg:divide-x divide-border">
             {/* Scenes */}
             <ExportColumn className="lg:min-w-0">
               <ColumnHeader
