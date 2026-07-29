@@ -14,7 +14,7 @@ import {
 } from "./config";
 import { callClaude, type ClaudeMessage, type SystemBlock } from "./claude";
 import { fmt, renderLedger, renderSegmentTable } from "./ledger";
-import { getPrompt, renderTemplate, SPORTS_HIGHLIGHTS } from "./prompts";
+import { getPrompt, renderTemplate } from "./prompts";
 import type {
   Brief,
   CostMeter,
@@ -46,7 +46,7 @@ export function buildSystemBlocks(params: {
   overrides?: PromptOverrides;
 }): SystemBlock[] {
   const { text: systemPrompt } = getPrompt("system", params.overrides);
-  const blocks: SystemBlock[] = [
+  return [
     { type: "text", text: systemPrompt },
     {
       type: "text",
@@ -54,10 +54,6 @@ export function buildSystemBlocks(params: {
       cache_control: { type: "ephemeral" },
     },
   ];
-  if (params.brief?.isSports) {
-    blocks.push({ type: "text", text: SPORTS_HIGHLIGHTS });
-  }
-  return blocks;
 }
 
 function renderVideoFactsBlock(facts: VideoFacts, brief?: Brief): string {
