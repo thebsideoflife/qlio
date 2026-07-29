@@ -10,7 +10,7 @@ import type { PromptOverrides } from "./types";
 
 export const PROMPT_VERSION = "iq-agent-1.1.2";
 
-export type PromptKey = "system" | "brief" | "guardedFinish" | "compaction";
+export type PromptKey = "system" | "brief" | "guardedFinish" | "compaction" | "formatCompact" | "formatHighlights" | "formatEpisodeRecap" | "formatFullVideo";
 
 export interface PromptSpec {
   key: PromptKey;
@@ -99,7 +99,7 @@ const BRIEF = `Cut this video down.
 **Total runtime target:** {{targetLine}}
 **Per-segment bounds:** {{boundsLine}}
 
-{{instructionsBlock}}Start by orienting yourself: check_budget to see where the cut stands, then read the transcript across the whole timeline in a few wide passes so you know everything that is in here before you decide what matters. A few search_video queries will help you find specific things you can already name. Say what you find and what your plan is before you start cutting. Watch the moments where seeing the footage would change your mind, then build the cut with edit_segments and land inside the target band before you finish.
+{{formatGuideBlock}}{{instructionsBlock}}Start by orienting yourself: check_budget to see where the cut stands, then read the transcript across the whole timeline in a few wide passes so you know everything that is in here before you decide what matters. A few search_video queries will help you find specific things you can already name. Say what you find and what your plan is before you start cutting. Watch the moments where seeing the footage would change your mind, then build the cut with edit_segments and land inside the target band before you finish.
 
 That is a suggested path, not a script. Work however gets the best cut.`;
 
@@ -158,6 +158,29 @@ Field rules — these are hard:
 - **content_advisory**: comma-separated tokens for what genuinely applies — "strong language", "alcohol", "smoking", "violence". Return an empty string when nothing does. Never write "none" or "n/a".
 - **iab_cat**: IDs only, from the lists below, in this order — one to three Topics, one to three Genres, and exactly one Form Factor. Topics are what the scene is *about*; pick the most specific ones that fit. Every entry needs at least one Topic. An ID that is not on the lists is discarded, so do not invent any.`;
 
+// ============================================================================
+// Format guides — injected into the brief when no user prompt is provided.
+// A producer's explicit instructions always shadow these; they set the baseline.
+// ============================================================================
+
+export const FORMAT_GUIDES: Record<string, string> = {
+  compact_video:
+    "Cut this down to its essential story beats — the moments that carry the narrative forward. " +
+    "Remove filler, repeated information, and anything that does not serve the core arc. " +
+    "The result should feel like a shorter version of the same story, not a highlights reel.",
+  highlights:
+    "Select the most memorable, shareable moments from the source. " +
+    "Look for scenes with strong visual impact, emotional peaks, or key narrative turning points. " +
+    "If this is sports content, prioritize scoring plays, replay sequences, and dramatic athletic moments over general game flow.",
+  episode_recap:
+    "Pick 4–6 key story beats that summarize what happened in this episode. " +
+    "Each beat should be a self-contained moment that reminds the viewer of an important plot point or emotional turn. " +
+    "Keep them tight — a recap should jog memory, not replay the whole episode.",
+  full_video:
+    "Divide the video into coherent chapters. Each segment should mark a natural shift in topic, location, or narrative phase. " +
+    "The goal is structural organization — no content is removed, just grouped and titled clearly.",
+};
+
 export const PROMPT_SPECS: PromptSpec[] = [
   {
     key: "system",
@@ -202,6 +225,34 @@ export const PROMPT_SPECS: PromptSpec[] = [
     variables: ["history"],
     default: COMPACTION,
   },
+  {
+    key: "formatCompact",
+    label: "Compact guide",
+    description: "Default guidance for the Compact format.",
+    variables: [],
+    default: FORMAT_GUIDES.compact_video,
+  },
+  {
+    key: "formatHighlights",
+    label: "Highlights guide",
+    description: "Default guidance for the Highlights format.",
+    variables: [],
+    default: FORMAT_GUIDES.highlights,
+  },
+  {
+    key: "formatEpisodeRecap",
+    label: "Episode recap guide",
+    description: "Default guidance for the Episode Recap format.",
+    variables: [],
+    default: FORMAT_GUIDES.episode_recap,
+  },
+  {
+    key: "formatFullVideo",
+    label: "Full video guide",
+    description: "Default guidance for the Full Video format.",
+    variables: [],
+    default: FORMAT_GUIDES.full_video,
+  },
 ];
 
 const DEFAULTS: Record<PromptKey, string> = {
@@ -209,6 +260,10 @@ const DEFAULTS: Record<PromptKey, string> = {
   brief: BRIEF,
   guardedFinish: GUARDED_FINISH,
   compaction: COMPACTION,
+  formatCompact: FORMAT_GUIDES.compact_video,
+  formatHighlights: FORMAT_GUIDES.highlights,
+  formatEpisodeRecap: FORMAT_GUIDES.episode_recap,
+  formatFullVideo: FORMAT_GUIDES.full_video,
 };
 
 export function getPrompt(

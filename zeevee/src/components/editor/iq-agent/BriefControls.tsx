@@ -172,6 +172,8 @@ export function BriefControls({
       minSegmentDuration: minDuration,
       maxSegmentDuration: maxDuration,
       userPrompt: userPrompt.trim() || undefined,
+      // Sports mode only applies to highlight reels; never leak it into other
+      // formats, where the toggle isn't even visible.
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [format, assetType, platform, retain, minDuration, maxDuration, userPrompt]);
@@ -207,7 +209,6 @@ export function BriefControls({
       <Field label="Format">
         <OptionGrid options={FORMATS} value={format} onSelect={handleFormatChange} />
       </Field>
-
       {format === "compact_video" && (
         <Field label="Retain" hint="How much of the source should survive the cut">
           <div className="flex flex-wrap gap-2">

@@ -36,7 +36,7 @@ import { appendEvent, appendEvents } from "./events";
 import { executeTool, type ExecContext, type ExecControl } from "./executor";
 import { computeLedger, fmt } from "./ledger";
 import { finalizeDeliveryMetadata } from "./metadata";
-import { getPrompt, renderTemplate, PROMPT_VERSION } from "./prompts";
+import { FORMAT_GUIDES, getPrompt, renderTemplate, PROMPT_VERSION } from "./prompts";
 import {
   commitSegments,
   getTwelveLabsClient,
@@ -162,7 +162,7 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
     });
 
     // Explicit undefined in a later layer must not erase an earlier value.
-    const brief: Brief = mergeBrief(
+    let brief: Brief = mergeBrief(
       { format: "compact_video" },
       project.savedBrief,
       thread.brief,
@@ -237,7 +237,33 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
       // queued for the next drain rather than disappearing.
       await clearPendingMessages(projectId, pending.length);
 
+      let briefChanged = false;
+      const maybeRefreshBrief = (candidate: Partial<Brief> | undefined) => {
+        if (!candidate) return;
+        const keys = Object.keys(candidate) as Array<keyof Brief>;
+        for (const key of keys) {
+          if (candidate[key] !== undefined && candidate[key] !== (brief as unknown as Record<string, unknown>)[key as string]) {
+            briefChanged = true;
+            break;
+          }
+        }
+        if (briefChanged) {
+          brief = mergeBrief(brief, candidate);
+          // Tools read ctx.brief (ledger, bounds, userPrompt) — keep the
+          // executor's view in sync or the model sees two targets.
+          ctx.brief = brief;
+        }
+      };
+
+      // Thread-level brief update (e.g. from a prior message that saved to the thread)
+      if (current?.brief) {
+        maybeRefreshBrief(current.brief);
+      }
+
       for (const message of pending) {
+        if (message.brief) {
+          maybeRefreshBrief(message.brief);
+        }
         const rendered = renderPending(message, brief, project, ctx.promptOverrides);
         await emit({
           type: "message.user",
@@ -250,6 +276,21 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
           content: [{ type: "text", text: rendered.forModel }],
         });
       }
+
+      if (briefChanged) {
+        ledger = computeLedger(ctx.segments, brief, project.facts.duration, {
+          examined: ctx.examined,
+          hasTranscript: Boolean(project.facts.transcriptS3Uri),
+        });
+        await emit({
+          type: "notice",
+          level: "info",
+          message: `Brief updated: ${describeTarget(brief, project.facts.duration)} · ${describeBounds(brief)}`,
+        });
+        // Persist so a resumed run sees the new brief
+        await persistLoopState();
+      }
+
       return true;
     };
 
@@ -1130,6 +1171,11 @@ function renderPending(
     ? `**The producer also says:** ${brief.userPrompt.trim()}\n\n`
     : "";
 
+  const formatGuide = FORMAT_GUIDES[brief.format ?? ""];
+  const formatGuideBlock = formatGuide
+    ? `**What this format means:** ${formatGuide}\n\n`
+    : "";
+
   const text = renderTemplate(template, {
     title: project.facts.title,
     durationHuman: fmt(project.facts.duration),
@@ -1140,6 +1186,7 @@ function renderPending(
     assetType: brief.assetType ?? "unspecified",
     targetLine: describeTarget(brief, project.facts.duration),
     boundsLine: describeBounds(brief),
+    formatGuideBlock,
     instructionsBlock: instructions,
   });
 
