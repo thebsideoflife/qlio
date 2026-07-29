@@ -111,7 +111,7 @@ export default function Dashboard() {
     <div className="h-full p-8 overflow-y-auto">
       {loading && assets.length === 0 ? (
         <div className="flex gap-8">
-          <div className="w-[480px] shrink-0">
+          <div className="w-full max-w-[480px] shrink-0">
             <AssetCardSkeleton />
           </div>
         </div>
@@ -133,9 +133,9 @@ export default function Dashboard() {
           </button>
         </div>
       ) : (
-        <div className="flex gap-8 items-start h-full">
+        <div className="flex flex-col lg:flex-row gap-8 items-start h-full">
           {/* Spotlight Card - Left side, larger */}
-          <div className="w-[480px] shrink-0">
+          <div className="w-full max-w-[480px] shrink-0">
             {spotlightAsset && (
               <AssetCard
                 key={spotlightAsset.id}
@@ -155,7 +155,7 @@ export default function Dashboard() {
               <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-4">
                 Assets
               </h3>
-              <div className="grid grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
                 {sortedAssets.map((asset) => (
                   <div key={asset.id} className="transition-all rounded-xl">
                     <AssetCard

@@ -178,7 +178,7 @@ export function MainLayout({ children }: MainLayoutProps) {
         {/* Dashboard page info and actions in header */}
         {isDashboardPage && (
           <>
-            <div className="flex-1 flex items-center ml-4">
+            <div className="flex-1 hidden md:flex items-center ml-4">
               <div className="flex items-center gap-5 text-sm text-muted-foreground border-l-2 border-border pl-5 h-8">
                 <div>
                   <span className="font-bold text-foreground">
@@ -264,8 +264,8 @@ export function MainLayout({ children }: MainLayoutProps) {
             <DialogTitle>Edit API Password</DialogTitle>
           </DialogHeader>
           <div className="grid gap-4 py-4">
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="password" className="text-right">
+            <div className="grid grid-cols-1 sm:grid-cols-4 items-center gap-4">
+              <Label htmlFor="password" className="sm:text-right">
                 New Password
               </Label>
               <Input

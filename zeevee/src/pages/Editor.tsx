@@ -614,7 +614,7 @@ export default function Editor() {
   ) : null;
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] min-h-0 overflow-hidden">
+    <div className="relative flex h-[calc(100vh-4rem)] min-h-0 overflow-hidden">
       {/* Left: Video & Timeline */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-background">
         {/* Video Player with Caption Overlay */}
@@ -693,7 +693,9 @@ export default function Editor() {
         <div
           className={cn(
             "flex flex-col bg-card border-l-2 border-border overflow-hidden transition-all duration-200",
-            sidebarOpen ? "w-[420px]" : "w-0",
+            sidebarOpen
+              ? "absolute inset-y-0 right-0 z-40 w-full sm:static sm:w-[420px]"
+              : "w-0",
           )}
         >
           {sidebarOpen && (
