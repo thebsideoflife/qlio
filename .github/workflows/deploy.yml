@@ -35,6 +35,22 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-west-2
 
+      # Terraform/OpenTofu uses profile "zeevee" (hardcoded in backend config).
+      # Create the profile from the env vars set by configure-aws-credentials.
+      - name: Create zeevee AWS profile
+        run: |
+          mkdir -p ~/.aws
+          cat >> ~/.aws/credentials <<'EOF'
+          [zeevee]
+          aws_access_key_id = ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key = ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          EOF
+          cat >> ~/.aws/config <<'EOF'
+          [profile zeevee]
+          region = us-west-2
+          output = json
+          EOF
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -76,7 +92,3 @@ jobs:
 
       - name: Deploy
         run: bash ./deploy.sh --skip-docker
-        env:
-          # deploy.sh picks up shared credentials from the env
-          AWS_SHARED_CREDENTIALS_FILE: ""
-          AWS_CONFIG_FILE: ""
