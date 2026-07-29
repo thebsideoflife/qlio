@@ -176,11 +176,22 @@ export const FORMAT_GUIDES: Record<string, string> = {
     "result feels like a shorter version of the same story, not a highlights reel.",
   highlights:
     "Select the most memorable, shareable moments from the source. " +
+    "Judge each candidate as a standalone clip: it must work for a viewer with no other context, " +
+    "and it should open on or near its hook — the tension, reveal, or conflict that would stop a " +
+    "scroller — rather than building slowly toward it. " +
     "Look for scenes with strong visual impact, emotional peaks, or key narrative turning points. " +
-    "If this is sports content, prioritize scoring plays, replay sequences, and dramatic athletic moments over general game flow.",
+    "If this is sports content, prioritize scoring plays and game-changing actions, replay sequences " +
+    "(often shown right after the live action), momentum shifts, and commentary that explains the " +
+    "significance — search for cues like \"replay\" or \"watch this\" and listen for crowd and " +
+    "commentator energy spikes. A sports highlight is the best seconds of a play, not a summary of " +
+    "general game flow.",
   episode_recap:
     "Pick 4–6 key story beats that summarize what happened in this episode. " +
-    "Each beat should be a self-contained moment that reminds the viewer of an important plot point or emotional turn. " +
+    "The beats must connect as a mini-story — setup, escalation, pivot, payoff — where each beat " +
+    "sets up or pays off another, not a random highlight reel. " +
+    "Favor the beats that matter to what comes next: the oath, betrayal, or revelation that pays " +
+    "off later in the story, over moments that were big but self-contained. " +
+    "Each beat should be the sharpest moment inside its scene — a tight clip, not the whole scene. " +
     "Keep them tight — a recap should jog memory, not replay the whole episode.",
   full_video:
     "Divide the video into coherent chapters. Each segment should mark a natural shift in topic, location, or narrative phase. " +
