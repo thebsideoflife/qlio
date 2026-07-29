@@ -8,7 +8,7 @@
 
 import type { PromptOverrides } from "./types";
 
-export const PROMPT_VERSION = "iq-agent-1.1.2";
+export const PROMPT_VERSION = "iq-agent-1.1.3";
 
 export type PromptKey = "system" | "brief" | "guardedFinish" | "compaction" | "formatCompact" | "formatHighlights" | "formatEpisodeRecap" | "formatFullVideo";
 
@@ -166,8 +166,14 @@ Field rules — these are hard:
 export const FORMAT_GUIDES: Record<string, string> = {
   compact_video:
     "Cut this down to its essential story beats — the moments that carry the narrative forward. " +
-    "Remove filler, repeated information, and anything that does not serve the core arc. " +
-    "The result should feel like a shorter version of the same story, not a highlights reel.",
+    "First work out the story's thread structure: the A-story (the main spine), the B-story (the one " +
+    "secondary thread that pays off, usually carried by core cast), and any C-stories (tangential " +
+    "subplots). Keep the A-story intact, keep the B-story where it earns its place, and cut C-stories, " +
+    "filler, repeated information, and anything that does not serve the core arc. " +
+    "Track the primary characters: scenes driven by them almost always outrank scenes without them, " +
+    "and a thread only counts as kept if its key character moments survive. " +
+    "Cover the whole timeline — the kept beats must run from the opening act to the ending so the " +
+    "result feels like a shorter version of the same story, not a highlights reel.",
   highlights:
     "Select the most memorable, shareable moments from the source. " +
     "Look for scenes with strong visual impact, emotional peaks, or key narrative turning points. " +
