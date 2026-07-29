@@ -47,6 +47,11 @@ export const SelfDirectedCutSchema = z.object({
   title: z.string().min(1),
   description: z.string(),
   narrativeRole: z.string().nullish(),
+  /**
+   * Why these exact in/out points — forces edge-level deliberation so cuts
+   * are timed on rich moments instead of rounded zone spans.
+   */
+  edgeReason: z.string().nullish(),
 });
 
 export type SelfDirectedCut = z.infer<typeof SelfDirectedCutSchema>;
@@ -78,6 +83,7 @@ export const SELF_DIRECTED_CUTS_JSON_SCHEMA: Record<string, unknown> = {
           title: { type: "string" },
           description: { type: "string" },
           narrativeRole: { type: "string" },
+          edgeReason: { type: "string" },
         },
         required: ["startTime", "endTime", "title", "description"],
       },
@@ -104,6 +110,7 @@ export type V3IssueCode =
   | "missing_scene_boundaries"
   | "edge_off_scene_boundary"
   | "seam_cut"
+  | "segment_duration"
   | "title_artifact";
 
 export interface V3Issue {
@@ -183,6 +190,9 @@ export interface ValidateSelfDirectedOptions {
   videoDurationSec: number;
   /** Requested compact total in seconds (band = ×0.9–×1.1). */
   targetSeconds: number;
+  /** Producer-requested per-segment bounds (compact only). Enforced per segment. */
+  minSegmentDurationSec?: number;
+  maxSegmentDurationSec?: number;
   /** Known internal chunk/window seams, if any. Empty for single-pass uploads. */
   seamTimestampsSec?: number[];
 }
@@ -258,6 +268,34 @@ export function validateSelfDirectedCuts(
           `Compact total ${Math.round(total)}s outside ${Math.round(lower)}–${Math.round(upper)}s ` +
           `(target ~${Math.round(targetSeconds)}s). Adjust which scenes you keep — do not pad or clip mid-scene.`,
       });
+    }
+
+    // --- Per-segment duration bounds (producer's min/max, when provided) ---
+    // Editorial gate: drives the re-ask loop. Catches the "find a zone, coast
+    // to max length" failure mode — a segment at/over the max is presumed
+    // padded unless Jockey re-times it tight.
+    const minSeg = options.minSegmentDurationSec;
+    const maxSeg = options.maxSegmentDurationSec;
+    if (minSeg || maxSeg) {
+      for (const s of segments) {
+        const dur = s.endTime - s.startTime;
+        if (maxSeg && dur > maxSeg + 0.5) {
+          issues.push({
+            code: "segment_duration",
+            message:
+              `"${s.title}" runs ${Math.round(dur)}s — over the ${Math.round(maxSeg)}s max. ` +
+              `Tighten the out-point to where the moment lands instead of holding the zone.`,
+          });
+        }
+        if (minSeg && dur < minSeg - 0.5) {
+          issues.push({
+            code: "segment_duration",
+            message:
+              `"${s.title}" runs ${Math.round(dur)}s — under the ${Math.round(minSeg)}s min. ` +
+              `Open earlier on the build-up or fold it into a neighboring segment.`,
+          });
+        }
+      }
     }
 
     // --- Quartile spread on long sources ---
@@ -349,7 +387,9 @@ export function mapToProposedSegments(
     startTime: c.startTime,
     endTime: c.endTime,
     title: c.title,
-    reasoning: c.description,
+    reasoning: c.edgeReason
+      ? `${c.description} (Edges: ${c.edgeReason})`
+      : c.description,
     expectedContent: "",
     section: c.narrativeRole ? `role-${c.narrativeRole}` : "jockey-v3",
   }));

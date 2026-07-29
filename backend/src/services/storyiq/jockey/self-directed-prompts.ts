@@ -35,6 +35,9 @@ export interface SelfDirectedPromptOptions {
   durationSec: number;
   targetSeconds: number;
   userInstructions?: string;
+  /** Producer-requested per-segment bounds (compact only). */
+  minSegmentDurationSec?: number;
+  maxSegmentDurationSec?: number;
 }
 
 function formatBlock(opts: SelfDirectedPromptOptions): string {
@@ -49,14 +52,21 @@ function formatBlock(opts: SelfDirectedPromptOptions): string {
   }
   const lower = Math.round(targetSeconds * COMPACT_BAND_LOWER_MULT);
   const upper = Math.round(targetSeconds * COMPACT_BAND_UPPER_MULT);
+  const segMin = Math.round(opts.minSegmentDurationSec ?? 60);
+  const segMax = Math.round(opts.maxSegmentDurationSec ?? 120);
   return [
     `FORMAT: Compact microseries — the episode distilled to its core moments.`,
     `- Source runs ${Math.round(durationSec)}s. Keep material totaling ${lower}–${upper}s (target ~${Math.round(targetSeconds)}s — about half the episode).`,
     `- Each segment becomes its own standalone video in the microseries: it must be watchable in isolation and carry a complete moment or mini-arc.`,
-    `- Aim for segments of roughly 60–120 seconds each. Longer is fine when a scene truly earns it; never pad a thin scene to fit.`,
+    `- Each segment must run ${segMin}–${segMax} seconds — a hard bound from the producer, not a suggestion.`,
     `- Prioritize scenes driven by the primary characters. Cut B-roll, establishing filler, and side threads that don't advance the core story.`,
     `- Spread selections roughly uniformly across the ENTIRE timeline — opening act through ending — so together they tell the full story.`,
-    `- Do not include dead air or filler at the ends of a segment: open where the moment engages and close where it lands, on a clean boundary.`,
+    ``,
+    `EDGE DISCIPLINE (most important):`,
+    `- Choose SPECIFIC starts and ends. Open at the exact moment the rich content begins — the first line, action, or reveal that earns the segment — not at the top of the general zone it lives in.`,
+    `- Close the moment the beat lands. Never hold a segment open to coast toward the max length or the runtime target; a tight ${segMin}s beat always beats a padded ${segMax}s zone.`,
+    `- Never round timestamps to whole minutes or tidy numbers. Times like 660.0 or 1020.0 are a tell that you estimated instead of verified — every edge must come from watching the content and land within a second or two of the real moment.`,
+    `- If a scene is rich for only part of its span, cut only the rich part. Do not include dead air, walk-and-talk filler, or establishing tails at either end of a segment.`,
   ].join("\n");
 }
 
@@ -96,6 +106,7 @@ export function buildSelfDirectedPrompt(
     `- sceneBoundaries: every scene-change timestamp you identified while exploring (including all cut edges).`,
     `- title: human-readable headline per segment, ≤10 words, WHO does WHAT. No "(Part N)" or numbering suffixes.`,
     `- description: one sentence on why the moment earns its place in the story.`,
+    `- edgeReason: one short clause per segment naming the specific moment each edge cuts on (e.g. "opens on the first absinthe pour, closes on his verdict"). This is how you prove the edges are deliberate, not rounded.`,
   ].join("\n");
 }
 

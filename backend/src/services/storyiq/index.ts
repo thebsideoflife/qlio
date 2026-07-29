@@ -167,6 +167,8 @@ export async function generateWithStoryIQ(
       targetDuration: goals.targetDuration,
       targetPercent: goals.targetPercent,
       userInstructions: goals.userInstructions,
+      minSegmentDuration: goals.minSegmentDuration,
+      maxSegmentDuration: goals.maxSegmentDuration,
       maxPollWaitMs: input.maxAsyncWaitMs,
       agentsApiKey: input.jockeyV3.agentsApiKey,
       agentsAssetId: input.jockeyV3.agentsAssetId,

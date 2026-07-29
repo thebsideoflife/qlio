@@ -63,6 +63,9 @@ export interface JockeyV3PipelineOptions {
   targetDuration?: number;
   targetPercent?: number;
   userInstructions?: string;
+  /** Producer-requested per-segment bounds (seconds) — enforced per segment in the prompt and the validator. */
+  minSegmentDuration?: number;
+  maxSegmentDuration?: number;
   /** Overall time budget in ms (Lambda passes remaining-time-minus-buffer). */
   maxPollWaitMs?: number;
 
@@ -234,6 +237,8 @@ export async function generateSegmentsWithJockeyV3(
     durationSec: duration,
     targetSeconds,
     userInstructions: options.userInstructions,
+    minSegmentDurationSec: options.minSegmentDuration,
+    maxSegmentDurationSec: options.maxSegmentDuration,
   };
 
   const passRecords: PassRecord[] = [];
@@ -377,6 +382,8 @@ export async function generateSegmentsWithJockeyV3(
       purpose: purposeKey,
       videoDurationSec: duration,
       targetSeconds,
+      minSegmentDurationSec: options.minSegmentDuration,
+      maxSegmentDurationSec: options.maxSegmentDuration,
       seamTimestampsSec: options.seamTimestampsSec,
     });
 
