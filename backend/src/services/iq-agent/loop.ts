@@ -36,7 +36,7 @@ import { appendEvent, appendEvents } from "./events";
 import { executeTool, type ExecContext, type ExecControl } from "./executor";
 import { computeLedger, fmt } from "./ledger";
 import { finalizeDeliveryMetadata } from "./metadata";
-import { getPrompt, renderTemplate, PROMPT_VERSION } from "./prompts";
+import { FORMAT_GUIDES, getPrompt, renderTemplate, PROMPT_VERSION } from "./prompts";
 import {
   commitSegments,
   getTwelveLabsClient,
@@ -1171,6 +1171,11 @@ function renderPending(
     ? `**The producer also says:** ${brief.userPrompt.trim()}\n\n`
     : "";
 
+  const formatGuide = FORMAT_GUIDES[brief.format ?? ""];
+  const formatGuideBlock = formatGuide
+    ? `**What this format means:** ${formatGuide}\n\n`
+    : "";
+
   const text = renderTemplate(template, {
     title: project.facts.title,
     durationHuman: fmt(project.facts.duration),
@@ -1181,6 +1186,7 @@ function renderPending(
     assetType: brief.assetType ?? "unspecified",
     targetLine: describeTarget(brief, project.facts.duration),
     boundsLine: describeBounds(brief),
+    formatGuideBlock,
     instructionsBlock: instructions,
   });
 
