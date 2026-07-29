@@ -200,6 +200,7 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
       // Carried forward across runs: a follow-up should not have to re-read the
       // timeline to prove it already knows what is on it.
       examined: thread.examined ?? [],
+      examinedVisual: [],
       askCount: run.askCount ?? 0,
       finishRefusals: run.finishRefusals ?? 0,
       searchMisses: 0,
@@ -213,6 +214,7 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
 
     let ledger: Ledger = computeLedger(ctx.segments, brief, project.facts.duration, {
       examined: ctx.examined,
+      visualExamined: ctx.examinedVisual,
       hasTranscript: Boolean(project.facts.transcriptS3Uri),
     });
     let noToolNudges = 0;
@@ -280,6 +282,7 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
       if (briefChanged) {
         ledger = computeLedger(ctx.segments, brief, project.facts.duration, {
           examined: ctx.examined,
+          visualExamined: ctx.examinedVisual,
           hasTranscript: Boolean(project.facts.transcriptS3Uri),
         });
         await emit({
