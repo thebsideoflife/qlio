@@ -2,10 +2,9 @@
 name: deploy-zeevee
 description: >
   How Zeevee ships: the frontend (zeevee/) deploys via Vercel when a PR merges
-  to main; the backend (backend/ + infrastructure/) deploys by running
-  ./deploy.sh from the repo root with the "zeevee" AWS profile in us-west-2.
-  There is no GitHub Actions deploy for this repo. Do not invent another
-  deploy path.
+  to main; the backend (backend/ + infrastructure/) deploys via GitHub Actions
+  (.github/workflows/deploy.yml) on merge, or manually via ./deploy.sh from a
+  sandbox.
 triggers:
   - deploy
   - ship
@@ -17,7 +16,7 @@ triggers:
 license: MIT
 metadata:
   author: ColemanIsner
-  version: "1.0.0"
+  version: "2.0.0"
 ---
 
 # Deploying Zeevee
@@ -27,11 +26,11 @@ metadata:
 | Change touches | How it ships | Verify with |
 |---|---|---|
 | `zeevee/` (Vite frontend) | **Merge PR to `main`** — Vercel deploys automatically (`zeevee/vercel.json`) | Vercel deployment status / open the production URL |
-| `backend/`, `infrastructure/` | **`./deploy.sh`** from the repo root (add `--skip-docker` unless the FFmpeg image changed) | harness MCP `aws_error_summary` / `aws_get_log_events` with `product_id=zeevee`, `region=us-west-2` |
-| Both | PR review → merge (frontend goes out via Vercel) → then `./deploy.sh` for the backend | Both of the above |
+| `backend/`, `infrastructure/` | **GitHub Actions** (`.github/workflows/deploy.yml`) on merge to `main`, or **`./deploy.sh`** from a sandbox. Add `--skip-docker` unless the FFmpeg image changed. | harness MCP `aws_error_summary` / `aws_get_log_events` with `product_id=zeevee`, `region=us-west-2` |
+| Both | PR review → merge (frontend goes out via Vercel, backend deploys via GHA) | Both of the above |
 
 - Region is always **`us-west-2`**. Profile is always **`zeevee`** (`deploy.sh` defaults both).
-- Merging to `main` deploys the **frontend only**. Backend changes do nothing until someone runs `./deploy.sh`.
+- Merging to `main` deploys **both** frontend (Vercel) and backend (GitHub Actions) automatically.
 - Do not run `aws lambda update-function-code`, `sam deploy`, or hand-rolled `tofu apply` invocations — `./deploy.sh` is the single backend deploy path (it builds the backend, packages Lambdas, and runs `tofu apply` in `infrastructure/`).
 
 ## Credentials (harness sandboxes)
@@ -58,10 +57,31 @@ tofu -chdir=infrastructure init -input=false
 
 If `init` or `plan` reports a **lock timeout**, another deploy is in flight — wait and retry; never use `-lock=false` or force-unlock without the operator.
 
-## Backend deploy, step by step
+## Git identity (sandbox only)
+
+Always run `gh auth setup-git` before any git push in a sandbox. This configures
+the correct git credential helper and user identity from the authenticated GitHub
+user. **Never hardcode a user email** -- the noreply email format includes a
+user ID number that differs per account, and using the wrong ID attributes the
+commit to a different user.
 
 ```bash
+git remote set-url origin https://github.com/ColemanIsner/zeevee.git   # clean URL, no embedded token
+gh auth setup-git
+```
+
+## Backend deploy, step by step
+
+### Via GitHub Actions (automatic)
+Merge a PR touching `backend/` or `infrastructure/` to `main`. The workflow
+`.github/workflows/deploy.yml` runs automatically. Requires `AWS_ACCESS_KEY_ID`
+and `AWS_SECRET_ACCESS_KEY` set as GitHub Actions secrets on the repo.
+
+### Via sandbox (manual)
+```bash
 cd <repo root>
+git remote set-url origin https://github.com/ColemanIsner/zeevee.git
+gh auth setup-git                              # sets correct user identity
 export AWS_SHARED_CREDENTIALS_FILE=/etc/agent-harness/zeevee/aws-credentials
 export AWS_CONFIG_FILE=/etc/agent-harness/zeevee/aws-config
 
@@ -90,6 +110,6 @@ tofu -chdir=infrastructure init -input=false
 
 ## Related skills
 
-- `merge-triggers-deploy` — the Graided contract; **does not apply here** (Zeevee has no deploy workflows).
+- `merge-triggers-deploy` — the Graided contract.
 - `harness-mcp` — the MCP tools used for post-deploy log checks.
 - `aws-as-product` — read-only AWS CLI via `zeevee_dev` assume-role; use for inspection, not deploys.
