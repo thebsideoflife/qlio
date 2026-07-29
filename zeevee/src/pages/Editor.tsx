@@ -78,7 +78,95 @@ export default function Editor() {
   // Track the last projectId we initialized state for — used to reset state on project change
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Sidebar width/open state persisted in localStorage (UI chrome, not Redux),
+  // matching existing conventions (api_password, zeevee:recentAssets).
+  const SIDEBAR_STORAGE_KEY = "zeevee:editorSidebar";
+  const SIDEBAR_DEFAULT_WIDTH = 420;
+  const SIDEBAR_MIN_WIDTH = 320;
+  const SIDEBAR_MAX_WIDTH = 720;
+  // Dragging below this width snaps the panel shut
+  const SIDEBAR_COLLAPSE_WIDTH = 200;
+
+  const clampSidebarWidth = (width: number) =>
+    Math.max(
+      SIDEBAR_MIN_WIDTH,
+      Math.min(SIDEBAR_MAX_WIDTH, width, window.innerWidth * 0.6),
+    );
+
+  const readSidebarState = (): { width: number; open: boolean } => {
+    try {
+      const raw = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed?.width === "number" && typeof parsed?.open === "boolean") {
+          return { width: clampSidebarWidth(parsed.width), open: parsed.open };
+        }
+      }
+    } catch {
+      // fall through to defaults on malformed storage
+    }
+    return { width: SIDEBAR_DEFAULT_WIDTH, open: true };
+  };
+
+  const [sidebarState, setSidebarState] = useState(readSidebarState);
+  const sidebarOpen = sidebarState.open;
+  const sidebarWidth = sidebarState.width;
+  const [sidebarResizing, setSidebarResizing] = useState(false);
+  const setSidebarOpen = (open: boolean) =>
+    setSidebarState((s) => ({ ...s, open }));
+
+  // Persist on open/width settle (not every mousemove — write on drag end below)
+  const persistSidebarState = (state: { width: number; open: boolean }) => {
+    try {
+      localStorage.setItem(SIDEBAR_STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      // storage full/unavailable — non-fatal
+    }
+  };
+
+  // Drag-to-resize via the sidebar's left edge, using the same window-level
+  // mousemove/mouseup pattern as the framing drag below.
+  const handleSidebarResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setSidebarResizing(true);
+  };
+
+  useEffect(() => {
+    if (!sidebarResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      // Sidebar is flush right: width = distance from cursor to viewport right edge
+      const width = window.innerWidth - e.clientX;
+      if (width < SIDEBAR_COLLAPSE_WIDTH) {
+        setSidebarState((s) => ({ ...s, open: false }));
+      } else {
+        setSidebarState({ width: clampSidebarWidth(width), open: true });
+      }
+    };
+
+    const handleMouseUp = () => {
+      setSidebarResizing(false);
+      setSidebarState((s) => {
+        persistSidebarState(s);
+        return s;
+      });
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+     
+  }, [sidebarResizing]);
+
+  // Persist open-state toggles (drag-end persistence handled above)
+  useEffect(() => {
+    persistSidebarState(sidebarState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- persist is a stable helper
+  }, [sidebarState.open]);
   const [autoFrameEnabled, setAutoFrameEnabled] = useState(true);
 
   // Refs — declared before render-time reset block so they can be accessed there
@@ -690,11 +778,26 @@ export default function Editor() {
           />
         </button>
 
+        {/* Drag-to-resize handle on the sidebar's left edge */}
+        {sidebarOpen && (
+          <div
+            onMouseDown={handleSidebarResizeStart}
+            className={cn(
+              "absolute left-0 top-0 bottom-0 w-2 -translate-x-1/2 z-10 cursor-col-resize",
+              "hover:bg-blue-500/30",
+              sidebarResizing && "bg-blue-500/40",
+            )}
+            title="Drag to resize panel"
+          />
+        )}
+
         <div
           className={cn(
-            "flex flex-col bg-card border-l-2 border-border overflow-hidden transition-all duration-200",
-            sidebarOpen ? "w-[420px]" : "w-0",
+            "flex flex-col bg-card border-l-2 border-border overflow-hidden",
+            // Suppress width transition while dragging so the panel tracks the cursor
+            !sidebarResizing && "transition-all duration-200",
           )}
+          style={{ width: sidebarOpen ? sidebarWidth : 0 }}
         >
           {sidebarOpen && (
             <>
