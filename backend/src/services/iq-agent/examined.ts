@@ -125,3 +125,37 @@ export function isCovered(accounted: Interval[], start: number, end: number): bo
   const mid = (start + end) / 2;
   return accounted.some((i) => mid >= i.start && mid <= i.end);
 }
+
+/** How far outside a visual-examination interval an edge may sit and still count as seen. */
+export const EDGE_VERIFY_TOLERANCE_SEC = 2;
+
+/**
+ * Segment edges the agent never verified visually. An edge counts as verified
+ * when a view_frames or watch_clip window covers it (within tolerance). Edges
+ * at the very start or end of the source are exempt — there is no boundary
+ * to find there.
+ */
+export function findUnverifiedEdges(
+  segments: AgentSegment[],
+  visualExamined: Interval[],
+  videoDuration: number,
+): Array<{ segmentId: string; title: string; edge: "start" | "end"; time: number }> {
+  const seen = (t: number) =>
+    visualExamined.some(
+      (i) => t >= i.start - EDGE_VERIFY_TOLERANCE_SEC && t <= i.end + EDGE_VERIFY_TOLERANCE_SEC,
+    );
+  const out: Array<{ segmentId: string; title: string; edge: "start" | "end"; time: number }> = [];
+  for (const s of segments) {
+    if (s.startTime > EDGE_VERIFY_TOLERANCE_SEC && !seen(s.startTime)) {
+      out.push({ segmentId: s.id, title: s.title || "(untitled)", edge: "start", time: s.startTime });
+    }
+    if (
+      videoDuration > 0 &&
+      s.endTime < videoDuration - EDGE_VERIFY_TOLERANCE_SEC &&
+      !seen(s.endTime)
+    ) {
+      out.push({ segmentId: s.id, title: s.title || "(untitled)", edge: "end", time: s.endTime });
+    }
+  }
+  return out;
+}

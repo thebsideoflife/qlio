@@ -123,6 +123,17 @@ export interface Ledger {
   };
   overlaps: LedgerOverlap[];
   coverage: LedgerCoverage;
+  /**
+   * Segment edges never verified with a visual tool (view_frames/watch_clip).
+   * A transcript can place a topic but not a cut point; edges placed from
+   * dialogue alone are how "zone, then coast to max length" happens.
+   */
+  unverifiedEdges: Array<{
+    segmentId: string;
+    title: string;
+    edge: "start" | "end";
+    time: number;
+  }>;
   /** Human-readable. Empty means the cut is structurally and arithmetically clean. */
   blocking: string[];
   /** Non-blocking observations worth surfacing to both model and producer. */

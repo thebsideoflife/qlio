@@ -9,7 +9,7 @@
  * the agent picks or where it places a boundary.
  */
 
-import { blindSpotFloor, findBlindSpots, mergeIntervals, totalSeconds } from "./examined";
+import { blindSpotFloor, findBlindSpots, findUnverifiedEdges, mergeIntervals, totalSeconds } from "./examined";
 import type {
   AgentSegment,
   Brief,
@@ -82,6 +82,8 @@ export function segmentDuration(seg: Pick<AgentSegment, "startTime" | "endTime">
 export interface CoverageInput {
   /** Everything the agent has looked at this session. */
   examined: Interval[];
+  /** Stretches verified with a visual tool (view_frames / watch_clip). */
+  visualExamined?: Interval[];
   /** Drives how strict the blind-spot floor is; examining is dear without one. */
   hasTranscript: boolean;
 }
@@ -138,6 +140,10 @@ export function computeLedger(
 
   const overlaps = findOverlaps(sorted);
   const coverageReport = computeCoverage(sorted, videoDuration, coverage);
+  const unverifiedEdges =
+    coverage != null
+      ? findUnverifiedEdges(sorted, coverage.visualExamined ?? [], videoDuration)
+      : [];
 
   const blocking: string[] = [];
   const warnings: string[] = [];
@@ -172,6 +178,14 @@ export function computeLedger(
     blocking.push(`Segments ${o.a} and ${o.b} overlap by ${fmt(o.seconds)}.`);
   }
 
+  for (const e of unverifiedEdges) {
+    blocking.push(
+      `The ${e.edge} of "${e.title}" at ${fmtTimecode(e.time)} was never verified visually — ` +
+        `view_frames at that timestamp (or watch_clip across it) to confirm the cut lands on a real boundary, ` +
+        `then re-time it to where the moment actually starts or ends.`,
+    );
+  }
+
   if (coverageReport.spreadWarning) warnings.push(coverageReport.spreadWarning);
 
   if (status === "no_target" && sorted.length > 0) {
@@ -195,6 +209,7 @@ export function computeLedger(
     perSegment: { min, max, violations },
     overlaps,
     coverage: coverageReport,
+    unverifiedEdges,
     blocking,
     warnings,
   };

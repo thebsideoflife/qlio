@@ -62,6 +62,11 @@ export interface ExecContext {
   transcriptError?: string;
   /** Every stretch looked at, carried across runs on the thread. */
   examined: Interval[];
+  /**
+   * Stretches verified with a visual tool (watch_clip / view_frames) this run.
+   * In-memory only: edge verification must be fresh in the run that cuts.
+   */
+  examinedVisual: Interval[];
   askCount: number;
   finishRefusals: number;
   /** Consecutive searches that surfaced no window an earlier query had not. */
@@ -102,14 +107,14 @@ function coverageFor(ctx: ExecContext): CoverageInput | undefined {
   const transcriptLoadFailed = ctx.transcriptWords?.length === 0;
   const hasTranscript = Boolean(ctx.facts.transcriptS3Uri) && !transcriptLoadFailed;
   if (!hasTranscript && !ctx.client) return undefined;
-  return { examined: ctx.examined, hasTranscript };
+  return { examined: ctx.examined, visualExamined: ctx.examinedVisual, hasTranscript };
 }
 
 function ledgerFor(ctx: ExecContext): Ledger {
   return computeLedger(ctx.segments, ctx.brief, ctx.facts.duration, coverageFor(ctx));
 }
 
-function markExamined(ctx: ExecContext, start: number, end: number): void {
+export function markExamined(ctx: ExecContext, start: number, end: number): void {
   const before = totalSeconds(ctx.examined);
   ctx.examined = recordExamined(ctx.examined, start, end, ctx.facts.duration);
   // Looking somewhere genuinely new re-arms the search breaker. Without this,
@@ -335,6 +340,12 @@ async function execWatch(
   if (outcome.recorded) {
     ctx.watchHistory.push(outcome.recorded);
     markExamined(ctx, outcome.recorded.start, outcome.recorded.end);
+    ctx.examinedVisual = recordExamined(
+      ctx.examinedVisual,
+      outcome.recorded.start,
+      outcome.recorded.end,
+      ctx.facts.duration,
+    );
   }
 
   return outcome.result;
@@ -357,6 +368,12 @@ async function execFrames(
       const t = Number(raw);
       if (Number.isFinite(t)) {
         markExamined(ctx, t - FRAME_EXAMINE_PAD_SEC, t + FRAME_EXAMINE_PAD_SEC);
+        ctx.examinedVisual = recordExamined(
+          ctx.examinedVisual,
+          t - FRAME_EXAMINE_PAD_SEC,
+          t + FRAME_EXAMINE_PAD_SEC,
+          ctx.facts.duration,
+        );
       }
     }
   }

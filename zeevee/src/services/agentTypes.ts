@@ -84,6 +84,13 @@ export interface AgentLedger {
   };
   blocking: string[];
   warnings: string[];
+  /** Segment edges never verified with a visual tool; each is also listed in blocking. */
+  unverifiedEdges?: Array<{
+    segmentId: string;
+    title: string;
+    edge: "start" | "end";
+    time: number;
+  }>;
 }
 
 export interface AgentCost {
