@@ -1,0 +1,82 @@
+name: Deploy backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'infrastructure/**'
+      - 'deploy.sh'
+      - 'build-ffmpeg-layer.sh'
+      - '.github/workflows/deploy.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-west-2
+  TF_VAR_profile: zeevee
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci
+        working-directory: backend
+
+      - name: Build backend
+        run: npm run build
+        working-directory: backend
+
+      - name: Package render Lambda
+        run: bash ./package-render.sh
+        working-directory: backend
+
+      - name: Restore cached FFmpeg layer
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: infrastructure/layers/ffmpeg-layer.zip
+          key: ffmpeg-layer-${{ hashFiles('build-ffmpeg-layer.sh') }}
+
+      - name: Build FFmpeg layer
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: bash ./build-ffmpeg-layer.sh
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.10.x
+
+      - name: Init OpenTofu
+        run: tofu init -input=false
+        working-directory: infrastructure
+
+      - name: Deploy
+        run: bash ./deploy.sh --skip-docker
+        env:
+          # deploy.sh picks up shared credentials from the env
+          AWS_SHARED_CREDENTIALS_FILE: ""
+          AWS_CONFIG_FILE: ""
