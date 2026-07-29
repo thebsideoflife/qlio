@@ -6,7 +6,6 @@
 
 import { useEffect, useState } from "react";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
   TooltipContent,
@@ -120,7 +119,6 @@ export function BriefControls({
     SEGMENT_DURATION_DEFAULTS[DEFAULT_FORMAT].max,
   );
   const [userPrompt, setUserPrompt] = useState("");
-  const [isSports, setIsSports] = useState(false);
 
   // Restore whatever was used last time this project ran.
   useEffect(() => {
@@ -160,7 +158,6 @@ export function BriefControls({
       onPlatformChange?.(saved.platform);
     }
     setUserPrompt(saved.userPrompt?.trim() ?? "");
-    setIsSports(saved.isSports === true);
     // Restore only when the project's saved state arrives.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedBrief, savedInputs]);
@@ -177,10 +174,9 @@ export function BriefControls({
       userPrompt: userPrompt.trim() || undefined,
       // Sports mode only applies to highlight reels; never leak it into other
       // formats, where the toggle isn't even visible.
-      isSports: format === "highlights" ? isSports || undefined : undefined,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [format, assetType, platform, retain, minDuration, maxDuration, userPrompt, isSports]);
+  }, [format, assetType, platform, retain, minDuration, maxDuration, userPrompt]);
 
   const handleFormatChange = (next: string) => {
     setFormat(next);
@@ -189,7 +185,6 @@ export function BriefControls({
     setMinDuration(defaults.min);
     setMaxDuration(defaults.max);
     if (next === "compact_video") setRetain("auto");
-    if (next !== "highlights") setIsSports(false);
   };
 
   const maxLength = 8000;
@@ -214,24 +209,6 @@ export function BriefControls({
       <Field label="Format">
         <OptionGrid options={FORMATS} value={format} onSelect={handleFormatChange} />
       </Field>
-
-      {format === "highlights" && (
-        <div className="flex items-center justify-between">
-          <Label
-            htmlFor="agent-is-sports"
-            className="text-xs font-semibold text-muted-foreground cursor-pointer"
-          >
-            Sports content
-          </Label>
-          <Switch
-            id="agent-is-sports"
-            checked={isSports}
-            onCheckedChange={setIsSports}
-            disabled={disabled}
-          />
-        </div>
-      )}
-
       {format === "compact_video" && (
         <Field label="Retain" hint="How much of the source should survive the cut">
           <div className="flex flex-wrap gap-2">
