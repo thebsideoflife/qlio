@@ -54,10 +54,20 @@ function scoreMicroseriesSegment(meta: Record<string, unknown>): number {
 
   if (String(meta.microseries_keep || "").toLowerCase() === "yes") score += 0.08;
 
-  // Legacy fields (older Pegasus tasks)
+  // primary_storyline: A > B > multiple > C (C-plots deprioritized for compact)
+  const storyline = String(meta.primary_storyline || "").toUpperCase();
+  if (storyline === "A") score += 0.2;
+  else if (storyline === "B") score += 0.1;
+  else if (storyline === "MULTIPLE") score += 0.05;
+  else if (storyline === "C") score -= 0.2;
+
   const clipFit = String(meta.clip_fit || "").toLowerCase();
   if (clipFit === "strong") score += 0.15;
   else if (clipFit === "weak") score -= 0.1;
+
+  if (meta.vertical_hook_potential && String(meta.vertical_hook_potential).length > 10) {
+    score += 0.1;
+  }
 
   return Math.max(0, Math.min(1, score));
 }

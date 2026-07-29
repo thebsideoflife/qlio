@@ -25,12 +25,13 @@ export const QLIO_PEGASUS_SEGMENT_MIN_SEC = 60;
 export const QLIO_PEGASUS_SEGMENT_MAX_SEC = 180;
 
 // =============================================================================
-// Qlio Microseries Definition (replaces A/B/C prompt)
+// Qlio Microseries Definition (with A/B/C storyline tagging)
 // =============================================================================
 
 /**
- * Microseries segment definition — simple, editorial-focused.
- * No A/B/C jargon. Uses `microseries_keep` for downstream filtering.
+ * Microseries segment definition — editorial-focused with A/B/C storyline tagging.
+ * `microseries_keep`/`narrative_role` drive downstream filtering; `primary_storyline`,
+ * `clip_fit`, and `vertical_hook_potential` feed selection scoring.
  */
 export function qlioMicroseriesSegmentDefinitions(): TwelvelabsApi.SegmentDefinition[] {
   return [
@@ -41,7 +42,9 @@ export function qlioMicroseriesSegmentDefinitions(): TwelvelabsApi.SegmentDefini
         "(setting change, major story turn, or clear emotional shift). " +
         "A microseries cut keeps the main storyline plus one meaningful secondary thread with core cast; " +
         "tangential subplots, filler, and transitions that don't advance plot should be marked for exclusion. " +
-        "If no clear threads exist, deliver a pared-down main spine only.",
+        "If no clear threads exist, deliver a pared-down main spine only. " +
+        "If the video uses interleaved storylines, keep timeline order and tag which narrative thread " +
+        "dominates each segment via primary_storyline (A/B/C microdrama style).",
       fields: [
         {
           name: "title",
@@ -67,6 +70,23 @@ export function qlioMicroseriesSegmentDefinitions(): TwelvelabsApi.SegmentDefini
           items: { type: "string" },
         },
         {
+          name: "primary_storyline",
+          type: "string",
+          description:
+            "Which narrative thread this segment mainly advances (microdrama A/B/C style): " +
+            "A = main spine/core plot, B = meaningful secondary thread with core cast, " +
+            "C = tangential subplot, multiple = threads genuinely interweave in one scene, " +
+            "none = intro/outro/non-story material, unclear = cannot tell. " +
+            "Keep primary_storyline consistent with narrative_role: A~main_story, B~secondary_story, C~subplot.",
+          enum: ["A", "B", "C", "multiple", "none", "unclear"],
+        },
+        {
+          name: "storyline_note",
+          type: "string",
+          description:
+            "If primary_storyline is multiple or unclear, briefly explain the overlapping threads or transitions.",
+        },
+        {
           name: "narrative_role",
           type: "string",
           description:
@@ -85,6 +105,18 @@ export function qlioMicroseriesSegmentDefinitions(): TwelvelabsApi.SegmentDefini
           description:
             "Should this segment be kept in the microseries cut? 'yes' for main_story and valuable secondary_story; 'no' for subplot, filler, pure transitions, or content that doesn't advance core narrative.",
           enum: ["yes", "no"],
+        },
+        {
+          name: "clip_fit",
+          type: "string",
+          description: "How suitable this beat is as a standalone short clip.",
+          enum: ["strong", "moderate", "weak"],
+        },
+        {
+          name: "vertical_hook_potential",
+          type: "string",
+          description:
+            "One line: why a viewer might stop scrolling here (tension, reveal, conflict, etc.).",
         },
       ],
     },
@@ -115,7 +147,15 @@ export function qlioMicroseriesSegmentDefinitionsForGeneration(opts: {
     );
   }
 
+  if (opts.targetDurationSeconds && opts.targetDurationSeconds > 0) {
+    parts.push(
+      "Mark clip_fit=strong on beats that are essential for hitting that target, weak on tangents.",
+    );
+  }
+
   parts.push(
+    "Use primary_storyline A/B/C only when threads are clearly distinct; use multiple if A and B are hard to separate; use none for intros/outros.",
+    'If the producer asks to drop or exclude a subplot (often "C"), label those beats primary_storyline=C and microseries_keep=no.',
     "Prefer boundaries at natural dialogue pauses, scene changes, or clear visual beat shifts.",
   );
 
