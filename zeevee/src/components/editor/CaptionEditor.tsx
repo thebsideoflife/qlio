@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { Upload, Palette, X } from "lucide-react";
+import { STARDOS_STENCIL_FONT_FAMILY } from "@/remotion/loadCaptionFonts";
 
 const FONTS = [
   { value: "Inter, system-ui, sans-serif", label: "Inter", weight: "600" },
@@ -31,6 +32,11 @@ const FONTS = [
   },
   { value: "'Oswald', sans-serif", label: "Oswald", weight: "700" },
   { value: "'Bebas Neue', sans-serif", label: "Bebas Neue", weight: "400" },
+  {
+    value: STARDOS_STENCIL_FONT_FAMILY,
+    label: "Stardos Stencil",
+    weight: "400",
+  },
   { value: "'Poppins', sans-serif", label: "Poppins", weight: "700" },
   { value: "'Montserrat', sans-serif", label: "Montserrat", weight: "800" },
   {

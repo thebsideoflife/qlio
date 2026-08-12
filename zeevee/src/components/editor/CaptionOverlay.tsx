@@ -6,6 +6,8 @@ import {
   updateCaptionStyle,
 } from "@/store/editorSlice";
 import { SNAP_POSITIONS } from "@/remotion/types";
+// Load caption Google fonts for in-editor overlay preview.
+import "@/remotion/loadCaptionFonts";
 
 interface CaptionOverlayProps {
   currentTime: number;
