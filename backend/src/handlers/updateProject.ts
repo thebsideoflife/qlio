@@ -1,12 +1,27 @@
 import { APIGatewayProxyHandler } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
 import { checkAuth } from "../utils/auth";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
 
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
+
+const GENERATION_INPUT_KEYS = [
+  "userPrompt",
+  "purpose",
+  "format",
+  "assetType",
+  "platform",
+  "minSegmentDuration",
+  "maxSegmentDuration",
+  "targetPercent",
+] as const;
 
 export const handler: APIGatewayProxyHandler = async (event) => {
   // 1. Auth Check
@@ -27,10 +42,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     }
 
     const body = JSON.parse(event.body || "{}");
-    const { title, segments, captionSettings, globalFraming } = body;
+    const { title, segments, captionSettings, globalFraming, metadata } = body;
 
     // Check if any updateable fields are provided
-    if (!title && !segments && !captionSettings && !globalFraming) {
+    if (!title && !segments && !captionSettings && !globalFraming && !metadata) {
       return {
         statusCode: 400,
         headers: {
@@ -75,6 +90,29 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       exprValues[":gf"] = globalFraming;
     }
 
+    if (metadata && typeof metadata === "object") {
+      // Merge generation inputs into existing metadata; preserve unrelated keys.
+      const existing = await docClient.send(
+        new GetCommand({
+          TableName: PROJECTS_TABLE,
+          Key: { projectId },
+          ProjectionExpression: "#meta",
+          ExpressionAttributeNames: { "#meta": "metadata" },
+        }),
+      );
+      const current = (existing.Item?.metadata ?? {}) as Record<string, unknown>;
+      const next: Record<string, unknown> = { ...current };
+      for (const key of GENERATION_INPUT_KEYS) {
+        if (key in metadata) next[key] = metadata[key];
+      }
+      if (typeof next.assetType === "string" && next.assetType) {
+        delete next.type;
+      }
+      updateParts.push("#metadata = :meta");
+      exprNames["#metadata"] = "metadata";
+      exprValues[":meta"] = next;
+    }
+
     await docClient.send(
       new UpdateCommand({
         TableName: PROJECTS_TABLE,
@@ -99,6 +137,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         segments,
         captionSettings,
         globalFraming,
+        metadata,
       }),
     };
   } catch (error: any) {

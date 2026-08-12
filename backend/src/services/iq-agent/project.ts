@@ -143,18 +143,115 @@ export async function loadProjectContext(
     projectTitle: typeof project.title === "string" ? project.title : "Untitled",
     facts,
     segments: normalizeSegments(project.segments),
-    savedBrief: {
-      format: asStringOrUndefined(metadata.format ?? metadata.purpose),
-      assetType: asStringOrUndefined(metadata.assetType),
-      platform: asStringOrUndefined(metadata.platform),
-      targetPercent: asNumberOrNull(metadata.targetPercent),
-      minSegmentDuration: asNumberOrUndefined(metadata.minSegmentDuration),
-      maxSegmentDuration: asNumberOrUndefined(metadata.maxSegmentDuration),
-      userPrompt: asStringOrUndefined(metadata.userPrompt),
-    },
+    savedBrief: metadataToBrief(metadata),
     assetReady: assetIssue === undefined,
     assetIssue,
   };
+}
+
+/** Panel inputs live only on `project.metadata` — not on the agent thread. */
+export type GenerationInputs = {
+  userPrompt?: string | null;
+  purpose?: string | null;
+  format?: string | null;
+  assetType?: string | null;
+  platform?: string | null;
+  minSegmentDuration?: number | null;
+  maxSegmentDuration?: number | null;
+  targetPercent?: number | null;
+};
+
+export function metadataToBrief(
+  metadata: Record<string, unknown>,
+): Partial<Brief> {
+  return {
+    format: asStringOrUndefined(metadata.format ?? metadata.purpose),
+    // Legacy create-project blobs used `type` instead of `assetType`.
+    assetType: asStringOrUndefined(metadata.assetType ?? metadata.type),
+    platform: asStringOrUndefined(metadata.platform),
+    targetPercent: asNumberOrNull(metadata.targetPercent),
+    minSegmentDuration: asNumberOrUndefined(metadata.minSegmentDuration),
+    maxSegmentDuration: asNumberOrUndefined(metadata.maxSegmentDuration),
+    userPrompt: asStringOrUndefined(metadata.userPrompt),
+  };
+}
+
+export function briefToGenerationInputs(brief: Partial<Brief>): GenerationInputs {
+  return {
+    userPrompt: brief.userPrompt ?? null,
+    purpose: brief.format ?? null,
+    format: brief.format ?? null,
+    assetType: brief.assetType ?? null,
+    platform: brief.platform ?? null,
+    minSegmentDuration: brief.minSegmentDuration ?? null,
+    maxSegmentDuration: brief.maxSegmentDuration ?? null,
+    targetPercent: brief.targetPercent ?? null,
+  };
+}
+
+/**
+ * True when metadata has a real panel brief (format), not just create-project
+ * stubs like `platform` / legacy `type`.
+ */
+export function hasGenerationInputs(brief: Partial<Brief>): boolean {
+  return Boolean(brief.format);
+}
+
+/** Read panel inputs from the project row (source of truth). */
+export async function readGenerationInputs(
+  projectId: string,
+): Promise<Partial<Brief>> {
+  const result = await docClient.send(
+    new GetCommand({
+      TableName: PROJECTS_TABLE,
+      Key: { projectId },
+      ProjectionExpression: "#meta",
+      ExpressionAttributeNames: { "#meta": "metadata" },
+    }),
+  );
+  return metadataToBrief((result.Item?.metadata ?? {}) as Record<string, unknown>);
+}
+
+/**
+ * Merge panel inputs into `project.metadata`. Preserves unrelated keys on the
+ * metadata map (legacy create-project fields, etc.).
+ */
+export async function saveGenerationInputs(
+  projectId: string,
+  brief: Partial<Brief>,
+): Promise<Partial<Brief>> {
+  const result = await docClient.send(
+    new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
+  );
+  if (!result.Item) {
+    throw new ProjectContextError("project_not_found", `Project ${projectId} does not exist.`);
+  }
+  const current = (result.Item.metadata ?? {}) as Record<string, unknown>;
+  const patch = briefToGenerationInputs(brief);
+  const next: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value !== undefined) next[key] = value;
+  }
+  // Prefer canonical assetType over legacy `type` once we have it.
+  if (typeof next.assetType === "string" && next.assetType) {
+    delete next.type;
+  }
+
+  await docClient.send(
+    new UpdateCommand({
+      TableName: PROJECTS_TABLE,
+      Key: { projectId },
+      UpdateExpression: "SET #meta = :meta, updatedAt = :now",
+      ConditionExpression: "attribute_exists(projectId)",
+      ExpressionAttributeNames: { "#meta": "metadata" },
+      ExpressionAttributeValues: {
+        ":meta": next,
+        ":now": new Date().toISOString(),
+      },
+    }),
+  );
+
+  return metadataToBrief(next);
 }
 
 function resolveSourceLocation(asset: Record<string, unknown>): {
@@ -232,21 +329,6 @@ export async function commitSegments(params: {
   };
   const sets = ["#seg = :segments", "updatedAt = :now"];
 
-  if (params.brief) {
-    names["#meta"] = "metadata";
-    sets.push("#meta = :metadata");
-    values[":metadata"] = {
-      userPrompt: params.brief.userPrompt ?? null,
-      purpose: params.brief.format ?? null,
-      format: params.brief.format ?? null,
-      assetType: params.brief.assetType ?? null,
-      platform: params.brief.platform ?? null,
-      minSegmentDuration: params.brief.minSegmentDuration ?? null,
-      maxSegmentDuration: params.brief.maxSegmentDuration ?? null,
-      targetPercent: params.brief.targetPercent ?? null,
-    };
-  }
-
   if (shouldRename) {
     names["#title"] = "title";
     sets.push("#title = :title");
@@ -262,6 +344,11 @@ export async function commitSegments(params: {
       ExpressionAttributeValues: values,
     }),
   );
+
+  // Panel inputs are project metadata — merge rather than replacing the map.
+  if (params.brief) {
+    await saveGenerationInputs(params.projectId, params.brief);
+  }
 }
 
 export interface ProjectMetadataState {

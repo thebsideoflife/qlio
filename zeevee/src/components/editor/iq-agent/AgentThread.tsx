@@ -225,7 +225,7 @@ function UserBubble({ text, isBrief }: { text: string; isBrief: boolean }) {
             )}
           />
           <span className="text-xs font-semibold text-muted-foreground">
-            The brief you sent
+            The inputs you sent
           </span>
         </button>
         {open && (

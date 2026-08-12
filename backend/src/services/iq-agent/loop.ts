@@ -42,6 +42,7 @@ import {
   getTwelveLabsClient,
   loadProjectContext,
   ProjectContextError,
+  saveGenerationInputs,
 } from "./project";
 import { loadTranscriptWords } from "./tools/transcript";
 import {
@@ -162,10 +163,15 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
     });
 
     // Explicit undefined in a later layer must not erase an earlier value.
+    // Panel inputs live on project.metadata. Absorb legacy thread.brief once
+    // when the project row still lacks a real panel brief (format).
+    if (thread.brief?.format && !project.savedBrief.format) {
+      await saveGenerationInputs(projectId, thread.brief);
+      project.savedBrief = { ...project.savedBrief, ...thread.brief };
+    }
     let brief: Brief = mergeBrief(
       { format: "compact_video" },
       project.savedBrief,
-      thread.brief,
     );
 
     if (project.assetIssue) {
@@ -257,11 +263,6 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
         }
       };
 
-      // Thread-level brief update (e.g. from a prior message that saved to the thread)
-      if (current?.brief) {
-        maybeRefreshBrief(current.brief);
-      }
-
       for (const message of pending) {
         if (message.brief) {
           maybeRefreshBrief(message.brief);
@@ -288,9 +289,10 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
         await emit({
           type: "notice",
           level: "info",
-          message: `Brief updated: ${describeTarget(brief, project.facts.duration)} · ${describeBounds(brief)}`,
+          message: `Inputs updated: ${describeTarget(brief, project.facts.duration)} · ${describeBounds(brief)}`,
         });
-        // Persist so a resumed run sees the new brief
+        // Persist inputs on the project (SoT) and checkpoint the run.
+        await saveGenerationInputs(projectId, brief);
         await persistLoopState();
       }
 
@@ -731,7 +733,6 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
           ledger,
           cost: ctx.cost,
           examined: ctx.examined,
-          brief,
           run: { ...run, reframeIds: Array.from(pendingChangedIds) },
         },
         epoch,

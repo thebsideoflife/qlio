@@ -182,8 +182,10 @@ export default function Editor() {
   }
 
   // Custom Hooks
-  const { videoUrl, generationMetadata, framingJob, loading } =
-    useProjectData(projectId);
+  const { videoUrl, framingJob, loading } = useProjectData(projectId);
+  const generationMetadata = useSelector(
+    (state: RootState) => state.editor.generationMetadata,
+  );
 
   // The agent owns the cut while it runs: it writes segments server-side and
   // the event stream pushes them here, so autosave has to stand down.
@@ -850,9 +852,9 @@ export default function Editor() {
                     onAutoFrameChange={setAutoFrameEnabled}
                     targetAspectRatio={globalFraming.aspectRatio}
                     onPlatformChange={(platform) => {
-                      dispatch(
-                        setGlobalAspectRatio(platformToAspectRatio(platform)),
-                      );
+                      const next = platformToAspectRatio(platform);
+                      if (next === globalFraming.aspectRatio) return;
+                      dispatch(setGlobalAspectRatio(next));
                     }}
                   />
                 )}

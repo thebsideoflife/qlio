@@ -1,10 +1,11 @@
 /**
- * The panel selections that open a run. These are defaults handed to the agent,
- * not a workflow it has to follow — anything the producer says in the thread
- * overrides them.
+ * Input controls that open a run. Defaults handed to the agent — anything the
+ * producer says in the thread overrides them.
+ *
+ * Hydrated from `project.metadata` only (via savedInputs).
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Label } from "@/components/ui/label";
 import {
   Tooltip,
@@ -29,7 +30,7 @@ import { cn } from "@/lib/utils";
 import type { LucideIcon } from "lucide-react";
 import type { IconType } from "react-icons";
 import type { AgentBrief } from "@/services/agentTypes";
-import type { GenerationMetadata } from "@/hooks/useProjectData";
+import type { GenerationMetadata } from "@/store/editorSlice";
 
 export type Option = {
   value: string;
@@ -86,7 +87,6 @@ const DEFAULT_FORMAT = "compact_video";
 export interface BriefControlsProps {
   disabled: boolean;
   savedInputs?: GenerationMetadata | null;
-  savedBrief?: AgentBrief | null;
   onPlatformChange?: (platform: string) => void;
   onChange: (brief: AgentBrief) => void;
 }
@@ -95,7 +95,7 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function resolveFormat(candidate: string | undefined): string {
+function resolveFormat(candidate: string | undefined | null): string {
   if (!candidate) return DEFAULT_FORMAT;
   const option = FORMATS.find((o) => o.value === candidate);
   return option && !option.disabled ? candidate : DEFAULT_FORMAT;
@@ -104,7 +104,6 @@ function resolveFormat(candidate: string | undefined): string {
 export function BriefControls({
   disabled,
   savedInputs,
-  savedBrief,
   onPlatformChange,
   onChange,
 }: BriefControlsProps) {
@@ -120,13 +119,16 @@ export function BriefControls({
   );
   const [userPrompt, setUserPrompt] = useState("");
 
-  // Restore whatever was used last time this project ran.
+  const didHydrateRef = useRef(false);
+  const platformTouchedRef = useRef(false);
+
+  // Restore once from project.metadata when it arrives.
   useEffect(() => {
-    const saved = savedBrief ?? savedInputs;
-    if (!saved) return;
+    if (!savedInputs || didHydrateRef.current) return;
+    didHydrateRef.current = true;
 
     const restoredFormat = resolveFormat(
-      (saved as AgentBrief).format ?? (saved as GenerationMetadata).purpose,
+      savedInputs.format ?? savedInputs.purpose,
     );
     setFormat(restoredFormat);
 
@@ -134,35 +136,40 @@ export function BriefControls({
       SEGMENT_DURATION_DEFAULTS[restoredFormat] ??
       SEGMENT_DURATION_DEFAULTS.compact_video;
     setMinDuration(
-      typeof saved.minSegmentDuration === "number"
-        ? saved.minSegmentDuration
+      typeof savedInputs.minSegmentDuration === "number"
+        ? savedInputs.minSegmentDuration
         : defaults.min,
     );
     setMaxDuration(
-      typeof saved.maxSegmentDuration === "number"
-        ? saved.maxSegmentDuration
+      typeof savedInputs.maxSegmentDuration === "number"
+        ? savedInputs.maxSegmentDuration
         : defaults.max,
     );
     setRetain(
-      saved.targetPercent != null &&
-        saved.targetPercent > 0 &&
-        saved.targetPercent <= 100
-        ? String(saved.targetPercent)
+      savedInputs.targetPercent != null &&
+        savedInputs.targetPercent > 0 &&
+        savedInputs.targetPercent <= 100
+        ? String(savedInputs.targetPercent)
         : "auto",
     );
-    if (saved.assetType && ASSET_TYPES.some((o) => o.value === saved.assetType)) {
-      setAssetType(saved.assetType);
+    if (
+      savedInputs.assetType &&
+      ASSET_TYPES.some((o) => o.value === savedInputs.assetType)
+    ) {
+      setAssetType(savedInputs.assetType);
     }
-    if (saved.platform && PLATFORMS.some((o) => o.value === saved.platform)) {
-      setPlatform(saved.platform);
-      onPlatformChange?.(saved.platform);
+    if (
+      !platformTouchedRef.current &&
+      savedInputs.platform &&
+      PLATFORMS.some((o) => o.value === savedInputs.platform)
+    ) {
+      setPlatform(savedInputs.platform);
+      onPlatformChange?.(savedInputs.platform);
     }
-    setUserPrompt(saved.userPrompt?.trim() ?? "");
-    // Restore only when the project's saved state arrives.
+    setUserPrompt(savedInputs.userPrompt?.trim() ?? "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [savedBrief, savedInputs]);
+  }, [savedInputs]);
 
-  // Publish the assembled brief upward on every change.
   useEffect(() => {
     onChange({
       format,
@@ -172,8 +179,6 @@ export function BriefControls({
       minSegmentDuration: minDuration,
       maxSegmentDuration: maxDuration,
       userPrompt: userPrompt.trim() || undefined,
-      // Sports mode only applies to highlight reels; never leak it into other
-      // formats, where the toggle isn't even visible.
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [format, assetType, platform, retain, minDuration, maxDuration, userPrompt]);
@@ -200,6 +205,7 @@ export function BriefControls({
           options={PLATFORMS}
           value={platform}
           onSelect={(value) => {
+            platformTouchedRef.current = true;
             setPlatform(value);
             onPlatformChange?.(value);
           }}
@@ -360,7 +366,6 @@ function NumberField({
   const commit = () => {
     const parsed = Number.parseInt(draft, 10);
     if (Number.isFinite(parsed)) onCommit(parsed);
-    // The parent clamps, so snap back to what it actually accepted.
     setDraft(String(value));
   };
 

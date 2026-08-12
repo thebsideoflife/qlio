@@ -65,6 +65,41 @@ interface EditorState {
   // Export metadata from Pegasus (cached on project)
   segmentMetadata: import("@/lib/segmentMetadataFingerprint").SegmentMetadataCache[] | null;
   projectThumbnailUrl: string | null;
+  /** IQ panel inputs — `project.metadata` generation fields. */
+  generationMetadata: GenerationMetadata | null;
+}
+
+/** Panel inputs stored on `project.metadata`. */
+export interface GenerationMetadata {
+  userPrompt?: string | null;
+  purpose?: string | null;
+  format?: string | null;
+  assetType?: string | null;
+  platform?: string | null;
+  minSegmentDuration?: number | null;
+  maxSegmentDuration?: number | null;
+  targetPercent?: number | null;
+}
+
+const GENERATION_META_KEYS: (keyof GenerationMetadata)[] = [
+  "userPrompt",
+  "purpose",
+  "format",
+  "assetType",
+  "platform",
+  "minSegmentDuration",
+  "maxSegmentDuration",
+  "targetPercent",
+];
+
+function generationMetadataEqual(
+  a: GenerationMetadata | null | undefined,
+  b: GenerationMetadata,
+): boolean {
+  for (const key of GENERATION_META_KEYS) {
+    if ((a?.[key] ?? null) !== (b[key] ?? null)) return false;
+  }
+  return true;
 }
 
 const initialState: EditorState = {
@@ -92,6 +127,7 @@ const initialState: EditorState = {
   lastSegmentRenders: null,
   segmentMetadata: null,
   projectThumbnailUrl: null,
+  generationMetadata: null,
 };
 
 // Helper to mark state as edited
@@ -862,6 +898,26 @@ export const editorSlice = createSlice({
     ) => {
       state.projectThumbnailUrl = action.payload;
     },
+    /** Load from API — does not mark dirty. */
+    setGenerationMetadata: (
+      state,
+      action: PayloadAction<GenerationMetadata | null>,
+    ) => {
+      state.generationMetadata = action.payload;
+    },
+    /** Producer edited panel inputs — picked up by the 10s project sync. */
+    updateGenerationMetadata: (
+      state,
+      action: PayloadAction<GenerationMetadata>,
+    ) => {
+      const next: GenerationMetadata = {
+        ...(state.generationMetadata ?? {}),
+        ...action.payload,
+      };
+      if (generationMetadataEqual(state.generationMetadata, next)) return;
+      state.generationMetadata = next;
+      markEdited(state);
+    },
   },
 });
 
@@ -913,5 +969,7 @@ export const {
   clearLastSegmentRenders,
   setSegmentMetadata,
   setProjectThumbnailUrl,
+  setGenerationMetadata,
+  updateGenerationMetadata,
 } = editorSlice.actions;
 export default editorSlice.reducer;

@@ -26,9 +26,12 @@ import {
   type PromptKey,
 } from "../services/iq-agent/prompts";
 import {
+  hasGenerationInputs,
   loadProjectContext,
   ProjectContextError,
+  readGenerationInputs,
   readProjectSegmentsAndFraming,
+  saveGenerationInputs,
 } from "../services/iq-agent/project";
 import {
   acquireRun,
@@ -40,7 +43,6 @@ import {
   pruneIdempotencyKeys,
   reapDeadRun,
   requestCancel,
-  saveBrief,
   savePromptOverrides,
   setFramingMirror,
 } from "../services/iq-agent/thread";
@@ -158,7 +160,8 @@ async function postMessage(
   }
 
   if (body.brief) {
-    await saveBrief(projectId, sanitizeBrief(body.brief));
+    // Panel inputs are project.metadata — never a second copy on the thread.
+    await saveGenerationInputs(projectId, sanitizeBrief(body.brief));
   }
 
   await enqueuePendingMessage(projectId, {
@@ -303,15 +306,26 @@ async function getEvents(
   const nextCursor =
     page.events.length > 0 ? page.events[page.events.length - 1].seq : cursor;
 
+  // One source of truth: project.metadata. Absorb legacy thread.brief when the
+  // project row still lacks a real panel brief (format) — create-project stubs
+  // alone (platform/type) must not block migration.
+  let brief = await readGenerationInputs(projectId);
+  if (!hasGenerationInputs(brief) && thread?.brief?.format) {
+    brief = await saveGenerationInputs(projectId, thread.brief);
+  }
+
   return json(200, {
     cursor: nextCursor,
     hasMore: page.hasMore,
     events: page.events,
-    ...describeThread(thread),
+    ...describeThread(thread, brief),
   });
 }
 
-function describeThread(thread: ThreadState | null) {
+function describeThread(
+  thread: ThreadState | null,
+  brief: Partial<Brief> | null,
+) {
   if (!thread) {
     return {
       run: null,
@@ -319,7 +333,7 @@ function describeThread(thread: ThreadState | null) {
       segments: [],
       ledger: null,
       cost: emptyCostMeter(),
-      brief: null,
+      brief: brief && hasGenerationInputs(brief) ? brief : null,
       openQuestionId: null,
       framing: null,
       promptVersion: PROMPT_VERSION,
@@ -331,7 +345,7 @@ function describeThread(thread: ThreadState | null) {
     segments: thread.segments,
     ledger: thread.ledger ?? null,
     cost: thread.cost,
-    brief: thread.brief ?? null,
+    brief: brief && hasGenerationInputs(brief) ? brief : null,
     openQuestionId: thread.openQuestionId ?? null,
     framing: thread.framing ?? null,
     queuedMessages: thread.pendingMessages.length,
@@ -396,7 +410,10 @@ async function mirrorFraming(
 
   const failed = Math.max(0, total - completed);
   // Framing never changes timings, so the existing ledger still holds.
-  const ledger = thread.ledger ?? computeLedger(segments, thread.brief, 0);
+  const inputs = await readGenerationInputs(projectId);
+  const ledger =
+    thread.ledger ??
+    computeLedger(segments, { format: "compact_video", ...inputs }, 0);
   await appendEvents(projectId, mirror.runId, [
     {
       type: "framing.completed",
