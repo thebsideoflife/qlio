@@ -22,51 +22,51 @@ import { Upload, Palette, X } from "lucide-react";
 import { STARDOS_STENCIL_FONT_FAMILY } from "@/remotion/loadCaptionFonts";
 
 const FONTS = [
-  { value: "Inter, system-ui, sans-serif", label: "Inter", weight: "600" },
   { value: "Arial, sans-serif", label: "Arial", weight: "700" },
-  { value: "Georgia, serif", label: "Georgia", weight: "700" },
+  { value: "'Bebas Neue', sans-serif", label: "Bebas Neue", weight: "400" },
+  { value: "'Comic Sans MS', cursive", label: "Comic Sans", weight: "400" },
   {
-    value: "'Times New Roman', Times, serif",
-    label: "Times New Roman",
+    value: "'Courier Prime', 'Courier New', monospace",
+    label: "Courier Prime",
     weight: "400",
   },
+  { value: "'DM Sans', sans-serif", label: "DM Sans", weight: "700" },
+  { value: "Georgia, serif", label: "Georgia", weight: "700" },
+  { value: "Inter, system-ui, sans-serif", label: "Inter", weight: "600" },
+  { value: "'Montserrat', sans-serif", label: "Montserrat", weight: "800" },
   { value: "'Oswald', sans-serif", label: "Oswald", weight: "700" },
-  { value: "'Bebas Neue', sans-serif", label: "Bebas Neue", weight: "400" },
   {
-    value: STARDOS_STENCIL_FONT_FAMILY,
-    label: "Stardos Stencil",
-    weight: "400",
+    value: "'Playfair Display', serif",
+    label: "Playfair Display",
+    weight: "700",
   },
   { value: "'Poppins', sans-serif", label: "Poppins", weight: "700" },
-  { value: "'Montserrat', sans-serif", label: "Montserrat", weight: "800" },
   {
     value: "'Roboto Condensed', sans-serif",
     label: "Roboto Condensed",
     weight: "700",
   },
+  { value: "'Roboto Mono', monospace", label: "Roboto Mono", weight: "400" },
   {
-    value: "'Playfair Display', serif",
-    label: "Playfair Display",
-    weight: "700",
+    value: "'Source Code Pro', monospace",
+    label: "Source Code",
+    weight: "600",
   },
   {
     value: "'Space Grotesk', sans-serif",
     label: "Space Grotesk",
     weight: "700",
   },
-  { value: "'DM Sans', sans-serif", label: "DM Sans", weight: "700" },
   {
-    value: "'Source Code Pro', monospace",
-    label: "Source Code",
-    weight: "600",
-  },
-  { value: "'Roboto Mono', monospace", label: "Roboto Mono", weight: "400" },
-  {
-    value: "'Courier Prime', 'Courier New', monospace",
-    label: "Courier Prime",
+    value: STARDOS_STENCIL_FONT_FAMILY,
+    label: "Stardos Stencil",
     weight: "400",
   },
-  { value: "'Comic Sans MS', cursive", label: "Comic Sans", weight: "400" },
+  {
+    value: "'Times New Roman', Times, serif",
+    label: "Times New Roman",
+    weight: "400",
+  },
 ];
 
 const SIZES = [
