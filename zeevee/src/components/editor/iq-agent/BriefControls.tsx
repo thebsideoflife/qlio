@@ -118,18 +118,28 @@ export function BriefControls({
     SEGMENT_DURATION_DEFAULTS[DEFAULT_FORMAT].max,
   );
   const [userPrompt, setUserPrompt] = useState("");
+  // Hold onChange until project.metadata has been applied once.
+  const [publishReady, setPublishReady] = useState(false);
 
   const didHydrateRef = useRef(false);
+  const hydratedFormatRef = useRef<string | null>(null);
   const platformTouchedRef = useRef(false);
 
-  // Restore once from project.metadata when it arrives.
+  // Restore from project.metadata when it arrives. Allow one follow-up pass
+  // when a real format migrates in after a stub-only first hydrate.
   useEffect(() => {
-    if (!savedInputs || didHydrateRef.current) return;
-    didHydrateRef.current = true;
+    if (!savedInputs) return;
 
-    const restoredFormat = resolveFormat(
-      savedInputs.format ?? savedInputs.purpose,
-    );
+    const incomingFormat = savedInputs.format ?? savedInputs.purpose ?? null;
+    const shouldHydrate =
+      !didHydrateRef.current ||
+      (!hydratedFormatRef.current && Boolean(incomingFormat));
+    if (!shouldHydrate) return;
+
+    didHydrateRef.current = true;
+    if (incomingFormat) hydratedFormatRef.current = String(incomingFormat);
+
+    const restoredFormat = resolveFormat(incomingFormat);
     setFormat(restoredFormat);
 
     const defaults =
@@ -167,10 +177,12 @@ export function BriefControls({
       onPlatformChange?.(savedInputs.platform);
     }
     setUserPrompt(savedInputs.userPrompt?.trim() ?? "");
+    setPublishReady(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedInputs]);
 
   useEffect(() => {
+    if (!publishReady) return;
     onChange({
       format,
       assetType,
@@ -181,7 +193,16 @@ export function BriefControls({
       userPrompt: userPrompt.trim() || undefined,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [format, assetType, platform, retain, minDuration, maxDuration, userPrompt]);
+  }, [
+    publishReady,
+    format,
+    assetType,
+    platform,
+    retain,
+    minDuration,
+    maxDuration,
+    userPrompt,
+  ]);
 
   const handleFormatChange = (next: string) => {
     setFormat(next);

@@ -27,6 +27,7 @@ import { PromptsEditor } from "./PromptsEditor";
 import { STAGE_LABELS, type AgentBrief } from "@/services/agentTypes";
 import type { IQAgentState } from "@/hooks/useIQAgent";
 import {
+  setGenerationMetadata,
   updateGenerationMetadata,
   type GenerationMetadata,
 } from "@/store/editorSlice";
@@ -89,6 +90,19 @@ export function IQAgentPanel({
     if (!node || !pinnedToBottomRef.current) return;
     node.scrollTop = node.scrollHeight;
   }, [agent.events.length, agent.isRunning]);
+
+  // Legacy thread.brief migration lands on the events poll. Absorb into Redux
+  // without marking dirty so stub-only project.metadata can pick up a real format.
+  useEffect(() => {
+    if (!agent.brief?.format) return;
+    if (savedInputs?.format || savedInputs?.purpose) return;
+    dispatch(
+      setGenerationMetadata({
+        ...(savedInputs ?? {}),
+        ...briefToMetadata(agent.brief),
+      }),
+    );
+  }, [agent.brief, savedInputs, dispatch]);
 
   // Panel inputs ride the existing 10s project sync (same as framing/captions).
   // Only depend on `inputs` — do not re-fire when a run starts/stops.
