@@ -829,6 +829,38 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
       });
     }
 
+    /**
+     * Auto-framing is segment-state-driven: on a completed run, frame every
+     * segment that still lacks framing. Edits from an earlier ask_user run
+     * count — we do not rely on changedIds from this run alone.
+     */
+    async function autoFrame(): Promise<void> {
+      const { segments: latestSegments, framingJob } =
+        await readProjectSegmentsAndFraming(projectId);
+      const toFrame = unframedSegmentIds(latestSegments);
+      if (toFrame.length === 0) return;
+
+      if (isFramingJobActive(framingJob)) {
+        console.log(
+          `[IQAgent] run ${runId}: framing job already active, skipping auto-framing`,
+        );
+        await emit({ type: "notice", level: "info", message: FRAMING_BUSY_NOTICE });
+        return;
+      }
+
+      console.log(
+        `[IQAgent] run ${runId}: auto-framing ${toFrame.length} unframed segment(s)`,
+      );
+      await startFraming({
+        projectId,
+        runId,
+        segments: latestSegments,
+        changedIds: toFrame,
+        aspectRatio: brief.targetAspectRatio ?? "9:16",
+        emit,
+      });
+    }
+
     async function finish(opts: {
       status: RunState["status"];
       runState: RunState;
@@ -842,35 +874,24 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
         reframeIds: changed,
       };
 
-      // Auto-framing is segment-state-driven: on a completed run, frame every
-      // segment that still lacks framing. Edits from an earlier ask_user run
-      // count — we do not rely on changedIds from this run alone.
       if (
         !opts.skipFraming &&
         opts.status === "completed" &&
         brief.autoFrame !== false
       ) {
-        const { segments: latestSegments, framingJob } =
-          await readProjectSegmentsAndFraming(projectId);
-        if (!isFramingJobActive(framingJob)) {
-          const toFrame = unframedSegmentIds(latestSegments);
-          if (toFrame.length > 0) {
-            console.log(
-              `[IQAgent] run ${runId}: auto-framing ${toFrame.length} unframed segment(s)`,
-            );
-            await startFraming({
-              projectId,
-              runId,
-              segments: latestSegments,
-              changedIds: toFrame,
-              aspectRatio: brief.targetAspectRatio ?? "9:16",
-              emit,
-            });
-          }
-        } else {
-          console.log(
-            `[IQAgent] run ${runId}: framing job already active, skipping auto-framing`,
-          );
+        // Framing must never cost the run its release: run.completed is already
+        // in the log, and the outer catch would rewrite the run as failed.
+        try {
+          await autoFrame();
+        } catch (err) {
+          console.error(`[IQAgent] run ${runId}: auto-framing gate failed:`, err);
+          await emit({
+            type: "notice",
+            level: "warn",
+            message:
+              "Your cut is saved, but auto-framing could not be started this run. Re-run framing from the framing panel if you need it.",
+            detail: errorText(err),
+          }).catch(() => undefined);
         }
       }
 
@@ -956,6 +977,9 @@ function mergeBrief(...layers: Array<Partial<Brief> | undefined>): Brief {
 // Autoframing — a deterministic post-run step, never a tool the model can skip
 // ============================================================================
 
+const FRAMING_BUSY_NOTICE =
+  "Auto-framing is already running for this project, so the segments still missing framing were left for the next run.";
+
 async function startFraming(params: {
   projectId: string;
   runId: string;
@@ -980,8 +1004,6 @@ async function startFraming(params: {
     .map((s) => ({ id: s.id, startTime: s.startTime, endTime: s.endTime }));
 
   if (batch.length === 0) return;
-
-  await params.emit({ type: "framing.started", total: batch.length });
 
   try {
     const response = await lambdaClient.send(
@@ -1013,6 +1035,11 @@ async function startFraming(params: {
       console.log(
         `[IQAgent] auto-framing skipped for ${params.projectId}: job already running`,
       );
+      await params.emit({
+        type: "notice",
+        level: "info",
+        message: FRAMING_BUSY_NOTICE,
+      });
       return;
     }
     if (statusCode >= 400) {
@@ -1020,6 +1047,11 @@ async function startFraming(params: {
     }
 
     const jobId = parseJobId(payload?.body);
+    // Announce framing only once the job is really ours. An announced-but-never-
+    // finished job leaves the panel spinning forever: nothing emits
+    // `framing.completed` without a mirror to poll, and `framingActive` also
+    // gates the editor's own framing poller.
+    await params.emit({ type: "framing.started", total: batch.length });
     await setFramingMirror(params.projectId, {
       jobId: jobId ?? "unknown",
       status: "running",

@@ -437,7 +437,11 @@ export function isFramingJobActive(
   if (!job) return false;
   if (job.status !== "pending" && job.status !== "analyzing") return false;
   const started = Date.parse(job.startedAt ?? "");
-  if (!Number.isFinite(started)) return true;
+  // A job row with no readable timestamp counts as stale, matching what
+  // analyzeFraming does with it. Calling it active instead would let one
+  // half-written row disable auto-framing on the project forever; the framing
+  // Lambda's own 409 is the guard that actually prevents a duplicate job.
+  if (!Number.isFinite(started)) return false;
   return Date.now() - started < FRAMING_JOB_STALE_MS;
 }
 
