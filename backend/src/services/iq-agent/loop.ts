@@ -40,9 +40,12 @@ import { FORMAT_GUIDES, getPrompt, renderTemplate, PROMPT_VERSION } from "./prom
 import {
   commitSegments,
   getTwelveLabsClient,
+  isFramingJobActive,
   loadProjectContext,
   ProjectContextError,
+  readProjectSegmentsAndFraming,
   saveGenerationInputs,
+  unframedSegmentIds,
 } from "./project";
 import { loadTranscriptWords } from "./tools/transcript";
 import {
@@ -839,15 +842,36 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
         reframeIds: changed,
       };
 
-      if (!opts.skipFraming && brief.autoFrame && changed.length > 0) {
-        await startFraming({
-          projectId,
-          runId,
-          segments: ctx.segments,
-          changedIds: changed,
-          aspectRatio: brief.targetAspectRatio ?? "9:16",
-          emit,
-        });
+      // Auto-framing is segment-state-driven: on a completed run, frame every
+      // segment that still lacks framing. Edits from an earlier ask_user run
+      // count — we do not rely on changedIds from this run alone.
+      if (
+        !opts.skipFraming &&
+        opts.status === "completed" &&
+        brief.autoFrame !== false
+      ) {
+        const { segments: latestSegments, framingJob } =
+          await readProjectSegmentsAndFraming(projectId);
+        if (!isFramingJobActive(framingJob)) {
+          const toFrame = unframedSegmentIds(latestSegments);
+          if (toFrame.length > 0) {
+            console.log(
+              `[IQAgent] run ${runId}: auto-framing ${toFrame.length} unframed segment(s)`,
+            );
+            await startFraming({
+              projectId,
+              runId,
+              segments: latestSegments,
+              changedIds: toFrame,
+              aspectRatio: brief.targetAspectRatio ?? "9:16",
+              emit,
+            });
+          }
+        } else {
+          console.log(
+            `[IQAgent] run ${runId}: framing job already active, skipping auto-framing`,
+          );
+        }
       }
 
       await releaseRun(
@@ -984,8 +1008,15 @@ async function startFraming(params: {
         })
       : null;
 
-    if ((payload?.statusCode ?? 200) >= 400) {
-      throw new Error(payload?.body ?? `status ${payload?.statusCode}`);
+    const statusCode = payload?.statusCode ?? 200;
+    if (statusCode === 409) {
+      console.log(
+        `[IQAgent] auto-framing skipped for ${params.projectId}: job already running`,
+      );
+      return;
+    }
+    if (statusCode >= 400) {
+      throw new Error(payload?.body ?? `status ${statusCode}`);
     }
 
     const jobId = parseJobId(payload?.body);
