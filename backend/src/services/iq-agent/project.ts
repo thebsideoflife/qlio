@@ -159,6 +159,8 @@ export type GenerationInputs = {
   minSegmentDuration?: number | null;
   maxSegmentDuration?: number | null;
   targetPercent?: number | null;
+  autoFrame?: boolean | null;
+  targetAspectRatio?: string | null;
 };
 
 export function metadataToBrief(
@@ -173,11 +175,14 @@ export function metadataToBrief(
     minSegmentDuration: asNumberOrUndefined(metadata.minSegmentDuration),
     maxSegmentDuration: asNumberOrUndefined(metadata.maxSegmentDuration),
     userPrompt: asStringOrUndefined(metadata.userPrompt),
+    autoFrame:
+      typeof metadata.autoFrame === "boolean" ? metadata.autoFrame : undefined,
+    targetAspectRatio: asStringOrUndefined(metadata.targetAspectRatio),
   };
 }
 
 export function briefToGenerationInputs(brief: Partial<Brief>): GenerationInputs {
-  return {
+  const inputs: GenerationInputs = {
     userPrompt: brief.userPrompt ?? null,
     purpose: brief.format ?? null,
     format: brief.format ?? null,
@@ -187,6 +192,13 @@ export function briefToGenerationInputs(brief: Partial<Brief>): GenerationInputs
     maxSegmentDuration: brief.maxSegmentDuration ?? null,
     targetPercent: brief.targetPercent ?? null,
   };
+  if (brief.autoFrame !== undefined) {
+    inputs.autoFrame = brief.autoFrame !== false;
+  }
+  if (brief.targetAspectRatio !== undefined) {
+    inputs.targetAspectRatio = brief.targetAspectRatio ?? null;
+  }
+  return inputs;
 }
 
 /**
@@ -409,6 +421,32 @@ export interface FramingJobSnapshot {
   segmentCount?: number;
   completedCount?: number;
   error?: string;
+  startedAt?: string;
+}
+
+/** Matches the stale threshold in analyzeFraming — do not start a second job. */
+const FRAMING_JOB_STALE_MS = 15 * 60 * 1000;
+
+export function segmentNeedsFraming(segment: AgentSegment): boolean {
+  return segment.framing == null;
+}
+
+export function isFramingJobActive(
+  job: FramingJobSnapshot | null | undefined,
+): boolean {
+  if (!job) return false;
+  if (job.status !== "pending" && job.status !== "analyzing") return false;
+  const started = Date.parse(job.startedAt ?? "");
+  // A job row with no readable timestamp counts as stale, matching what
+  // analyzeFraming does with it. Calling it active instead would let one
+  // half-written row disable auto-framing on the project forever; the framing
+  // Lambda's own 409 is the guard that actually prevents a duplicate job.
+  if (!Number.isFinite(started)) return false;
+  return Date.now() - started < FRAMING_JOB_STALE_MS;
+}
+
+export function unframedSegmentIds(segments: AgentSegment[]): string[] {
+  return segments.filter(segmentNeedsFraming).map((s) => s.id);
 }
 
 export async function readProjectSegmentsAndFraming(
