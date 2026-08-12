@@ -9,29 +9,19 @@ import {
   setLastSegmentRenders,
   setSegmentMetadata,
   setProjectThumbnailUrl,
+  setGenerationMetadata,
+  type GenerationMetadata,
 } from "@/store/editorSlice";
 import { getProject, type FramingJob } from "@/services/api";
 import { DEFAULT_CAPTION_SETTINGS, DEFAULT_GLOBAL_FRAMING } from "@/remotion/types";
 import type { CaptionWord, GlobalFramingSettings } from "@/remotion/types";
 
-// Last brief the project was cut with, persisted server-side.
-export interface GenerationMetadata {
-  userPrompt?: string | null;
-  purpose?: string | null;
-  format?: string | null;
-  assetType?: string | null;
-  platform?: string | null;
-  minSegmentDuration?: number | null;
-  maxSegmentDuration?: number | null;
-  targetPercent?: number | null;
-}
+export type { GenerationMetadata };
 
 export function useProjectData(projectId: string | undefined) {
   const dispatch = useDispatch();
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [transcription, setTranscription] = useState<CaptionWord[]>([]);
-  const [generationMetadata, setGenerationMetadata] =
-    useState<GenerationMetadata | null>(null);
   const [framingJob, setFramingJob] = useState<FramingJob | null>(null);
   const [activeRenderJobId, setActiveRenderJobId] = useState<string | null>(
     null,
@@ -53,7 +43,6 @@ export function useProjectData(projectId: string | undefined) {
         dispatch(setSegments(project.segments));
       }
 
-      // Load caption settings, merging with defaults so new fields are picked up
       if (project.captionSettings) {
         dispatch(
           setCaptionSettings({
@@ -67,8 +56,6 @@ export function useProjectData(projectId: string | undefined) {
         );
       }
 
-      // Load global framing settings if they exist. Default squareTop to false
-      // for projects created before the square-top feature (missing field).
       if (project.globalFraming) {
         const loadedFraming: GlobalFramingSettings = {
           ...DEFAULT_GLOBAL_FRAMING,
@@ -78,7 +65,6 @@ export function useProjectData(projectId: string | undefined) {
         dispatch(setGlobalFraming(loadedFraming));
       }
 
-      // Load cached segment renders (preserve original hashes - don't backfill)
       if (
         project.lastRenderDownloads &&
         project.lastRenderDownloads.length > 0
@@ -94,17 +80,12 @@ export function useProjectData(projectId: string | undefined) {
         dispatch(setProjectThumbnailUrl(project.thumbnailUrl));
       }
 
-      // Load generation metadata (last used generation inputs)
-      if (project.metadata) {
-        setGenerationMetadata(project.metadata);
-      }
+      dispatch(setGenerationMetadata(project.metadata ?? {}));
 
-      // Load framing job status (for resuming polling after page refresh)
       if (project.framingJob) {
         setFramingJob(project.framingJob);
       }
 
-      // Load active render job ID (for resuming render polling after page refresh)
       if (project.activeRenderJobId) {
         setActiveRenderJobId(project.activeRenderJobId);
       }
@@ -119,7 +100,6 @@ export function useProjectData(projectId: string | undefined) {
         }),
       );
 
-      // Fetch transcription if available
       if (project.asset?.transcriptionUrl) {
         const res = await fetch(project.asset.transcriptionUrl);
         const data = await res.json();
@@ -151,7 +131,6 @@ export function useProjectData(projectId: string | undefined) {
   return {
     videoUrl,
     transcription,
-    generationMetadata,
     framingJob,
     activeRenderJobId,
     loading,

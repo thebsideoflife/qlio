@@ -283,7 +283,6 @@ export interface PersistPayload {
   ledger?: Ledger;
   cost?: CostMeter;
   examined?: Interval[];
-  brief?: Brief;
   run?: RunState;
   openQuestionId?: string | null;
 }
@@ -338,10 +337,7 @@ export async function persistRunState(
     sets.push("examinedJson = :examined");
     values[":examined"] = JSON.stringify(payload.examined);
   }
-  if (payload.brief) {
-    sets.push("brief = :brief");
-    values[":brief"] = payload.brief;
-  }
+  // Panel inputs are project.metadata. Do not write a duplicate `brief` here.
   if (payload.run) {
     names["#run"] = "run";
     const run = payload.run as unknown as Record<string, unknown>;
@@ -779,19 +775,3 @@ export async function savePromptOverrides(
   );
 }
 
-export async function saveBrief(
-  projectId: string,
-  brief: Brief,
-): Promise<void> {
-  await docClient.send(
-    new UpdateCommand({
-      TableName: THREADS_TABLE,
-      Key: { projectId },
-      UpdateExpression: "SET brief = :brief, updatedAt = :now",
-      ExpressionAttributeValues: {
-        ":brief": brief,
-        ":now": new Date().toISOString(),
-      },
-    }),
-  );
-}

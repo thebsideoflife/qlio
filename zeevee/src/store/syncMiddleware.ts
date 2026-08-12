@@ -26,6 +26,7 @@ function startSyncInterval(store: StoreAPI) {
       segments,
       captionSettings,
       globalFraming,
+      generationMetadata,
       localVersion,
       syncedVersion,
       isSyncing,
@@ -48,6 +49,7 @@ function startSyncInterval(store: StoreAPI) {
           segments,
           captionSettings,
           globalFraming,
+          ...(generationMetadata ? { metadata: generationMetadata } : {}),
         });
         // Only mark the specific version as synced - if user made edits during sync,
         // localVersion will be higher and we'll sync again next interval

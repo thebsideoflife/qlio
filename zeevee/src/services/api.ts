@@ -217,6 +217,16 @@ export const updateProject = async (
     segments?: Segment[];
     captionSettings?: CaptionSettings;
     globalFraming?: GlobalFramingSettings;
+    metadata?: {
+      userPrompt?: string | null;
+      purpose?: string | null;
+      format?: string | null;
+      assetType?: string | null;
+      platform?: string | null;
+      minSegmentDuration?: number | null;
+      maxSegmentDuration?: number | null;
+      targetPercent?: number | null;
+    };
   },
 ) => {
   const response = await axios.patch(`${API_URL}/projects/${projectId}`, data, {

@@ -1,11 +1,11 @@
 /**
  * The IQ Editor panel: a conversation with the agent that is cutting the video.
  *
- * Layout, top to bottom — brief (collapses once work starts), the thread,
- * then the composer. The thread is the product; everything else gets out of its way.
+ * Layout, top to bottom — inputs, the thread, then the composer.
  */
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useDispatch } from "react-redux";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -13,7 +13,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   AlertCircle,
   ArrowUp,
-  ChevronRight,
   CircleSlash,
   Loader2,
   RotateCw,
@@ -27,10 +26,26 @@ import { BriefControls } from "./BriefControls";
 import { PromptsEditor } from "./PromptsEditor";
 import { STAGE_LABELS, type AgentBrief } from "@/services/agentTypes";
 import type { IQAgentState } from "@/hooks/useIQAgent";
-import type { GenerationMetadata } from "@/hooks/useProjectData";
+import {
+  updateGenerationMetadata,
+  type GenerationMetadata,
+} from "@/store/editorSlice";
 
 const RETRY_MESSAGE =
   "Pick up where you left off and keep going with what you already have.";
+
+function briefToMetadata(brief: AgentBrief): GenerationMetadata {
+  return {
+    userPrompt: brief.userPrompt ?? null,
+    purpose: brief.format ?? null,
+    format: brief.format ?? null,
+    assetType: brief.assetType ?? null,
+    platform: brief.platform ?? null,
+    minSegmentDuration: brief.minSegmentDuration ?? null,
+    maxSegmentDuration: brief.maxSegmentDuration ?? null,
+    targetPercent: brief.targetPercent ?? null,
+  };
+}
 
 export interface IQAgentPanelProps {
   projectId: string;
@@ -51,9 +66,11 @@ export function IQAgentPanel({
   targetAspectRatio,
   onPlatformChange,
 }: IQAgentPanelProps) {
-  const [brief, setBrief] = useState<AgentBrief | null>(null);
+  const dispatch = useDispatch();
+  const [inputs, setInputs] = useState<AgentBrief | null>(null);
   const [draft, setDraft] = useState("");
-  const [briefToggled, setBriefToggled] = useState<boolean | null>(null);
+  // Skip hydrate publish so opening a project does not mark the editor dirty.
+  const persistReadyRef = useRef(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedToBottomRef = useRef(true);
@@ -66,16 +83,23 @@ export function IQAgentPanel({
     agent.lastRun?.status === "failed" &&
     agent.lastRun.error?.code !== "asset_not_ready";
 
-  // Once there's a conversation the brief form is history, so it folds away on
-  // its own — unless the producer has opened or closed it by hand.
-  const briefOpen = briefToggled ?? !hasThread;
-
   // Follow the tail unless the producer has scrolled up to read something.
   useLayoutEffect(() => {
     const node = scrollRef.current;
     if (!node || !pinnedToBottomRef.current) return;
     node.scrollTop = node.scrollHeight;
   }, [agent.events.length, agent.isRunning]);
+
+  // Panel inputs ride the existing 10s project sync (same as framing/captions).
+  // Only depend on `inputs` — do not re-fire when a run starts/stops.
+  useEffect(() => {
+    if (!inputs) return;
+    if (!persistReadyRef.current) {
+      persistReadyRef.current = true;
+      return;
+    }
+    dispatch(updateGenerationMetadata(briefToMetadata(inputs)));
+  }, [inputs, dispatch]);
 
   const handleScroll = () => {
     const node = scrollRef.current;
@@ -86,10 +110,11 @@ export function IQAgentPanel({
   };
 
   const startRun = () => {
-    if (!brief) return;
+    if (!inputs) return;
     pinnedToBottomRef.current = true;
+    dispatch(updateGenerationMetadata(briefToMetadata(inputs)));
     void agent.start({
-      ...brief,
+      ...inputs,
       autoFrame: autoFrameEnabled,
       targetAspectRatio,
     });
@@ -130,56 +155,35 @@ export function IQAgentPanel({
         className="flex-1 min-h-0 overflow-y-auto"
       >
         <div className="p-4 space-y-4">
-          {/* --- The brief ------------------------------------------------ */}
-          {hasThread ? (
-            <button
-              type="button"
-              onClick={() => setBriefToggled(!briefOpen)}
-              className="w-full flex items-center gap-1.5 text-left"
-            >
-              <ChevronRight
-                className={cn(
-                  "h-3.5 w-3.5 text-muted-foreground transition-transform",
-                  briefOpen && "rotate-90",
-                )}
-              />
-              <span className="text-xs font-semibold text-muted-foreground">
-                Brief settings
-              </span>
-            </button>
-          ) : null}
-
-          {briefOpen && (
-            <div className="space-y-5">
-              {!hasThread && (
-                <p className="text-sm text-muted-foreground leading-relaxed">
-                  Set the shape of the cut, then start. You can talk to the editor
-                  at any point — while it's working or after it's done.
-                </p>
-              )}
-              <BriefControls
+          {/* --- Inputs --------------------------------------------------- */}
+          <div className="space-y-5">
+            {!hasThread && (
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                Set the shape of the cut, then start. You can talk to the editor
+                at any point — while it's working or after it's done.
+              </p>
+            )}
+            <BriefControls
+              disabled={agent.isRunning}
+              savedInputs={savedInputs}
+              onPlatformChange={onPlatformChange}
+              onChange={setInputs}
+            />
+            <div className="flex items-center justify-between">
+              <Label
+                htmlFor="agent-auto-frame"
+                className="text-xs font-semibold text-muted-foreground cursor-pointer"
+              >
+                Auto-frame when the cut changes
+              </Label>
+              <Switch
+                id="agent-auto-frame"
+                checked={autoFrameEnabled}
+                onCheckedChange={onAutoFrameChange}
                 disabled={agent.isRunning}
-                savedInputs={savedInputs}
-                savedBrief={agent.brief}
-                onPlatformChange={onPlatformChange}
-                onChange={setBrief}
               />
-              <div className="flex items-center justify-between">
-                <Label
-                  htmlFor="agent-auto-frame"
-                  className="text-xs font-semibold text-muted-foreground cursor-pointer"
-                >
-                  Auto-frame when the cut changes
-                </Label>
-                <Switch
-                  id="agent-auto-frame"
-                  checked={autoFrameEnabled}
-                  onCheckedChange={onAutoFrameChange}
-                  disabled={agent.isRunning}
-                />
-              </div>
             </div>
-          )}
+          </div>
 
           {/* --- The thread ----------------------------------------------- */}
           {agent.loading && !hasThread ? (
@@ -227,7 +231,7 @@ export function IQAgentPanel({
           <div className="p-4">
             <Button
               onClick={startRun}
-              disabled={!brief || busy}
+              disabled={!inputs || busy}
               className="w-full h-11 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg font-semibold text-sm"
             >
               {busy ? (
@@ -280,12 +284,12 @@ export function IQAgentPanel({
                       variant="ghost"
                       size="sm"
                       className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-                      disabled={!brief || busy}
+                      disabled={!inputs || busy}
                       onClick={startRun}
-                      title="Send the brief settings again as a fresh instruction"
+                      title="Send the inputs again as a fresh instruction"
                     >
                       <Sparkles className="h-3 w-3 mr-1.5" />
-                      Apply brief
+                      Apply inputs
                     </Button>
                     {retryable && (
                       <Button
