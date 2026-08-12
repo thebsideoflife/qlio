@@ -845,6 +845,7 @@ export default function Editor() {
               <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
                 {activeTab === "ai" && projectId && (
                   <IQAgentPanel
+                    key={projectId}
                     projectId={projectId}
                     agent={agent}
                     savedInputs={generationMetadata}
