@@ -69,6 +69,7 @@ export function FramingSlider({
           : "absolute right-3 top-1/2 -translate-y-1/2 pointer-events-auto"
       }
       onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
       title={`Drag to adjust ${
         isHorizontal ? "horizontal" : "vertical"
       } position\nDouble-click to center`}

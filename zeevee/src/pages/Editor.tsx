@@ -501,9 +501,12 @@ export default function Editor() {
   }, [dispatch, videoUrl]);
 
   const handleWordClick = (startTime: number) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = startTime;
-      const playPromise = videoRef.current.play();
+    const video = videoRef.current;
+    if (!video) return;
+    const wasPlaying = !video.paused && !video.ended;
+    video.currentTime = startTime;
+    if (wasPlaying) {
+      const playPromise = video.play();
       if (playPromise !== undefined) {
         playPromise.catch((error) => {
           // Ignore AbortError - it's expected when user rapidly interacts
