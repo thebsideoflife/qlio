@@ -119,6 +119,8 @@ export type CaptionedVideoProps = {
   captions: CaptionLine[];
   captionSettings: CaptionSettings;
   globalFraming?: GlobalFramingSettings;
+  /** Source video width/height. Defaults to 16:9 when omitted. */
+  sourceAspect?: number;
 };
 
 // Snap positions for caption placement

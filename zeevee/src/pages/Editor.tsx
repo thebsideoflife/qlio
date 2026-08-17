@@ -4,7 +4,18 @@ import { IQAgentPanel } from "@/components/editor/iq-agent/IQAgentPanel";
 import { CaptionOverlay } from "@/components/editor/CaptionOverlay";
 import { CaptionEditor } from "@/components/editor/CaptionEditor";
 import { FramingSlider } from "@/components/editor/FramingSlider";
+import { ZoomSlider } from "@/components/editor/ZoomSlider";
+import {
+  DEFAULT_SOURCE_ASPECT,
+  MAX_DIGITAL_ZOOM,
+  cssContainTransform,
+} from "@/lib/zoomMath";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
 import {
@@ -31,8 +42,6 @@ import {
   FileText,
   Wand2,
   Captions,
-  Crop,
-  Maximize2,
   Clock,
   Pencil,
   PanelTop,
@@ -44,10 +53,6 @@ function platformToAspectRatio(platform: string): AspectRatio {
   if (platform === "tv") return "16:9";
   return "9:16";
 }
-
-// Max digital punch-in used when the target aspect matches the 16:9 source
-// (no crop headroom, so zoom acts as a digital zoom instead).
-const MAX_DIGITAL_ZOOM = 2;
 
 export default function Editor() {
   const { projectId } = useParams();
@@ -78,6 +83,7 @@ export default function Editor() {
   // Track the last projectId we initialized state for — used to reset state on project change
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState(false);
+  const [sourceAspect, setSourceAspect] = useState(DEFAULT_SOURCE_ASPECT);
   // Sidebar width/open state persisted in localStorage (UI chrome, not Redux),
   // matching existing conventions (api_password, zeevee:recentAssets).
   const SIDEBAR_STORAGE_KEY = "zeevee:editorSidebar";
@@ -179,6 +185,7 @@ export default function Editor() {
   if (projectId !== activeProjectId) {
     setActiveProjectId(projectId ?? null);
     setPreviewMode(false);
+    setSourceAspect(DEFAULT_SOURCE_ASPECT);
   }
 
   // Custom Hooks
@@ -364,6 +371,13 @@ export default function Editor() {
   // Square-top portrait mode wipes out all other framing while on. Defaulted to
   // false for projects created before this feature (missing field on load).
   const squareTop = !!globalFraming.squareTop;
+  const previewAspect = squareTop ? 9 / 16 : aspectRatioValue;
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || video.videoWidth <= 0 || video.videoHeight <= 0) return;
+    setSourceAspect(video.videoWidth / video.videoHeight);
+  }, [videoUrl]);
 
   // Set projectId in Redux for sync middleware
   // Also reset local state when switching projects (prevents stale state from previous project)
@@ -529,7 +543,7 @@ export default function Editor() {
     <div
               ref={framingContainerRef}
               className={cn(
-                "relative overflow-hidden bg-black select-none",
+                "relative shrink-0 overflow-hidden bg-black select-none",
                 "rounded-2xl shadow-2xl shadow-black/50",
                 squareTop
                   ? "cursor-default ring-2 ring-border"
@@ -539,23 +553,13 @@ export default function Editor() {
                       ? "cursor-grab ring-2 ring-border hover:ring-muted-foreground/50"
                       : "cursor-pointer ring-2 ring-border",
               )}
-              style={
-                // Square-top uses an absolutely positioned <video>, so the
-                // frame has no in-flow content and collapses unless we give it
-                // an explicit height for aspect-ratio to resolve against.
-                squareTop
-                  ? {
-                      aspectRatio: 9 / 16,
-                      height: "100%",
-                      width: "auto",
-                      maxWidth: "90%",
-                    }
-                  : {
-                      aspectRatio: aspectRatioValue,
-                      maxHeight: aspectRatioValue < 1 ? "100%" : "90%",
-                      maxWidth: aspectRatioValue >= 1 ? "100%" : "90%",
-                    }
-              }
+              style={{
+                // Fit inside the stage on both axes so 16:9 (and 1:1) letterbox
+                // instead of filling height and overflowing width.
+                aspectRatio: previewAspect,
+                width: `min(100cqw, calc(100cqh * ${previewAspect}))`,
+                height: `min(100cqh, calc(100cqw / ${previewAspect}))`,
+              }}
               onMouseDown={
                 squareTop || displayZoom <= 0
                   ? undefined
@@ -594,68 +598,29 @@ export default function Editor() {
                       objectPosition: "center center",
                     };
                   }
-                  const sourceAspect = 16 / 9;
-                  // When the target matches the 16:9 source there is no crop
-                  // headroom, so allow a digital punch-in instead of a no-op.
-                  const matchesSource =
-                    Math.abs(aspectRatioValue - sourceAspect) < 0.01;
-                  const scaleCover = matchesSource
-                    ? MAX_DIGITAL_ZOOM
-                    : Math.max(
-                        aspectRatioValue / sourceAspect,
-                        sourceAspect / aspectRatioValue,
-                      );
-                  const scale = 1 + displayZoom * (scaleCover - 1);
-                  const videoAspectInContainer =
-                    sourceAspect / aspectRatioValue;
-                  const offsetX =
-                    videoAspectInContainer >= 1
-                      ? ((-(displayFocusX - 0.5) * (scale - 1)) / scale) * 100
-                      : 0;
-                  const offsetY =
-                    videoAspectInContainer <= 1
-                      ? ((-(displayFocusY - 0.5) * (scale - 1)) / scale) *
-                        100
-                      : 0;
+                  const { scale, translateX, translateY } = cssContainTransform(
+                    displayZoom,
+                    aspectRatioValue,
+                    sourceAspect,
+                    displayFocusX,
+                    displayFocusY,
+                  );
                   return {
                     width: "100%",
                     height: "100%",
                     objectFit: "contain" as const,
                     transformOrigin: "center center",
-                    transform: `translate(${offsetX}%, ${offsetY}%) scale(${scale})`,
+                    transform: `translate(${translateX}%, ${translateY}%) scale(${scale})`,
                   };
                 })()}
-                onLoadedMetadata={(e) =>
-                  dispatch(setDuration(e.currentTarget.duration))
-                }
+                onLoadedMetadata={(e) => {
+                  const video = e.currentTarget;
+                  dispatch(setDuration(video.duration));
+                  if (video.videoWidth > 0 && video.videoHeight > 0) {
+                    setSourceAspect(video.videoWidth / video.videoHeight);
+                  }
+                }}
               />
-
-              {!squareTop && (
-                <div className="absolute top-3 right-3 flex items-center gap-2">
-                  <div
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-900/80 backdrop-blur-sm border border-zinc-700"
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <Maximize2 className="h-3.5 w-3.5 text-zinc-400" />
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      value={displayZoom}
-                      onChange={(e) => {
-                        updateFramingValue({
-                          zoom: parseFloat(e.target.value),
-                        });
-                      }}
-                      className="w-20 h-1 accent-blue-500 cursor-pointer"
-                      title={`Zoom: ${Math.round(displayZoom * 100)}%`}
-                    />
-                    <Crop className="h-3.5 w-3.5 text-zinc-400" />
-                  </div>
-                </div>
-              )}
 
               {!squareTop && displayZoom > 0 && !isDragging && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
@@ -709,40 +674,66 @@ export default function Editor() {
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-background">
         {/* Video Player with Caption Overlay */}
         <div
-          className="flex-1 min-h-0 bg-muted relative flex items-center justify-center p-4"
+          className="flex-1 min-h-0 bg-muted"
           onClick={handleBackgroundClick}
         >
-          {/* Preview chrome (not over the frame) — top-right, left of IQ */}
-          <button
-            type="button"
-            title={
-              squareTop
-                ? "Square Top on — click to restore framing"
-                : "Square Top portrait mode"
-            }
-            aria-pressed={squareTop}
-            onClick={(e) => {
-              e.stopPropagation();
-              dispatch(setSquareTopEnabled(!squareTop));
-            }}
-            className={cn(
-              "absolute top-3 right-3 z-10 flex items-center gap-1.5",
-              "px-2.5 py-1.5 rounded-md text-[11px] font-semibold tracking-wide",
-              "border shadow-sm transition-colors",
-              squareTop
-                ? "bg-blue-500/15 border-blue-500/50 text-blue-500"
-                : "bg-card/90 border-border text-muted-foreground hover:text-foreground hover:bg-card",
-            )}
-          >
-            <PanelTop className="h-3.5 w-3.5" />
-            Square Top
-          </button>
+          <div className="flex h-full min-h-0 items-stretch justify-center gap-2 p-4">
+            {/* Matches the zoom column so the frame stays optically centered. */}
+            <div className="w-[3.5rem] shrink-0" aria-hidden />
 
-          {framingPreview ? (
-            framingPreview
-          ) : (
-            <div className="text-muted-foreground font-medium">Loading Video...</div>
-          )}
+            <div
+              className="flex min-h-0 min-w-0 flex-1 items-center justify-center"
+              style={{ containerType: "size" }}
+            >
+              {framingPreview ? (
+                framingPreview
+              ) : (
+                <div className="text-muted-foreground font-medium">
+                  Loading Video...
+                </div>
+              )}
+            </div>
+
+            <div
+              className="flex h-full w-[3.5rem] shrink-0 flex-col items-stretch justify-center gap-1.5"
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Square Top"
+                    aria-pressed={squareTop}
+                    onClick={() => dispatch(setSquareTopEnabled(!squareTop))}
+                    className={cn(
+                      "flex h-8 shrink-0 items-center justify-center rounded-full",
+                      "border border-zinc-600/70 bg-zinc-900/80 shadow-md backdrop-blur-md",
+                      "text-zinc-400 transition-colors hover:border-zinc-500 hover:text-zinc-200",
+                      squareTop &&
+                        "border-blue-400/50 bg-blue-500/15 text-blue-400 hover:text-blue-300",
+                    )}
+                  >
+                    <PanelTop className="h-3.5 w-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="left">
+                  {squareTop
+                    ? "Square Top on — click to restore framing"
+                    : "Square Top portrait mode"}
+                </TooltipContent>
+              </Tooltip>
+              <div className="h-52 min-h-0 max-h-[calc(100%-2.5rem)] rounded-2xl border border-zinc-600/70 bg-zinc-900/80 px-1 py-2.5 shadow-md backdrop-blur-md">
+                <ZoomSlider
+                  value={displayZoom}
+                  canvasAspect={aspectRatioValue}
+                  sourceAspect={sourceAspect}
+                  disabled={squareTop}
+                  onChange={(zoom) => updateFramingValue({ zoom })}
+                />
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Timeline */}

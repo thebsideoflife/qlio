@@ -3,6 +3,11 @@ import { AbsoluteFill, OffthreadVideo, useVideoConfig } from "remotion";
 import type { SegmentFraming, AspectRatio } from "./types";
 import { DEFAULT_SEGMENT_FRAMING, getEffectiveKeyframes } from "./types";
 import { resolveFramingAtTime } from "./framingInterpolation";
+import {
+  DEFAULT_SOURCE_ASPECT,
+  framingGeometry,
+  videoSizeAtZoom,
+} from "../lib/zoomMath";
 
 interface AutoFramedVideoProps {
   src: string;
@@ -12,6 +17,8 @@ interface AutoFramedVideoProps {
   children?: React.ReactNode;
   /** Time in seconds relative to segment start, for keyframe resolution */
   timeInSegment?: number;
+  /** Source video width/height. Defaults to 16:9 when unknown. */
+  sourceAspect?: number;
 }
 
 /**
@@ -48,41 +55,23 @@ export const AutoFramedVideo: React.FC<AutoFramedVideoProps> = ({
   endAt,
   children,
   timeInSegment = 0,
+  sourceAspect = DEFAULT_SOURCE_ASPECT,
 }) => {
   const { width: containerW, height: containerH } = useVideoConfig();
 
-  // Resolve active keyframe
   const keyframes = getEffectiveKeyframes(framing);
   const { focusX, focusY, zoom } = resolveFramingAtTime(
     keyframes,
     timeInSegment,
   );
 
-  // Source video is assumed 16:9. We compute contain/cover sizes directly.
-  const sourceAspect = 16 / 9;
-  // Max digital punch-in used when the target aspect matches the source.
-  const MAX_DIGITAL_ZOOM = 2;
-
-  // containSize: video scaled to fit entirely within container (letterboxed)
-  // coverSize: video scaled to fill container completely (cropped)
-  const containScale =
-    Math.min(containerW, containerH * sourceAspect) / sourceAspect;
-  const rawCoverScale =
-    Math.max(containerW, containerH * sourceAspect) / sourceAspect;
-  // When target aspect matches the source there is no crop headroom, so allow
-  // a digital punch-in (zoom acts as a digital zoom) to keep zoom/shift useful.
-  const matchesSource = rawCoverScale - containScale < containScale * 0.01;
-  const coverScale = matchesSource
-    ? containScale * MAX_DIGITAL_ZOOM
-    : rawCoverScale;
-  // containW/H and coverW/H are the video pixel dimensions at each scale
-  const containW = containScale * sourceAspect;
-  const containH = containScale;
-  const coverW = coverScale * sourceAspect;
-  const coverH = coverScale;
+  const { matchesSource } = framingGeometry(
+    containerW,
+    containerH,
+    sourceAspect,
+  );
 
   if (zoom === 0) {
-    // Pure fit mode — use simple CSS contain for best quality
     const videoStyle: React.CSSProperties = {
       width: "100%",
       height: "100%",
@@ -104,8 +93,6 @@ export const AutoFramedVideo: React.FC<AutoFramedVideoProps> = ({
   }
 
   if (zoom >= 1 && !matchesSource) {
-    // Pure crop mode — use simple CSS cover for best quality.
-    // Skipped when target matches source so the digital punch-in (below) applies.
     const videoStyle: React.CSSProperties = {
       width: "100%",
       height: "100%",
@@ -126,15 +113,15 @@ export const AutoFramedVideo: React.FC<AutoFramedVideoProps> = ({
     );
   }
 
-  // Intermediate zoom: lerp between contain and cover sizes
-  const videoW = containW + zoom * (coverW - containW);
-  const videoH = containH + zoom * (coverH - containH);
+  const { width: videoW, height: videoH } = videoSizeAtZoom(
+    zoom,
+    containerW,
+    containerH,
+    sourceAspect,
+  );
 
-  // Position: focusX/focusY controls which part of the video is centered
   const overflowX = videoW - containerW;
   const overflowY = videoH - containerH;
-
-  // When video is larger than container, shift based on focus point
   const left = overflowX > 0 ? -(focusX - 0.5) * overflowX : 0;
   const top = overflowY > 0 ? -(focusY - 0.5) * overflowY : 0;
 
@@ -145,7 +132,7 @@ export const AutoFramedVideo: React.FC<AutoFramedVideoProps> = ({
     left: "50%",
     top: "50%",
     transform: `translate(calc(-50% + ${left}px), calc(-50% + ${top}px))`,
-    objectFit: "cover", // The video itself fills its own dimensions
+    objectFit: "cover",
   };
 
   return (

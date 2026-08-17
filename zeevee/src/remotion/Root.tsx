@@ -6,6 +6,7 @@ import {
 import { CaptionedVideo } from "./CaptionedVideo";
 import type { CaptionedVideoProps } from "./types";
 import { DEFAULT_CAPTION_SETTINGS, DEFAULT_GLOBAL_FRAMING } from "./types";
+import { DEFAULT_SOURCE_ASPECT } from "../lib/zoomMath";
 
 const FPS = 30;
 
@@ -45,6 +46,7 @@ export function RemotionRoot() {
           captions: [],
           captionSettings: DEFAULT_CAPTION_SETTINGS,
           globalFraming: DEFAULT_GLOBAL_FRAMING,
+          sourceAspect: DEFAULT_SOURCE_ASPECT,
         }}
       />
 
@@ -66,6 +68,7 @@ export function RemotionRoot() {
             aspectRatio: "9:16",
             enabled: true,
           },
+          sourceAspect: DEFAULT_SOURCE_ASPECT,
         }}
       />
 
@@ -87,6 +90,7 @@ export function RemotionRoot() {
             aspectRatio: "1:1",
             enabled: true,
           },
+          sourceAspect: DEFAULT_SOURCE_ASPECT,
         }}
       />
     </>

@@ -27,6 +27,7 @@ interface SegmentVideoProps {
   framing?: SegmentFraming;
   framingEnabled?: boolean;
   squareTop?: boolean;
+  sourceAspect?: number;
 }
 
 function SegmentVideo({
@@ -38,6 +39,7 @@ function SegmentVideo({
   framing,
   framingEnabled = false,
   squareTop = false,
+  sourceAspect,
 }: SegmentVideoProps) {
   const frame = useCurrentFrame();
   const { fps, height } = useVideoConfig();
@@ -94,6 +96,7 @@ function SegmentVideo({
         startFrom={Math.round(startTime * fps)}
         endAt={Math.round(endTime * fps)}
         timeInSegment={timeInSegment}
+        sourceAspect={sourceAspect}
       >
         <CaptionDisplay
           captions={captions}
@@ -129,6 +132,7 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
   captions,
   captionSettings,
   globalFraming,
+  sourceAspect,
 }) => {
   const frame = useCurrentFrame();
   const { fps, height } = useVideoConfig();
@@ -195,7 +199,11 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
         aspectRatio: globalFraming.aspectRatio,
       };
       return (
-        <AutoFramedVideo src={videoUrl} framing={defaultFraming}>
+        <AutoFramedVideo
+          src={videoUrl}
+          framing={defaultFraming}
+          sourceAspect={sourceAspect}
+        >
           <CaptionDisplay
             captions={captions}
             settings={captionSettings}
@@ -260,6 +268,7 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
               framing={segmentFraming}
               framingEnabled={framingEnabled}
               squareTop={squareTop}
+              sourceAspect={sourceAspect}
             />
           </Sequence>
         );
