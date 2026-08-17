@@ -518,7 +518,7 @@ export default function Editor() {
           <div className="flex-1 min-h-0 overflow-hidden bg-muted flex items-center justify-center">
             <Skeleton className="w-[80%] aspect-video" />
           </div>
-          <div className="shrink-0 h-32 border-t bg-card p-2">
+          <div className="shrink-0 h-[clamp(12rem,24vh,20rem)] border-t bg-card p-2">
             <Skeleton className="w-full h-full" />
           </div>
         </div>
@@ -733,7 +733,7 @@ export default function Editor() {
 
         {/* Timeline */}
         <div className="shrink-0 border-t border-border bg-card">
-          <div className="h-52">
+          <div className="h-[clamp(12rem,24vh,20rem)]">
             <Timeline
               videoRef={videoRef}
               previewMode={previewMode}
