@@ -733,7 +733,7 @@ export default function Editor() {
 
         {/* Timeline */}
         <div className="shrink-0 border-t border-border bg-card">
-          <div className="h-40">
+          <div className="h-64">
             <Timeline
               videoRef={videoRef}
               previewMode={previewMode}

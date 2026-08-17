@@ -1338,7 +1338,28 @@ export function Timeline({
     zoom >= 10 ? `${Math.round(zoom)}×` : `${parseFloat(zoom.toFixed(1))}×`;
 
   return (
-    <div ref={containerRef} className="w-full h-full flex flex-col select-none">
+    <>
+      <style>{`
+        .timeline-scrollbar::-webkit-scrollbar {
+          height: 12px;
+        }
+        .timeline-scrollbar::-webkit-scrollbar-track {
+          background: hsl(var(--muted) / 0.3);
+          border-radius: 6px;
+        }
+        .timeline-scrollbar::-webkit-scrollbar-thumb {
+          background: hsl(var(--muted-foreground) / 0.4);
+          border-radius: 6px;
+          border: 2px solid transparent;
+          background-clip: content-box;
+        }
+        .timeline-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: hsl(var(--muted-foreground) / 0.6);
+          border: 2px solid transparent;
+          background-clip: content-box;
+        }
+      `}</style>
+      <div ref={containerRef} className="w-full h-full flex flex-col select-none">
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-3 py-2 shrink-0">
         <ToolbarIconButton
@@ -1499,8 +1520,8 @@ export function Timeline({
         ref={scrollRef}
         className="flex-1 overflow-x-auto overflow-y-hidden relative timeline-scrollbar"
         style={{
-          scrollbarWidth: "thin",
-          scrollbarColor: "hsl(var(--muted-foreground) / 0.3) transparent",
+          scrollbarWidth: "auto",
+          scrollbarColor: "hsl(var(--muted-foreground) / 0.5) hsl(var(--muted) / 0.3)",
         }}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
@@ -1930,6 +1951,7 @@ export function Timeline({
           </div>
         </div>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
