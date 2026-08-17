@@ -77,6 +77,7 @@ type FramingSnapshot = {
 
 function ToolbarIconButton({
   tooltip,
+  className,
   children,
   ...props
 }: React.ComponentProps<typeof Button> & { tooltip: string }) {
@@ -84,7 +85,16 @@ function ToolbarIconButton({
     <Tooltip>
       <TooltipTrigger asChild>
         <span className="inline-flex">
-          <Button {...props}>{children}</Button>
+          <Button
+            size="icon"
+            className={cn(
+              "h-[clamp(2.75rem,22cqh,3.75rem)] w-[clamp(2.75rem,22cqh,3.75rem)] rounded-xl p-0 [&_svg]:size-[46%]",
+              className,
+            )}
+            {...props}
+          >
+            {children}
+          </Button>
         </span>
       </TooltipTrigger>
       <TooltipContent side="bottom">{tooltip}</TooltipContent>
@@ -1338,92 +1348,103 @@ export function Timeline({
     zoom >= 10 ? `${Math.round(zoom)}×` : `${parseFloat(zoom.toFixed(1))}×`;
 
   return (
-    <div ref={containerRef} className="w-full h-full flex flex-col select-none">
+    <>
+      <style>{`
+        .timeline-scrollbar::-webkit-scrollbar {
+          height: 12px;
+        }
+        .timeline-scrollbar::-webkit-scrollbar-track {
+          background: hsl(var(--muted) / 0.3);
+          border-radius: 6px;
+        }
+        .timeline-scrollbar::-webkit-scrollbar-thumb {
+          background: hsl(var(--muted-foreground) / 0.4);
+          border-radius: 6px;
+          border: 2px solid transparent;
+          background-clip: content-box;
+        }
+        .timeline-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: hsl(var(--muted-foreground) / 0.6);
+          border: 2px solid transparent;
+          background-clip: content-box;
+        }
+      `}</style>
+      <div
+        ref={containerRef}
+        className="w-full h-full flex flex-col select-none [container-type:size]"
+      >
       {/* Toolbar */}
-      <div className="flex items-center gap-2 px-3 py-2 shrink-0">
+      <div className="flex items-center gap-2.5 px-3 py-2 shrink-0">
         <ToolbarIconButton
-          size="sm"
           variant="outline"
           onClick={handleSplit}
           disabled={!canSplit}
-          className="h-9 w-9 p-0"
           tooltip="Split segment at playhead"
         >
-          <Scissors className="h-4 w-4" />
+          <Scissors />
         </ToolbarIconButton>
         {!previewMode && (
           <ToolbarIconButton
-            size="sm"
             variant="outline"
             onClick={handleAdd}
             disabled={!canAdd}
-            className="h-9 w-9 p-0"
             tooltip="Add segment at playhead"
           >
-            <Plus className="h-4 w-4" />
+            <Plus />
           </ToolbarIconButton>
         )}
 
-        <div className="h-5 w-px bg-border mx-1" />
+        <div className="h-6 w-px bg-border mx-1" />
         <ToolbarIconButton
-          size="sm"
           variant="outline"
           onClick={handleReframeSelected}
           disabled={!selectedId || !!reframingMode}
-          className="h-9 w-9 p-0"
           tooltip="Reframe selected segment"
         >
           {reframingMode === "selected" ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="animate-spin" />
           ) : (
-            <Focus className="h-4 w-4" />
+            <Focus />
           )}
         </ToolbarIconButton>
         <ToolbarIconButton
-          size="sm"
           variant="outline"
           onClick={handleReframeAll}
           disabled={segments.length === 0 || !!reframingMode}
-          className="h-9 w-9 p-0"
           tooltip="Reframe all segments"
         >
           {reframingMode === "all" ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="animate-spin" />
           ) : (
-            <ScanLine className="h-4 w-4" />
+            <ScanLine />
           )}
         </ToolbarIconButton>
 
-        <div className="h-5 w-px bg-border mx-1" />
+        <div className="h-6 w-px bg-border mx-1" />
 
         <ToolbarIconButton
-          size="sm"
           variant="outline"
           onClick={handleZoomOut}
           disabled={zoom <= MIN_ZOOM}
-          className="h-9 w-9 p-0"
           tooltip="Zoom out"
         >
-          <ZoomOut className="h-4 w-4" />
+          <ZoomOut />
         </ToolbarIconButton>
-        <span className="text-xs text-muted-foreground font-semibold min-w-[2.25rem] text-center tabular-nums">
+        <span className="text-sm text-muted-foreground font-semibold min-w-[2.5rem] text-center tabular-nums">
           {zoomLabel}
         </span>
         <ToolbarIconButton
-          size="sm"
           variant="outline"
           onClick={handleZoomIn}
           disabled={zoom >= MAX_ZOOM}
-          className="h-9 w-9 p-0"
           tooltip="Zoom in"
         >
-          <ZoomIn className="h-4 w-4" />
+          <ZoomIn />
         </ToolbarIconButton>
 
         {/* Centered playback controls */}
         <div className="flex-1 flex items-center justify-center gap-3">
           <ToolbarIconButton
-            size="sm"
             onClick={() => {
               const video = videoRef.current;
               if (video) {
@@ -1434,63 +1455,50 @@ export function Timeline({
                 }
               }
             }}
-            className="h-9 w-9 p-0"
+            className="h-[clamp(3rem,26cqh,4.25rem)] w-[clamp(3rem,26cqh,4.25rem)] [&_svg]:size-[50%]"
             tooltip={isPlaying ? "Pause (Space)" : "Play (Space)"}
           >
-            {isPlaying ? (
-              <Pause className="h-4 w-4" />
-            ) : (
-              <Play className="h-4 w-4 ml-0.5" />
-            )}
+            {isPlaying ? <Pause /> : <Play className="ml-0.5" />}
           </ToolbarIconButton>
-          <span className="text-sm text-foreground font-mono font-bold tabular-nums">
+          <span className="text-base text-foreground font-mono font-bold tabular-nums">
             {formatTime(effectiveCurrentTime)} / {formatTime(effectiveDuration)}
           </span>
         </div>
 
         <ToolbarIconButton
-          size="sm"
           variant={showAllKeyframes ? "default" : "outline"}
           onClick={() => dispatch(toggleShowKeyframes())}
-          className="h-9 w-9 p-0"
           tooltip={
             showAllKeyframes
               ? "Show selected keyframes only"
               : "Show all keyframes"
           }
         >
-          <Layers className="h-4 w-4" />
+          <Layers />
         </ToolbarIconButton>
 
         <ToolbarIconButton
-          size="sm"
           variant={previewMode ? "default" : "outline"}
           onClick={() => onPreviewModeChange(!previewMode)}
-          className="h-9 w-9 p-0"
           tooltip={previewMode ? "Exit preview mode" : "Preview final video"}
         >
-          {previewMode ? (
-            <EyeOff className="h-4 w-4" />
-          ) : (
-            <Eye className="h-4 w-4" />
-          )}
+          {previewMode ? <EyeOff /> : <Eye />}
         </ToolbarIconButton>
 
         <ToolbarIconButton
-          size="sm"
           variant="outline"
           onClick={handleDelete}
           disabled={
             selectionMode === "keyframe" ? !canDeleteKeyframe : !selectedId
           }
-          className="h-9 w-9 p-0 text-red-500 hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/50 disabled:opacity-30"
+          className="text-red-500 hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/50 disabled:opacity-30"
           tooltip={
             selectionMode === "keyframe"
               ? "Delete framing keyframe"
               : "Delete selected segment"
           }
         >
-          <Trash2 className="h-4 w-4" />
+          <Trash2 />
         </ToolbarIconButton>
       </div>
 
@@ -1499,8 +1507,8 @@ export function Timeline({
         ref={scrollRef}
         className="flex-1 overflow-x-auto overflow-y-hidden relative timeline-scrollbar"
         style={{
-          scrollbarWidth: "thin",
-          scrollbarColor: "hsl(var(--muted-foreground) / 0.3) transparent",
+          scrollbarWidth: "auto",
+          scrollbarColor: "hsl(var(--muted-foreground) / 0.5) hsl(var(--muted) / 0.3)",
         }}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
@@ -1930,6 +1938,7 @@ export function Timeline({
           </div>
         </div>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
