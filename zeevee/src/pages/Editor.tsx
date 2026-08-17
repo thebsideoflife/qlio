@@ -501,18 +501,13 @@ export default function Editor() {
   }, [dispatch, videoUrl]);
 
   const handleWordClick = (startTime: number) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = startTime;
-      const playPromise = videoRef.current.play();
-      if (playPromise !== undefined) {
-        playPromise.catch((error) => {
-          // Ignore AbortError - it's expected when user rapidly interacts
-          if (error.name !== "AbortError") {
-            console.error("Playback error:", error);
-          }
-        });
-      }
-    }
+    const video = videoRef.current;
+    if (!video) return;
+    // Seek-only: assigning currentTime never changes the element's
+    // playing/paused state, so word clicks must not touch play()/pause().
+    // Paused videos stay paused on the word's frame; playing videos keep
+    // playing from the new position.
+    video.currentTime = startTime;
   };
 
   if (loading) {
