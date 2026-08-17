@@ -113,6 +113,45 @@ function extractClip(
   });
 }
 
+const DEFAULT_SOURCE_ASPECT = 16 / 9;
+
+/** Source width/height from the downloaded file so Remotion framing matches the editor. */
+function getVideoAspect(inputPath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const ffprobe = spawn("ffprobe", [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=width,height",
+      "-of", "csv=p=0",
+      inputPath,
+    ]);
+
+    let stdout = "";
+    let stderr = "";
+    ffprobe.stdout.on("data", (data: Buffer) => {
+      stdout += data.toString();
+    });
+    ffprobe.stderr.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
+    ffprobe.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`ffprobe exited with code ${code}: ${stderr}`));
+        return;
+      }
+      const [widthStr, heightStr] = stdout.trim().split(",");
+      const width = parseFloat(widthStr);
+      const height = parseFloat(heightStr);
+      if (!(width > 0) || !(height > 0)) {
+        reject(new Error(`Could not parse dimensions from: ${stdout}`));
+        return;
+      }
+      resolve(width / height);
+    });
+    ffprobe.on("error", reject);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Caption helpers
 // ---------------------------------------------------------------------------
@@ -206,6 +245,14 @@ export const handler: Handler<{ jobId: string }, void> = async (event) => {
   const inputPath = path.join(tmpDir, "source.mp4");
   await downloadFromS3(bucket, key, inputPath);
 
+  let sourceAspect = DEFAULT_SOURCE_ASPECT;
+  try {
+    sourceAspect = await getVideoAspect(inputPath);
+    console.log(`Source aspect: ${sourceAspect}`);
+  } catch (err) {
+    console.warn("Failed to probe source aspect, defaulting to 16:9:", err);
+  }
+
   try {
     // 3. Cut each segment and upload clip
     const clipUrls: Map<string, string> = new Map();
@@ -278,6 +325,7 @@ export const handler: Handler<{ jobId: string }, void> = async (event) => {
             captions: segmentCaptions,
             captionSettings,
             globalFraming: { ...globalFraming, enabled: true },
+            sourceAspect,
           },
           codec: outputFormat === "webm" ? "vp8" : "h264",
           outName,
