@@ -27,6 +27,8 @@ export interface CaptionSettings {
   enabled: boolean;
   style: CaptionStyle;
   wordEdits?: Record<string, string>; // key: "start-end" (timestamps), value: edited text (empty string = deleted)
+  /** ISO-639-1 of the captions currently shown / exported. Defaults to original. */
+  activeLanguage?: string;
 }
 
 // Aspect ratio options for autoframing

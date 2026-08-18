@@ -90,7 +90,7 @@ data "aws_iam_policy_document" "lambda_policy" {
   }
   # S3 read access for Remotion bucket (presigning download URLs)
   statement {
-    actions = ["s3:GetObject"]
+    actions   = ["s3:GetObject"]
     resources = ["arn:aws:s3:::remotionlambda-*/*"]
   }
   # Allow Lambda to invoke other Lambdas (for split -> indexChunks flow)
@@ -108,6 +108,7 @@ data "aws_iam_policy_document" "lambda_policy" {
       aws_secretsmanager_secret.twelve_labs_signing_secret.arn,
       data.aws_secretsmanager_secret.anthropic_api_key.arn,
       aws_secretsmanager_secret.gemini_api_key.arn,
+      data.aws_secretsmanager_secret.openrouter_api_key.arn,
       aws_secretsmanager_secret.cloudfront_private_key.arn,
       aws_secretsmanager_secret.coleman_jockey_twelve_labs_key.arn
     ]
@@ -181,16 +182,20 @@ resource "aws_lambda_function" "start_indexing" {
 
   environment {
     variables = {
-      TABLE_NAME              = aws_dynamodb_table.assets.name
-      CHUNK_TASKS_TABLE       = aws_dynamodb_table.chunk_tasks.name
-      SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
-      TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
-      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-      SPLIT_FUNCTION_NAME     = aws_lambda_function.split_video.function_name
+      TABLE_NAME               = aws_dynamodb_table.assets.name
+      CHUNK_TASKS_TABLE        = aws_dynamodb_table.chunk_tasks.name
+      SECRET_ARN               = aws_secretsmanager_secret.twelve_labs_key.arn
+      TWELVE_LABS_INDEX_ID     = var.twelve_labs_index_id
+      API_PASSWORD_SECRET_ARN  = aws_secretsmanager_secret.api_password.arn
+      SPLIT_FUNCTION_NAME      = aws_lambda_function.split_video.function_name
+      TRANSCRIBE_FUNCTION_NAME = aws_lambda_function.transcribe_asset.function_name
     }
   }
 
-  depends_on = [aws_lambda_function.split_video]
+  depends_on = [
+    aws_lambda_function.split_video,
+    aws_lambda_function.transcribe_asset,
+  ]
 }
 
 # --- Split Video (FFmpeg container for long video splitting) ---
@@ -210,9 +215,9 @@ resource "aws_lambda_function" "split_video" {
 
   environment {
     variables = {
-      TABLE_NAME                  = aws_dynamodb_table.assets.name
-      BUCKET_NAME                 = aws_s3_bucket.media.id
-      INDEX_CHUNKS_FUNCTION_NAME  = aws_lambda_function.index_chunks.function_name
+      TABLE_NAME                 = aws_dynamodb_table.assets.name
+      BUCKET_NAME                = aws_s3_bucket.media.id
+      INDEX_CHUNKS_FUNCTION_NAME = aws_lambda_function.index_chunks.function_name
     }
   }
 
@@ -303,10 +308,10 @@ resource "aws_lambda_function" "list_assets" {
 
   environment {
     variables = {
-      TABLE_NAME                       = aws_dynamodb_table.assets.name
-      API_PASSWORD_SECRET_ARN          = aws_secretsmanager_secret.api_password.arn
-      CLOUDFRONT_DOMAIN                = aws_cloudfront_distribution.media.domain_name
-      CLOUDFRONT_KEY_PAIR_ID           = aws_cloudfront_public_key.media.id
+      TABLE_NAME                        = aws_dynamodb_table.assets.name
+      API_PASSWORD_SECRET_ARN           = aws_secretsmanager_secret.api_password.arn
+      CLOUDFRONT_DOMAIN                 = aws_cloudfront_distribution.media.domain_name
+      CLOUDFRONT_KEY_PAIR_ID            = aws_cloudfront_public_key.media.id
       CLOUDFRONT_PRIVATE_KEY_SECRET_ARN = aws_secretsmanager_secret.cloudfront_private_key.arn
     }
   }
@@ -329,10 +334,10 @@ resource "aws_lambda_function" "get_asset" {
 
   environment {
     variables = {
-      TABLE_NAME                       = aws_dynamodb_table.assets.name
-      API_PASSWORD_SECRET_ARN          = aws_secretsmanager_secret.api_password.arn
-      CLOUDFRONT_DOMAIN                = aws_cloudfront_distribution.media.domain_name
-      CLOUDFRONT_KEY_PAIR_ID           = aws_cloudfront_public_key.media.id
+      TABLE_NAME                        = aws_dynamodb_table.assets.name
+      API_PASSWORD_SECRET_ARN           = aws_secretsmanager_secret.api_password.arn
+      CLOUDFRONT_DOMAIN                 = aws_cloudfront_distribution.media.domain_name
+      CLOUDFRONT_KEY_PAIR_ID            = aws_cloudfront_public_key.media.id
       CLOUDFRONT_PRIVATE_KEY_SECRET_ARN = aws_secretsmanager_secret.cloudfront_private_key.arn
     }
   }
@@ -430,13 +435,13 @@ resource "aws_lambda_function" "project_ops" {
 
   environment {
     variables = {
-      PROJECTS_TABLE                   = aws_dynamodb_table.projects.name
-      ASSETS_TABLE                     = aws_dynamodb_table.assets.name
-      RENDER_JOBS_TABLE                = aws_dynamodb_table.render_jobs.name
-      API_PASSWORD_SECRET_ARN          = aws_secretsmanager_secret.api_password.arn
-      BUCKET_NAME                      = aws_s3_bucket.media.bucket
-      CLOUDFRONT_DOMAIN                = aws_cloudfront_distribution.media.domain_name
-      CLOUDFRONT_KEY_PAIR_ID           = aws_cloudfront_public_key.media.id
+      PROJECTS_TABLE                    = aws_dynamodb_table.projects.name
+      ASSETS_TABLE                      = aws_dynamodb_table.assets.name
+      RENDER_JOBS_TABLE                 = aws_dynamodb_table.render_jobs.name
+      API_PASSWORD_SECRET_ARN           = aws_secretsmanager_secret.api_password.arn
+      BUCKET_NAME                       = aws_s3_bucket.media.bucket
+      CLOUDFRONT_DOMAIN                 = aws_cloudfront_distribution.media.domain_name
+      CLOUDFRONT_KEY_PAIR_ID            = aws_cloudfront_public_key.media.id
       CLOUDFRONT_PRIVATE_KEY_SECRET_ARN = aws_secretsmanager_secret.cloudfront_private_key.arn
     }
   }
@@ -459,11 +464,11 @@ resource "aws_lambda_function" "list_projects" {
 
   environment {
     variables = {
-      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
-      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-      BUCKET_NAME             = aws_s3_bucket.media.bucket
-      CLOUDFRONT_DOMAIN                = aws_cloudfront_distribution.media.domain_name
-      CLOUDFRONT_KEY_PAIR_ID           = aws_cloudfront_public_key.media.id
+      PROJECTS_TABLE                    = aws_dynamodb_table.projects.name
+      API_PASSWORD_SECRET_ARN           = aws_secretsmanager_secret.api_password.arn
+      BUCKET_NAME                       = aws_s3_bucket.media.bucket
+      CLOUDFRONT_DOMAIN                 = aws_cloudfront_distribution.media.domain_name
+      CLOUDFRONT_KEY_PAIR_ID            = aws_cloudfront_public_key.media.id
       CLOUDFRONT_PRIVATE_KEY_SECRET_ARN = aws_secretsmanager_secret.cloudfront_private_key.arn
     }
   }
@@ -483,7 +488,7 @@ resource "aws_lambda_function" "detect_scenes" {
   handler          = "detectScenes.handler"
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.detect_scenes_zip.output_base64sha256
-  timeout          = 900  # 15 minutes - full Lambda max for long videos
+  timeout          = 900 # 15 minutes - full Lambda max for long videos
   memory_size      = 512
 
   environment {
@@ -510,20 +515,20 @@ resource "aws_lambda_function" "generate_segments" {
   handler          = "generateSegments.handler"
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.generate_segments_zip.output_base64sha256
-  timeout          = 900  # 15 minutes — Pegasus async segmentation can exceed 10m on long sources
+  timeout          = 900 # 15 minutes — Pegasus async segmentation can exceed 10m on long sources
 
   environment {
     variables = {
-      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
-      ASSETS_TABLE            = aws_dynamodb_table.assets.name
-      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-      SECRET_ARN              = aws_secretsmanager_secret.twelve_labs_key.arn
-      TWELVE_LABS_INDEX_ID    = var.twelve_labs_index_id
-      BUCKET_NAME             = aws_s3_bucket.media.bucket
+      PROJECTS_TABLE                = aws_dynamodb_table.projects.name
+      ASSETS_TABLE                  = aws_dynamodb_table.assets.name
+      API_PASSWORD_SECRET_ARN       = aws_secretsmanager_secret.api_password.arn
+      SECRET_ARN                    = aws_secretsmanager_secret.twelve_labs_key.arn
+      TWELVE_LABS_INDEX_ID          = var.twelve_labs_index_id
+      BUCKET_NAME                   = aws_s3_bucket.media.bucket
       DETECT_SCENES_FUNCTION        = aws_lambda_function.detect_scenes.function_name
       ANALYZE_FRAMING_FUNCTION_NAME = aws_lambda_function.analyze_framing.function_name
-      GEMINI_SECRET_ARN    = aws_secretsmanager_secret.gemini_api_key.arn
-      ANTHROPIC_SECRET_ARN = data.aws_secretsmanager_secret.anthropic_api_key.arn
+      GEMINI_SECRET_ARN             = aws_secretsmanager_secret.gemini_api_key.arn
+      ANTHROPIC_SECRET_ARN          = data.aws_secretsmanager_secret.anthropic_api_key.arn
       # Jockey pipelines for compact_video + episode_recap. Both flags only
       # take effect when the request opts in via the frontend "Jockey mode"
       # toggle (jockeyEnabled) — default requests always use the legacy

@@ -8,6 +8,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { checkAuth } from "../utils/auth";
+import { resolveRenderTranscriptUri } from "../utils/transcript-timing";
 import { v4 as uuidv4 } from "uuid";
 
 const client = new DynamoDBClient({});
@@ -35,6 +36,7 @@ interface CaptionSettings {
     maxWidth: number;
     highlightColor?: string;
   };
+  activeLanguage?: string;
 }
 
 interface GlobalFramingSettings {
@@ -246,6 +248,23 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   );
 
   // Create render job with all data the cutSegments handler needs
+  const translations =
+    asset.translations && typeof asset.translations === "object"
+      ? (asset.translations as Record<string, string>)
+      : {};
+  const transcriptionS3Uri = resolveRenderTranscriptUri({
+    activeLanguage: captionSettings.activeLanguage,
+    originalLanguage:
+      typeof asset.originalLanguage === "string"
+        ? asset.originalLanguage
+        : undefined,
+    translations,
+    transcriptionUrl:
+      typeof asset.transcriptionUrl === "string"
+        ? asset.transcriptionUrl
+        : null,
+  });
+
   const renderJob = {
     jobId,
     projectId,
@@ -258,7 +277,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     outputFormat,
     compositionId,
     sourceS3Uri: asset.s3VideoUrl,
-    transcriptionS3Uri: asset.transcriptionUrl || null,
+    transcriptionS3Uri,
     segments,
     captionSettings,
     globalFraming,

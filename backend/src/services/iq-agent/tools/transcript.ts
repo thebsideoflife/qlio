@@ -7,6 +7,7 @@
  */
 
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { parseTranscriptJson } from "../../../utils/transcript-format";
 import { TRANSCRIPT_MAX_CHARS } from "../config";
 import { fmtTimecode } from "../ledger";
 import { toolError, type ToolResult } from "../types";
@@ -144,28 +145,12 @@ export async function loadTranscriptWords(
   const body = await response.Body?.transformToString();
   if (!body) throw new Error("Transcript object is empty");
 
-  const parsed: unknown = JSON.parse(body);
-  const raw = Array.isArray(parsed)
-    ? parsed
-    : Array.isArray((parsed as { data?: unknown }).data)
-      ? ((parsed as { data: unknown[] }).data)
-      : Array.isArray((parsed as { transcription?: unknown }).transcription)
-        ? ((parsed as { transcription: unknown[] }).transcription)
-        : [];
-
-  return raw
-    .map((entry) => {
-      const e = entry as Record<string, unknown>;
-      const start = Number(e.start ?? e.startTime ?? 0);
-      const end = Number(e.end ?? e.endTime ?? start);
-      const value = String(e.value ?? e.text ?? "").trim();
-      return { start, end, value };
-    })
-    .filter(
-      (w) =>
-        w.value.length > 0 && Number.isFinite(w.start) && Number.isFinite(w.end),
-    )
-    .sort((a, b) => a.start - b.start);
+  const parsed = parseTranscriptJson(JSON.parse(body));
+  const words = parsed.kind === "original" ? parsed.words : [];
+  return words.filter(
+    (w) =>
+      w.value.length > 0 && Number.isFinite(w.start) && Number.isFinite(w.end),
+  );
 }
 
 export function runReadTranscript(params: {

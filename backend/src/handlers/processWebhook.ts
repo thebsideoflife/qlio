@@ -1,5 +1,4 @@
 import { APIGatewayProxyHandler } from "aws-lambda";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
@@ -14,13 +13,8 @@ import {
 } from "@aws-sdk/client-secrets-manager";
 import { TwelveLabs } from "twelvelabs-js";
 import { createHmac } from "crypto";
-import axios from "axios";
-import {
-  extractTwelveLabsDuration,
-  normalizeTwelveLabsTranscription,
-} from "../utils/transcription";
+import { extractTwelveLabsDuration } from "../utils/transcription";
 
-const s3Client = new S3Client({});
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient, {
   marshallOptions: {
@@ -34,7 +28,6 @@ const CHUNK_TASKS_TABLE = process.env.CHUNK_TASKS_TABLE;
 const SECRET_ARN = process.env.SECRET_ARN!;
 const SIGNING_SECRET_ARN = process.env.SIGNING_SECRET_ARN!;
 const TWELVE_LABS_INDEX_ID = process.env.TWELVE_LABS_INDEX_ID!;
-const BUCKET_NAME = process.env.BUCKET_NAME!;
 
 interface ChunkInfo {
   chunkIndex: number;
@@ -218,16 +211,13 @@ async function handleSingleVideoCompletion(
   assetId: string,
   videoId: string,
 ): Promise<{ statusCode: number; headers?: any; body: string }> {
-  // Fetch 12 Labs API Key to get transcription
+  // Duration from TwelveLabs media metadata (or upload). Whisper owns the
+  // transcript — do not fetch or overwrite transcriptionUrl here.
   const secretVal12Labs = await secretsClient.send(
     new GetSecretValueCommand({ SecretId: SECRET_ARN }),
   );
   const apiKey = secretVal12Labs.SecretString;
-  let transcriptionUrl = null;
 
-  // Duration must come from media metadata (upload client and/or TwelveLabs),
-  // NEVER from transcript word timestamps — TL can return a stretched duplicate
-  // track whose last timestamp is ~2x the real runtime.
   const existingAsset = await docClient.send(
     new GetCommand({
       TableName: TABLE_NAME,
@@ -240,87 +230,15 @@ async function handleSingleVideoCompletion(
   if (apiKey && videoId && videoId !== "unknown") {
     const client = new TwelveLabs({ apiKey });
 
-    // Get video metadata for duration
     try {
       const video = await client.indexes.videos.retrieve(
         TWELVE_LABS_INDEX_ID,
         videoId,
       );
-
-      // 12Labs nests duration under system_metadata or systemMetadata depending
-      // on SDK/API shape — extractTwelveLabsDuration checks both.
       videoDuration = extractTwelveLabsDuration(video);
-
-      console.log(
-        "12Labs video duration:",
-        videoDuration,
-        "from response:",
-        JSON.stringify(video, null, 2).slice(0, 500),
-      );
+      console.log("12Labs video duration:", videoDuration);
     } catch (err) {
       console.error("Failed to fetch video metadata from 12 Labs", err);
-    }
-
-    // Get Transcription & Store in S3
-    try {
-      console.log(`Fetching transcription for video ${videoId}...`);
-
-      const url = `https://api.twelvelabs.io/v1.3/indexes/${TWELVE_LABS_INDEX_ID}/videos/${videoId}`;
-      const response = await axios.get(url, {
-        headers: {
-          "x-api-key": apiKey,
-        },
-        params: {
-          transcription: true,
-        },
-      });
-
-      const data = response.data;
-
-      // Same payload often includes system_metadata.duration — use if SDK miss.
-      if (videoDuration <= 0) {
-        videoDuration = extractTwelveLabsDuration(data);
-        if (videoDuration > 0) {
-          console.log(
-            `12Labs duration from transcription response: ${videoDuration}s`,
-          );
-        }
-      }
-
-      const transcriptionData = data.transcription;
-      const durationForTranscript =
-        videoDuration > 0
-          ? videoDuration
-          : existingDuration > 0
-            ? existingDuration
-            : undefined;
-
-      if (transcriptionData && Array.isArray(transcriptionData)) {
-        const normalized = normalizeTwelveLabsTranscription(transcriptionData, {
-          durationSec: durationForTranscript,
-        });
-
-        const key = `transcriptions/${assetId}.json`;
-        await s3Client.send(
-          new PutObjectCommand({
-            Bucket: BUCKET_NAME,
-            Key: key,
-            Body: JSON.stringify(normalized.words),
-            ContentType: "application/json",
-          }),
-        );
-
-        transcriptionUrl = `s3://${BUCKET_NAME}/${key}`;
-        console.log(
-          `Transcription stored at ${transcriptionUrl} ` +
-            `(${normalized.words.length}/${normalized.originalCount} words; ` +
-            `pass=${normalized.selectedPass}, scaledBy=${normalized.scaledBy.toFixed(4)})`,
-        );
-      } else {
-        console.warn("No transcription data found in response", data);
-      }
-    } catch (err) {
-      console.error("Failed to fetch/store transcription", err);
     }
   }
 
@@ -345,11 +263,10 @@ async function handleSingleVideoCompletion(
   const expressionAttributeValues: Record<string, unknown> = {
     ":status": "READY",
     ":vid": videoId || "unknown",
-    ":trans": transcriptionUrl,
     ":ua": new Date().toISOString(),
   };
   let updateExpression =
-    "SET #s = :status, twelveLabsVideoId = :vid, transcriptionUrl = :trans, updatedAt = :ua";
+    "SET #s = :status, twelveLabsVideoId = :vid, updatedAt = :ua";
 
   if (resolvedDuration > 0) {
     expressionAttributeNames["#dur"] = "duration";
@@ -432,105 +349,15 @@ async function handleChunkCompletion(
 
     let totalDuration = 0;
 
-    const secretVal12Labs = await secretsClient.send(
-      new GetSecretValueCommand({ SecretId: SECRET_ARN }),
-    );
-    const apiKey = secretVal12Labs.SecretString;
+    totalDuration = chunks.reduce((max, c) => Math.max(max, c.endOffset), 0);
 
-    let transcriptionUrl: string | null = null;
-
-    if (apiKey) {
-      // Calculate total duration from chunks
-      totalDuration = chunks.reduce((max, c) => Math.max(max, c.endOffset), 0);
-
-      // Aggregate transcriptions from all chunks
-      try {
-        const allTranscriptions: any[] = [];
-
-        for (const chunk of chunks.sort(
-          (a, b) => a.chunkIndex - b.chunkIndex,
-        )) {
-          if (!chunk.videoId) continue;
-
-          try {
-            const url = `https://api.twelvelabs.io/v1.3/indexes/${TWELVE_LABS_INDEX_ID}/videos/${chunk.videoId}`;
-            const response = await axios.get(url, {
-              headers: { "x-api-key": apiKey },
-              params: { transcription: true },
-            });
-
-            const transcriptionData = response.data?.transcription;
-            if (transcriptionData && Array.isArray(transcriptionData)) {
-              // Use actualStartOffset for precise timing (accounts for keyframe seeking)
-              // Fall back to startOffset if actualStartOffset not available
-              const timeOffset = chunk.actualStartOffset ?? chunk.startOffset;
-
-              // Adjust timestamps to original video timeline
-              for (const segment of transcriptionData) {
-                allTranscriptions.push({
-                  ...segment,
-                  start: (segment.start || 0) + timeOffset,
-                  end: (segment.end || 0) + timeOffset,
-                });
-              }
-            }
-          } catch (err) {
-            console.error(
-              `Failed to fetch transcription for chunk ${chunk.chunkIndex}:`,
-              err,
-            );
-          }
-        }
-
-        if (allTranscriptions.length > 0) {
-          // Sort by start time
-          allTranscriptions.sort((a, b) => a.start - b.start);
-
-          // Remove duplicate segments from overlap regions (chunks overlap by 30s)
-          const dedupedTranscriptions: any[] = [];
-          for (const segment of allTranscriptions) {
-            const last =
-              dedupedTranscriptions[dedupedTranscriptions.length - 1];
-            // Skip if this segment overlaps significantly with the previous one
-            if (last && segment.start < last.end - 1) {
-              continue;
-            }
-            dedupedTranscriptions.push(segment);
-          }
-
-          const sanitized = normalizeTwelveLabsTranscription(
-            dedupedTranscriptions,
-            {
-              durationSec: totalDuration > 0 ? totalDuration : undefined,
-            },
-          );
-
-          const key = `transcriptions/${assetId}.json`;
-          await s3Client.send(
-            new PutObjectCommand({
-              Bucket: BUCKET_NAME,
-              Key: key,
-              Body: JSON.stringify(sanitized.words),
-              ContentType: "application/json",
-            }),
-          );
-          transcriptionUrl = `s3://${BUCKET_NAME}/${key}`;
-          console.log(
-            `Aggregated transcription stored at ${transcriptionUrl} (${sanitized.words.length} kept from ${allTranscriptions.length} raw; pass=${sanitized.selectedPass}, discardedDupes=${sanitized.discardedDuplicateWords})`,
-          );
-        }
-      } catch (err) {
-        console.error("Failed to aggregate transcriptions:", err);
-      }
-    }
-
-    // Update asset as READY with transcriptionUrl
+    // Whisper writes transcriptionUrl separately — do not clobber it here.
     await docClient.send(
       new UpdateCommand({
         TableName: TABLE_NAME,
         Key: { assetId },
         UpdateExpression:
-          "SET #s = :status, chunks = :chunks, #dur = :dur, pendingChunks = :pending, transcriptionUrl = :trans, updatedAt = :ua",
+          "SET #s = :status, chunks = :chunks, #dur = :dur, pendingChunks = :pending, updatedAt = :ua",
         ExpressionAttributeNames: {
           "#s": "status",
           "#dur": "duration",
@@ -540,7 +367,6 @@ async function handleChunkCompletion(
           ":chunks": chunks,
           ":dur": totalDuration,
           ":pending": 0,
-          ":trans": transcriptionUrl,
           ":ua": new Date().toISOString(),
         },
       }),

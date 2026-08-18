@@ -124,7 +124,7 @@ export async function generateWithStoryIQ(
   }
 
   // Create tools for transcript access
-  const tools = createStoryIQTools(twelvelabs, assetId, {
+  const tools = createStoryIQTools(assetId, {
     transcriptS3Uri: input.transcriptS3Uri,
   });
 

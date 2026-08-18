@@ -2,7 +2,7 @@ import { APIGatewayProxyHandler } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { checkAuth } from "../utils/auth";
-import { presignS3Uri } from "../utils/s3";
+import { presignS3Uri, presignTranslationMap } from "../utils/s3";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -61,6 +61,8 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       const presignedUrl = await presignS3Uri(asset.transcriptionUrl);
       if (presignedUrl) asset.transcriptionUrl = presignedUrl;
     }
+
+    asset.translations = await presignTranslationMap(asset.translations);
 
     return {
       statusCode: 200,

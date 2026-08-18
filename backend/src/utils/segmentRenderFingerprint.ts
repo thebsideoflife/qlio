@@ -46,7 +46,7 @@ export function computeSegmentRenderFingerprint(
     endTime: number;
     framing?: SegmentFraming;
   },
-  captionSettings: { enabled: boolean; style: unknown },
+  captionSettings: { enabled: boolean; style: unknown; activeLanguage?: string },
   globalFraming: { aspectRatio: string; squareTop?: boolean },
 ): string {
   const payload = {
@@ -56,6 +56,10 @@ export function computeSegmentRenderFingerprint(
     captions: {
       enabled: captionSettings.enabled,
       style: captionSettings.style,
+      ...(captionSettings.activeLanguage &&
+      captionSettings.activeLanguage !== "original"
+        ? { activeLanguage: captionSettings.activeLanguage }
+        : {}),
     },
     aspectRatio: globalFraming.aspectRatio,
     // Coerce to boolean so old projects (squareTop undefined) hash identically

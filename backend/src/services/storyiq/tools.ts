@@ -1,12 +1,10 @@
 /**
  * StoryIQ Tools
  *
- * Provides transcript access and segment verification for StoryIQ.
- * - Fetches transcripts from S3 (fast) or 12Labs API (fallback)
- * - Checks segment coverage requirements for different content purposes
+ * Transcript access and segment verification. Words come only from the
+ * Whisper file at `asset.transcriptionUrl` — never from TwelveLabs.
  */
 
-import { TwelveLabsWrapper } from "../twelvelabs";
 import { fetchTranscriptFromS3 } from "../../utils/transcript";
 import {
   type TranscriptSegment,
@@ -22,18 +20,17 @@ import {
 // ============================================================================
 
 export interface CreateToolsOptions {
-  /** S3 URI for cached transcript (from asset.transcriptionUrl) */
+  /** S3 URI for the Whisper transcript (from asset.transcriptionUrl) */
   transcriptS3Uri?: string;
 }
 
 /**
  * Creates the StoryIQ tools bound to a specific asset.
  *
- * @param transcriptS3Uri - If provided, transcript is fetched from S3 (faster).
- *                          Otherwise falls back to 12Labs API.
+ * @param transcriptS3Uri - Whisper original on S3. Required; there is no
+ *                          TwelveLabs transcription fallback.
  */
 export function createStoryIQTools(
-  twelvelabs: TwelveLabsWrapper,
   assetId: string,
   options: CreateToolsOptions = {}
 ): StoryIQTools {
@@ -42,47 +39,26 @@ export function createStoryIQTools(
 
   return {
     /**
-     * Get full transcript with timestamps and speaker labels.
-     * Fetches from S3 if available (cached from indexing), otherwise from 12Labs.
+     * Get the Whisper transcript. Empty / missing file fails the generation
+     * path in StoryIQ rather than silently substituting TwelveLabs.
      */
     async read_full_transcript(): Promise<TranscriptSegment[]> {
-      // Return in-memory cached if available
       if (cachedTranscript) {
         console.log("[StoryIQ Tools] Returning cached transcript");
         return cachedTranscript;
       }
 
-      console.log("[StoryIQ Tools] Reading full transcript...");
-
-      // Try S3 first (faster, already processed during indexing)
-      if (options.transcriptS3Uri) {
-        try {
-          console.log("[StoryIQ Tools] Fetching transcript from S3...");
-          cachedTranscript = await fetchTranscriptFromS3(
-            options.transcriptS3Uri
-          );
-          console.log(
-            `[StoryIQ Tools] Got ${cachedTranscript.length} transcript segments from S3`
-          );
-          return cachedTranscript;
-        } catch (err) {
-          console.warn(
-            "[StoryIQ Tools] S3 transcript fetch failed, falling back to 12Labs:",
-            err
-          );
-        }
+      if (!options.transcriptS3Uri) {
+        throw new Error(
+          `Cannot generate segments: no Whisper transcript for asset ${assetId}. ` +
+            `Wait until transcriptionStatus is ready, or retry transcription.`,
+        );
       }
 
-      // Fallback to 12Labs API
-      const transcript = await twelvelabs.getTranscription(assetId);
-      cachedTranscript = transcript.map((seg) => ({
-        startTime: seg.start,
-        endTime: seg.end,
-        text: seg.text,
-      }));
-
+      console.log("[StoryIQ Tools] Fetching Whisper transcript from S3...");
+      cachedTranscript = await fetchTranscriptFromS3(options.transcriptS3Uri);
       console.log(
-        `[StoryIQ Tools] Got ${cachedTranscript.length} transcript segments from 12Labs`
+        `[StoryIQ Tools] Got ${cachedTranscript.length} transcript segments from S3`,
       );
       return cachedTranscript;
     },

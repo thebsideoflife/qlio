@@ -17,7 +17,8 @@
     "iq-agent:replay": "tsx src/scripts/replay-iq-agent-run.ts",
     "iq-agent:coverage-cost": "tsx src/scripts/check-coverage-cost.ts",
     "test:transcription-sanitize": "tsx src/scripts/test-transcription-sanitize.ts",
-    "test": "npm run test:export-metadata && npm run test:agent-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates && npm run test:iq-agent && npm run test:transcription-sanitize"
+    "test:transcript-format": "tsx src/scripts/test-transcript-format.ts",
+    "test": "npm run test:export-metadata && npm run test:agent-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates && npm run test:iq-agent && npm run test:transcription-sanitize && npm run test:transcript-format"
   },
   "keywords": [],
   "author": "",

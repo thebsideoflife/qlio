@@ -161,6 +161,9 @@ backend/render-package/
 .cursor/
 
 scripts/
+!backend/src/scripts/
+backend/src/scripts/*
+!backend/src/scripts/test-transcript-format.ts
 
 CLAUDE.md
 backfill-user-ids.sh

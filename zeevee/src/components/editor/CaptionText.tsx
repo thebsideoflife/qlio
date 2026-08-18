@@ -27,10 +27,14 @@ export function CaptionText({
   );
 
   const highlightColor = style.highlightColor || "#fbbf24";
-  const showAnimation = highlightColor !== "none";
+  const showAnimation = highlightColor !== "none" && visibleWords.length > 0;
+  const displayText =
+    visibleWords.length > 0
+      ? null
+      : caption.text.trim();
 
-  // Don't render anything if all words are deleted
-  if (visibleWords.length === 0) return null;
+  // Don't render anything if all words are deleted and there is no line text
+  if (visibleWords.length === 0 && !displayText) return null;
 
   return (
     <div
@@ -53,20 +57,24 @@ export function CaptionText({
           textAlign: "center",
         }}
       >
-        {visibleWords.map((word, idx) => (
-          <span
-            key={`${word.start}-${idx}`}
-            style={{
-              color:
-                showAnimation && idx === activeWordIndex
-                  ? highlightColor
-                  : style.color,
-            }}
-          >
-            {word.value}
-            {idx < visibleWords.length - 1 ? " " : ""}
-          </span>
-        ))}
+        {displayText ? (
+          <span>{displayText}</span>
+        ) : (
+          visibleWords.map((word, idx) => (
+            <span
+              key={`${word.start}-${idx}`}
+              style={{
+                color:
+                  showAnimation && idx === activeWordIndex
+                    ? highlightColor
+                    : style.color,
+              }}
+            >
+              {word.value}
+              {idx < visibleWords.length - 1 ? " " : ""}
+            </span>
+          ))
+        )}
       </span>
     </div>
   );

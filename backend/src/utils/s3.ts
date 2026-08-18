@@ -144,3 +144,19 @@ export const presignS3Uri = async (
   // Fall back to S3 presigning
   return signWithS3(bucket, key, expiresIn);
 };
+
+export async function presignTranslationMap(
+  translations: unknown,
+  expiresIn: number = 43200,
+): Promise<Record<string, string>> {
+  if (!translations || typeof translations !== "object") return {};
+  const signed: Record<string, string> = {};
+  for (const [lang, uri] of Object.entries(
+    translations as Record<string, unknown>,
+  )) {
+    if (typeof uri !== "string") continue;
+    const url = await presignS3Uri(uri, expiresIn);
+    if (url) signed[lang] = url;
+  }
+  return signed;
+}

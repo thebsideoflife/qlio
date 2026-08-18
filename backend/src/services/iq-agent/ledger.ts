@@ -141,8 +141,8 @@ export function computeLedger(
   const overlaps = findOverlaps(sorted);
   const coverageReport = computeCoverage(sorted, videoDuration, coverage);
   const unverifiedEdges =
-    coverage != null
-      ? findUnverifiedEdges(sorted, coverage.visualExamined ?? [], videoDuration)
+    coverage?.visualExamined != null
+      ? findUnverifiedEdges(sorted, coverage.visualExamined, videoDuration)
       : [];
 
   const blocking: string[] = [];
