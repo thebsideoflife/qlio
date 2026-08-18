@@ -7,7 +7,6 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import {
   S3Client,
-  GetObjectCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand,
 } from "@aws-sdk/client-s3";
@@ -16,10 +15,10 @@ import type {
   SegmentMetadataResponse,
 } from "../types/segment-metadata";
 import { pruneSegmentMetadata } from "../services/export-metadata";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { checkAuth } from "../utils/auth";
 import { presignS3Uri, presignTranslationMap } from "../utils/s3";
 import { inferOriginalTranscriptLanguage } from "../utils/transcript-format";
+import { presignRenderDownload } from "../utils/renderDownloads";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -196,11 +195,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
       for (const render of storedRenders) {
         try {
-          const url = await getSignedUrl(
-            s3Client,
-            new GetObjectCommand({ Bucket: render.bucket, Key: render.key }),
-            { expiresIn: 43200 }, // 12 hours
-          );
+          const url = await presignRenderDownload(render.bucket, render.key);
           downloads.push({
             segmentId: render.segmentId,
             title: render.title,

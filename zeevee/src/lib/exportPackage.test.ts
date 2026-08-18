@@ -4,6 +4,7 @@
  * Run: npx tsx src/lib/exportPackage.test.ts
  */
 import {
+  applyFreshVideoUrls,
   buildExportPackageLayout,
   localizeExportMetadataDocument,
   padSceneNumber,
@@ -220,6 +221,37 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
     document.scenes[0].thumbnailUrl,
     "does not localize a thumbnail that was not archived",
   );
+}
+
+{
+  const scenes = [
+    { segmentId: "a", title: "One", videoUrl: "https://old/a.mp4" },
+    { segmentId: "b", title: "Two", videoUrl: "https://old/b.mp4" },
+    { segmentId: "c", title: "Three" },
+  ];
+  const refreshed = applyFreshVideoUrls(
+    scenes,
+    new Map([
+      ["a", "https://fresh/a.mp4"],
+      ["c", "https://fresh/c.mp4"],
+    ]),
+  );
+  assertEqual(
+    refreshed[0].videoUrl,
+    "https://fresh/a.mp4",
+    "replaces a stale scene URL",
+  );
+  assertEqual(
+    refreshed[1].videoUrl,
+    "https://old/b.mp4",
+    "keeps URLs that were not refreshed",
+  );
+  assertEqual(
+    refreshed[2].videoUrl,
+    "https://fresh/c.mp4",
+    "fills a missing scene URL",
+  );
+  assertEqual(scenes[0].videoUrl, "https://old/a.mp4", "does not mutate input");
 }
 
 if (failures > 0) {

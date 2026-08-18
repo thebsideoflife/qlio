@@ -5,24 +5,29 @@ import {
   GetCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { checkAuth } from "../utils/auth";
 import {
   computeSegmentRenderFingerprint,
   type SegmentFraming,
 } from "../utils/segmentRenderFingerprint";
+import {
+  copyRenderToCorsBucket,
+  corsRenderObjectKey,
+  presignRenderDownload,
+} from "../utils/renderDownloads";
 import { getRenderProgress } from "@remotion/lambda/client";
 import type { AwsRegion } from "@remotion/lambda";
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
-const s3Client = new S3Client({});
 
 const RENDER_JOBS_TABLE = process.env.RENDER_JOBS_TABLE!;
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
+const RENDERS_BUCKET = process.env.RENDERS_BUCKET;
 const REMOTION_FUNCTION_NAME = process.env.REMOTION_FUNCTION_NAME;
 const AWS_REGION_NAME = process.env.AWS_REGION_NAME;
+
+type RenderLocation = { bucket: string; key: string };
 
 // Stored on project for persistent render access
 interface StoredSegmentRender {
@@ -53,6 +58,47 @@ interface SegmentDownload {
 }
 
 /**
+ * Copy a completed Remotion output onto the CORS-enabled renders bucket so
+ * the editor can fetch() it. Falls back to the Remotion working bucket.
+ */
+async function resolveDownloadLocation(
+  projectId: string,
+  seg: SegmentRender,
+  existing: StoredSegmentRender | undefined,
+  contentHash: string | undefined,
+): Promise<RenderLocation> {
+  const source: RenderLocation = {
+    bucket: seg.bucketName,
+    key: seg.outputKey,
+  };
+  if (!RENDERS_BUCKET) return source;
+
+  if (
+    existing?.bucket === RENDERS_BUCKET &&
+    existing.key &&
+    existing.contentHash &&
+    existing.contentHash === contentHash
+  ) {
+    return { bucket: existing.bucket, key: existing.key };
+  }
+
+  try {
+    return await copyRenderToCorsBucket({
+      sourceBucket: seg.bucketName,
+      sourceKey: seg.outputKey,
+      destBucket: RENDERS_BUCKET,
+      destKey: corsRenderObjectKey(projectId, seg.segmentId),
+    });
+  } catch (error) {
+    console.error(
+      `Failed to copy render ${seg.segmentId} to CORS bucket:`,
+      error,
+    );
+    return source;
+  }
+}
+
+/**
  * Persist completed renders to project for permanent access.
  * Merges with existing renders (handles partial re-renders).
  */
@@ -74,7 +120,8 @@ async function persistRendersToProject(
     globalFraming?: { aspectRatio: string; squareTop?: boolean };
     transcriptionVersion?: string;
   },
-): Promise<void> {
+): Promise<Map<string, RenderLocation>> {
+  const locations = new Map<string, RenderLocation>();
   try {
     // Get existing renders from project
     const projectResult = await docClient.send(
@@ -99,8 +146,13 @@ async function persistRendersToProject(
     };
     const globalFraming = job.globalFraming || { aspectRatio: "9:16" };
 
-    for (const seg of segmentRenders) {
-      if (seg.status === "completed" && seg.bucketName && seg.outputKey) {
+    const completed = segmentRenders.filter(
+      (seg): seg is SegmentRender =>
+        seg.status === "completed" && Boolean(seg.bucketName && seg.outputKey),
+    );
+
+    const resolved = await Promise.all(
+      completed.map(async (seg) => {
         const sourceSegment = job.segments?.find((s) => s.id === seg.segmentId);
         const contentHash = sourceSegment
           ? computeSegmentRenderFingerprint(
@@ -110,16 +162,26 @@ async function persistRendersToProject(
               job.transcriptionVersion,
             )
           : undefined;
-
-        renderMap.set(seg.segmentId, {
-          segmentId: seg.segmentId,
-          title: seg.title,
-          bucket: seg.bucketName,
-          key: seg.outputKey,
-          renderedAt: now,
+        const location = await resolveDownloadLocation(
+          projectId,
+          seg,
+          renderMap.get(seg.segmentId),
           contentHash,
-        });
-      }
+        );
+        return { seg, location, contentHash };
+      }),
+    );
+
+    for (const { seg, location, contentHash } of resolved) {
+      locations.set(seg.segmentId, location);
+      renderMap.set(seg.segmentId, {
+        segmentId: seg.segmentId,
+        title: seg.title,
+        bucket: location.bucket,
+        key: location.key,
+        renderedAt: now,
+        contentHash,
+      });
     }
 
     await docClient.send(
@@ -139,6 +201,30 @@ async function persistRendersToProject(
   } catch (e) {
     console.error("Failed to persist renders to project:", e);
   }
+  return locations;
+}
+
+async function applyPersistedDownloadUrls(
+  downloads: SegmentDownload[],
+  locations: Map<string, RenderLocation>,
+): Promise<void> {
+  await Promise.all(
+    downloads.map(async (download) => {
+      const location = locations.get(download.segmentId);
+      if (download.status !== "completed" || !location) return;
+      try {
+        download.downloadUrl = await presignRenderDownload(
+          location.bucket,
+          location.key,
+        );
+      } catch (error) {
+        console.error(
+          `Error generating URL for segment ${download.segmentId}:`,
+          error,
+        );
+      }
+    }),
+  );
 }
 
 export const handler: APIGatewayProxyHandler = async (event) => {
@@ -214,11 +300,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     segment: SegmentRender,
   ): Promise<string | undefined> {
     try {
-      const command = new GetObjectCommand({
-        Bucket: segment.bucketName,
-        Key: segment.outputKey,
-      });
-      return await getSignedUrl(s3Client, command, { expiresIn: 43200 }); // 12 hours
+      return await presignRenderDownload(segment.bucketName, segment.outputKey);
     } catch (error) {
       console.error(
         `Error generating URL for segment ${segment.segmentId}:`,
@@ -341,7 +423,12 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         job.projectId
       ) {
         if (newStatus === "completed") {
-          await persistRendersToProject(job.projectId, segmentRenders, job);
+          const locations = await persistRendersToProject(
+            job.projectId,
+            segmentRenders,
+            job,
+          );
+          await applyPersistedDownloadUrls(segmentDownloads, locations);
         }
         // Clear activeRenderJobId since render is done
         await docClient.send(
@@ -374,7 +461,12 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     // Ensure renders are persisted to project (idempotent - safe to call multiple times)
     // This catches cases where persist failed or polling stopped before completion
     if (job.status === "completed" && job.projectId && completedCount > 0) {
-      await persistRendersToProject(job.projectId, segmentRenders, job);
+      const locations = await persistRendersToProject(
+        job.projectId,
+        segmentRenders,
+        job,
+      );
+      await applyPersistedDownloadUrls(segmentDownloads, locations);
     }
   }
 

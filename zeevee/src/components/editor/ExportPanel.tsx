@@ -66,6 +66,7 @@ import {
 } from "@/lib/exportMetadataJson";
 import {
   downloadExportPackage,
+  applyFreshVideoUrls,
   type ExportPackageProgress,
   type ExportPackageSceneInput,
 } from "@/lib/exportPackage";
@@ -472,9 +473,40 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       });
 
       try {
+        let scenes = collectPackageScenes(downloads);
+        try {
+          const project = await getProject(projectId);
+          const lastRenderDownloads = Array.isArray(project.lastRenderDownloads)
+            ? project.lastRenderDownloads
+            : [];
+          if (lastRenderDownloads.length > 0) {
+            dispatch(setLastSegmentRenders(lastRenderDownloads));
+            const freshUrls = new Map<string, string>(
+              lastRenderDownloads
+                .filter(
+                  (r: { segmentId?: string; url?: string }) =>
+                    typeof r.segmentId === "string" &&
+                    typeof r.url === "string",
+                )
+                .map((r: { segmentId: string; url: string }) => [
+                  r.segmentId,
+                  r.url,
+                ]),
+            );
+            // Overlay fresh signatures onto cached/job URLs so ZIP fetch()
+            // does not use an expired presigned S3 link.
+            scenes = applyFreshVideoUrls(scenes, freshUrls);
+          }
+        } catch (refreshErr) {
+          console.warn(
+            "Could not refresh render URLs before ZIP; using cached URLs",
+            refreshErr,
+          );
+        }
+
         const result = await downloadExportPackage({
           projectTitle: projectTitle || "Untitled",
-          scenes: collectPackageScenes(downloads),
+          scenes,
           posterUrl:
             metadataEnabled && includeThumbnails ? projectThumbnailUrl : null,
           metadataDocument: metadataEnabled ? buildMetadataDocument() : null,
@@ -496,12 +528,14 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       }
     },
     [
+      projectId,
       projectTitle,
       collectPackageScenes,
       metadataEnabled,
       includeThumbnails,
       projectThumbnailUrl,
       buildMetadataDocument,
+      dispatch,
     ],
   );
 

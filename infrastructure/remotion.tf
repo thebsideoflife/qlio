@@ -34,7 +34,22 @@ resource "aws_s3_bucket_cors_configuration" "renders" {
     allowed_headers = ["*"]
     allowed_methods = ["GET", "HEAD"]
     allowed_origins = ["*"]
-    expose_headers  = ["ETag"]
+    expose_headers  = ["ETag", "Content-Type", "Content-Length", "Accept-Ranges", "Content-Range"]
+    max_age_seconds = 3000
+  }
+}
+
+# Remotion CLI owns this bucket (site + working artifacts). The editor ZIP
+# builder fetch()es completed MP4s, so the bucket must emit CORS headers —
+# per-scene <a download> navigations do not need them.
+resource "aws_s3_bucket_cors_configuration" "remotion_lambda" {
+  bucket = var.remotion_lambda_bucket
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET", "HEAD", "PUT", "POST", "DELETE"]
+    allowed_origins = ["*"]
+    expose_headers  = ["ETag", "Content-Type", "Content-Length", "Accept-Ranges", "Content-Range"]
     max_age_seconds = 3000
   }
 }
@@ -254,7 +269,7 @@ resource "aws_lambda_function" "get_render_status" {
   handler          = "getRenderStatus.handler"
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.render_lambda_zip.output_base64sha256
-  timeout          = 30
+  timeout          = 60
   memory_size      = 256
 
   environment {
