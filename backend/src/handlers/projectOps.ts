@@ -19,6 +19,7 @@ import { pruneSegmentMetadata } from "../services/export-metadata";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { checkAuth } from "../utils/auth";
 import { presignS3Uri, presignTranslationMap } from "../utils/s3";
+import { inferOriginalTranscriptLanguage } from "../utils/transcript-format";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -155,6 +156,13 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
     // 4. Presign all S3 URLs in the asset for authenticated access
     if (asset) {
+      const inferredLanguage = inferOriginalTranscriptLanguage({
+        assetId: String(asset.assetId || project.assetId),
+        originalLanguage: asset.originalLanguage,
+        transcriptionUrl: asset.transcriptionUrl,
+      });
+      if (inferredLanguage) asset.originalLanguage = inferredLanguage;
+
       if (asset.s3VideoUrl) {
         const presignedUrl = await presignS3Uri(asset.s3VideoUrl);
         if (presignedUrl) asset.videoUrl = presignedUrl;

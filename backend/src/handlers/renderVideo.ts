@@ -278,6 +278,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     compositionId,
     sourceS3Uri: asset.s3VideoUrl,
     transcriptionS3Uri,
+    transcriptionVersion:
+      typeof asset.transcriptionVersion === "string"
+        ? asset.transcriptionVersion
+        : undefined,
     segments,
     captionSettings,
     globalFraming,

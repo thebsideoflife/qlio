@@ -37,6 +37,31 @@ resource "aws_secretsmanager_secret_version" "cloudfront_private_key" {
   secret_string = tls_private_key.cloudfront.private_key_pem
 }
 
+# CORS so the editor can fetch thumbnails/poster art into the export zip
+resource "aws_cloudfront_response_headers_policy" "media_cors" {
+  name    = "${var.project_name}-media-cors"
+  comment = "Allow the Qlio editor to download thumbnails into the export package"
+
+  cors_config {
+    access_control_allow_credentials = false
+
+    access_control_allow_headers {
+      items = ["*"]
+    }
+
+    access_control_allow_methods {
+      items = ["GET", "HEAD", "OPTIONS"]
+    }
+
+    access_control_allow_origins {
+      items = ["*"]
+    }
+
+    access_control_max_age_sec = 3000
+    origin_override            = true
+  }
+}
+
 # CloudFront distribution
 resource "aws_cloudfront_distribution" "media" {
   enabled             = true
@@ -129,10 +154,11 @@ resource "aws_cloudfront_distribution" "media" {
 
   # Thumbnail JPEGs — binary; do not gzip
   ordered_cache_behavior {
-    path_pattern     = "thumbnails/*"
-    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
-    cached_methods   = ["GET", "HEAD"]
-    target_origin_id = "S3-${aws_s3_bucket.media.id}"
+    path_pattern               = "thumbnails/*"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+    cached_methods             = ["GET", "HEAD"]
+    target_origin_id           = "S3-${aws_s3_bucket.media.id}"
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.media_cors.id
 
     trusted_key_groups = [aws_cloudfront_key_group.media.id]
 

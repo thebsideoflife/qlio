@@ -14,6 +14,7 @@ import {
 } from "@aws-sdk/client-secrets-manager";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { TwelveLabs } from "twelvelabs-js";
+import { randomUUID } from "crypto";
 
 const s3Client = new S3Client({});
 const lambdaClient = new LambdaClient({});
@@ -51,6 +52,7 @@ async function invokeWhisperTranscribe(
     console.warn("TRANSCRIBE_FUNCTION_NAME is not set; skipping Whisper");
     return;
   }
+  const transcriptionVersion = randomUUID();
   try {
     try {
       await docClient.send(
@@ -58,12 +60,13 @@ async function invokeWhisperTranscribe(
           TableName: TABLE_NAME,
           Key: { assetId },
           UpdateExpression:
-            "SET transcriptionStatus = :pending, updatedAt = :updatedAt",
+            "SET transcriptionStatus = :pending, pendingTranscriptionVersion = :version, updatedAt = :updatedAt",
           ConditionExpression:
             "attribute_not_exists(transcriptionStatus) OR transcriptionStatus = :failed",
           ExpressionAttributeValues: {
             ":pending": "pending",
             ":failed": "failed",
+            ":version": transcriptionVersion,
             ":updatedAt": new Date().toISOString(),
           },
         }),
@@ -79,7 +82,14 @@ async function invokeWhisperTranscribe(
       new InvokeCommand({
         FunctionName: TRANSCRIBE_FUNCTION_NAME,
         InvocationType: "Event",
-        Payload: Buffer.from(JSON.stringify({ assetId, bucket, key })),
+        Payload: Buffer.from(
+          JSON.stringify({
+            assetId,
+            bucket,
+            key,
+            transcriptionVersion,
+          }),
+        ),
       }),
     );
     console.log(`Invoked Whisper transcribe for asset ${assetId}`);
@@ -90,10 +100,13 @@ async function invokeWhisperTranscribe(
         new UpdateCommand({
           TableName: TABLE_NAME,
           Key: { assetId },
-          UpdateExpression: "SET transcriptionStatus = :ts, updatedAt = :ua",
+          UpdateExpression:
+            "SET transcriptionStatus = :failed, updatedAt = :updatedAt",
+          ConditionExpression: "pendingTranscriptionVersion = :version",
           ExpressionAttributeValues: {
-            ":ts": "failed",
-            ":ua": new Date().toISOString(),
+            ":failed": "failed",
+            ":version": transcriptionVersion,
+            ":updatedAt": new Date().toISOString(),
           },
         }),
       );

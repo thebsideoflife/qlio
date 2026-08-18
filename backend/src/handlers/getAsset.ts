@@ -3,6 +3,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { checkAuth } from "../utils/auth";
 import { presignS3Uri, presignTranslationMap } from "../utils/s3";
+import { inferOriginalTranscriptLanguage } from "../utils/transcript-format";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -49,6 +50,12 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     const asset = result.Item;
     // Map assetId to id for frontend compatibility
     asset.id = asset.assetId;
+    const inferredLanguage = inferOriginalTranscriptLanguage({
+      assetId,
+      originalLanguage: asset.originalLanguage,
+      transcriptionUrl: asset.transcriptionUrl,
+    });
+    if (inferredLanguage) asset.originalLanguage = inferredLanguage;
 
     // Generate Presigned URL for video playback
     if (asset.s3VideoUrl) {

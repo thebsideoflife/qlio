@@ -2,7 +2,7 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
-import type { CaptionWord } from "../utils/transcript-format";
+import { languageLabel, type CaptionWord } from "../utils/transcript-format";
 
 const secretsClient = new SecretsManagerClient({});
 
@@ -199,6 +199,14 @@ export async function transcribeAudioChunk(params: {
   throw lastError || new Error("OpenRouter STT failed");
 }
 
+function translationLanguageName(code: string): string {
+  const normalized = (code || "").trim().toLowerCase();
+  if (!normalized || normalized === "und") {
+    return "the original spoken language";
+  }
+  return languageLabel(normalized);
+}
+
 export async function translateCaptionLines(params: {
   apiKey: string;
   sourceLanguage: string;
@@ -207,7 +215,9 @@ export async function translateCaptionLines(params: {
 }): Promise<string[]> {
   if (params.lines.length === 0) return [];
 
-  const system = `You translate burnt-in video captions. Translate each line from ${params.sourceLanguage} to ${params.targetLanguage}. Keep proper names, numbers, and on-screen terms. Do not merge or split lines. Return JSON: {"lines":["..."]} with the same number of strings, same order.`;
+  const sourceName = translationLanguageName(params.sourceLanguage);
+  const targetName = translationLanguageName(params.targetLanguage);
+  const system = `You translate burnt-in video captions. Translate each line from ${sourceName} to ${targetName}. Keep proper names, numbers, and on-screen terms. Do not merge or split lines. Return JSON: {"lines":["..."]} with the same number of strings, same order.`;
 
   const BATCH = 40;
   const out: string[] = [];
@@ -271,6 +281,17 @@ export async function translateCaptionLines(params: {
           throw new Error(
             `Could not parse translation JSON: ${content.slice(0, 200)}`,
           );
+        }
+        if (translated && translated.length !== batch.length) {
+          lastError = new Error(
+            `Translation length mismatch: got ${translated.length}, expected ${batch.length}`,
+          );
+          translated = null;
+          if (attempt < STT_RETRIES) {
+            await sleep(1000 * 2 ** (attempt - 1));
+            continue;
+          }
+          throw lastError;
         }
         break;
       } catch (err) {

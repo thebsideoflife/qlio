@@ -36,6 +36,85 @@ export type ParsedTranscriptFile =
   | OriginalTranscriptFile
   | TranslationTranscriptFile;
 
+export const LEGACY_TRANSCRIPTION_VERSION = "legacy-v1";
+
+export function originalTranscriptKey(
+  assetId: string,
+  transcriptionVersion: string,
+): string {
+  return `transcriptions/${assetId}/versions/${encodeURIComponent(transcriptionVersion)}/original.json`;
+}
+
+export function translationTranscriptKey(
+  assetId: string,
+  transcriptionVersion: string,
+  targetLanguage: string,
+): string {
+  return `transcriptions/${assetId}/versions/${encodeURIComponent(transcriptionVersion)}/translations/${normalizeLanguageCode(targetLanguage)}.json`;
+}
+
+export function whisperChunkKey(
+  assetId: string,
+  transcriptionVersion: string,
+  index: number,
+): string {
+  return `transcriptions/${assetId}/versions/${encodeURIComponent(transcriptionVersion)}/chunks/${index}.json`;
+}
+
+export function isLegacyTranscriptKey(
+  assetId: string,
+  transcriptionUrl: string | null | undefined,
+): boolean {
+  if (!transcriptionUrl) return false;
+  const withoutQuery = transcriptionUrl.split("?")[0];
+  const key = withoutQuery.startsWith("s3://")
+    ? withoutQuery.replace(/^s3:\/\/[^/]+\//, "")
+    : withoutQuery.replace(/^\/+/, "");
+  return key === `transcriptions/${assetId}.json`;
+}
+
+export function inferOriginalTranscriptLanguage(params: {
+  assetId: string;
+  originalLanguage?: unknown;
+  transcriptionUrl?: string | null;
+  parsedLanguage?: string | null;
+}): string | undefined {
+  if (
+    typeof params.originalLanguage === "string" &&
+    params.originalLanguage.trim()
+  ) {
+    const normalized = normalizeLanguageCode(params.originalLanguage);
+    if (normalized !== "und") return normalized;
+  }
+  if (params.parsedLanguage) {
+    const normalized = normalizeLanguageCode(params.parsedLanguage);
+    if (normalized !== "und") return normalized;
+  }
+  return isLegacyTranscriptKey(params.assetId, params.transcriptionUrl)
+    ? "en"
+    : undefined;
+}
+
+export function transcriptVersionMatches(
+  current: unknown,
+  expected: string,
+): boolean {
+  return typeof current === "string" && current === expected;
+}
+
+export function selectSupersededTranscriptKeys(params: {
+  assetId: string;
+  listedKeys: string[];
+  keepKeys: string[];
+}): string[] {
+  const keep = new Set(params.keepKeys);
+  const prefix = `transcriptions/${params.assetId}/`;
+  const legacy = `transcriptions/${params.assetId}.json`;
+  return [...new Set(params.listedKeys)]
+    .filter((key) => (key === legacy || key.startsWith(prefix)) && !keep.has(key))
+    .sort();
+}
+
 function asFiniteNumber(value: unknown, fallback = 0): number {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -83,7 +162,11 @@ function wordsFromUnknownArray(raw: unknown[]): CaptionWord[] {
 
 export function parseTranscriptJson(data: unknown): ParsedTranscriptFile {
   if (Array.isArray(data)) {
-    return { kind: "original", words: wordsFromUnknownArray(data) };
+    return {
+      kind: "original",
+      language: "en",
+      words: wordsFromUnknownArray(data),
+    };
   }
 
   if (!data || typeof data !== "object") {

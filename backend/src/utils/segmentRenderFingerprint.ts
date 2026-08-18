@@ -48,6 +48,7 @@ export function computeSegmentRenderFingerprint(
   },
   captionSettings: { enabled: boolean; style: unknown; activeLanguage?: string },
   globalFraming: { aspectRatio: string; squareTop?: boolean },
+  transcriptionVersion?: string | null,
 ): string {
   const payload = {
     startTime: segment.startTime,
@@ -59,6 +60,9 @@ export function computeSegmentRenderFingerprint(
       ...(captionSettings.activeLanguage &&
       captionSettings.activeLanguage !== "original"
         ? { activeLanguage: captionSettings.activeLanguage }
+        : {}),
+      ...(captionSettings.enabled && transcriptionVersion
+        ? { transcriptionVersion }
         : {}),
     },
     aspectRatio: globalFraming.aspectRatio,

@@ -66,8 +66,13 @@ async function persistRendersToProject(
       endTime: number;
       framing?: SegmentFraming;
     }>;
-    captionSettings?: { enabled: boolean; style: unknown };
-    globalFraming?: { aspectRatio: string };
+    captionSettings?: {
+      enabled: boolean;
+      style: unknown;
+      activeLanguage?: string;
+    };
+    globalFraming?: { aspectRatio: string; squareTop?: boolean };
+    transcriptionVersion?: string;
   },
 ): Promise<void> {
   try {
@@ -102,6 +107,7 @@ async function persistRendersToProject(
               sourceSegment,
               captionSettings,
               globalFraming,
+              job.transcriptionVersion,
             )
           : undefined;
 
