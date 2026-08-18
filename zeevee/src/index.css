@@ -70,7 +70,15 @@
 
 /* Custom scrollbar styling for timeline */
 .timeline-scrollbar::-webkit-scrollbar {
-  height: 8px;
+  height: 20px;
+}
+
+/* 50% taller than the doubled gold lane (2.5rem → 3.75rem). Scales with the
+   viewport so Frame and Video stay the same height on laptop and monitor. */
+.timeline-lane {
+  height: clamp(3.75rem, 7.5vh, 6rem);
+  min-height: clamp(3.75rem, 7.5vh, 6rem);
+  max-height: clamp(3.75rem, 7.5vh, 6rem);
 }
 
 .timeline-scrollbar::-webkit-scrollbar-track {

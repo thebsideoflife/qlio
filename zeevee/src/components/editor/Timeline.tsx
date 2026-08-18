@@ -87,10 +87,7 @@ function ToolbarIconButton({
         <span className="inline-flex">
           <Button
             size="icon"
-            className={cn(
-              "h-[clamp(2.75rem,22cqh,3.75rem)] w-[clamp(2.75rem,22cqh,3.75rem)] rounded-xl p-0 [&_svg]:size-[46%]",
-              className,
-            )}
+            className={cn("h-8 w-8 rounded-lg p-0 [&_svg]:size-4", className)}
             {...props}
           >
             {children}
@@ -1351,15 +1348,15 @@ export function Timeline({
     <>
       <style>{`
         .timeline-scrollbar::-webkit-scrollbar {
-          height: 12px;
+          height: 20px;
         }
         .timeline-scrollbar::-webkit-scrollbar-track {
           background: hsl(var(--muted) / 0.3);
-          border-radius: 6px;
+          border-radius: 10px;
         }
         .timeline-scrollbar::-webkit-scrollbar-thumb {
           background: hsl(var(--muted-foreground) / 0.4);
-          border-radius: 6px;
+          border-radius: 10px;
           border: 2px solid transparent;
           background-clip: content-box;
         }
@@ -1371,10 +1368,10 @@ export function Timeline({
       `}</style>
       <div
         ref={containerRef}
-        className="w-full h-full flex flex-col select-none [container-type:size]"
+        className="w-full flex flex-col select-none"
       >
       {/* Toolbar */}
-      <div className="flex items-center gap-2.5 px-3 py-2 shrink-0">
+      <div className="flex items-center gap-2 px-3 py-1.5 shrink-0">
         <ToolbarIconButton
           variant="outline"
           onClick={handleSplit}
@@ -1455,7 +1452,6 @@ export function Timeline({
                 }
               }
             }}
-            className="h-[clamp(3rem,26cqh,4.25rem)] w-[clamp(3rem,26cqh,4.25rem)] [&_svg]:size-[50%]"
             tooltip={isPlaying ? "Pause (Space)" : "Play (Space)"}
           >
             {isPlaying ? <Pause /> : <Play className="ml-0.5" />}
@@ -1468,21 +1464,21 @@ export function Timeline({
         <ToolbarIconButton
           variant={showAllKeyframes ? "default" : "outline"}
           onClick={() => dispatch(toggleShowKeyframes())}
-          tooltip={
-            showAllKeyframes
-              ? "Show selected keyframes only"
-              : "Show all keyframes"
-          }
+          tooltip="Frame"
+          className="w-auto px-2.5 gap-1"
         >
           <Layers />
+          <span className="text-xs font-semibold">Frame</span>
         </ToolbarIconButton>
 
         <ToolbarIconButton
           variant={previewMode ? "default" : "outline"}
           onClick={() => onPreviewModeChange(!previewMode)}
-          tooltip={previewMode ? "Exit preview mode" : "Preview final video"}
+          tooltip="Video"
+          className="w-auto px-2.5 gap-1"
         >
           {previewMode ? <EyeOff /> : <Eye />}
+          <span className="text-xs font-semibold">Video</span>
         </ToolbarIconButton>
 
         <ToolbarIconButton
@@ -1505,7 +1501,7 @@ export function Timeline({
       {/* Timeline track */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-x-auto overflow-y-hidden relative timeline-scrollbar"
+        className="overflow-x-auto overflow-y-hidden relative timeline-scrollbar"
         style={{
           scrollbarWidth: "auto",
           scrollbarColor: "hsl(var(--muted-foreground) / 0.5) hsl(var(--muted) / 0.3)",
@@ -1525,7 +1521,7 @@ export function Timeline({
         }}
       >
         <div
-          className="h-full flex flex-col relative ml-6 mr-3"
+          className="flex flex-col relative ml-6 mr-3 gap-1"
           style={{ width: `${trackWidth}px`, minWidth: "calc(100% - 36px)" }}
         >
           {/* Time markers */}
@@ -1541,15 +1537,12 @@ export function Timeline({
             ))}
           </div>
 
-          {/* Keyframe lane — blocks showing each keyframe's active range */}
-          {(() => {
-            const segsToShow = showAllKeyframes
-              ? segments.filter((s) => s.framing)
-              : [];
-            if (segsToShow.length === 0) return null;
+          {/* Frame and video tracks share the same height. Panel grows when Frame is on. */}
+          {showAllKeyframes && (() => {
+            const segsToShow = segments.filter((s) => s.framing);
 
             return (
-              <div className="h-5 shrink-0 relative mb-0.5 overflow-visible">
+              <div className="timeline-lane relative shrink-0 rounded bg-amber-950/25 dark:bg-amber-950/20 border border-border/50 overflow-visible">
                 {segsToShow.map((seg) => {
                   const kfs = getEffectiveKeyframes(seg.framing!);
                   const segDuration = seg.endTime - seg.startTime;
@@ -1820,9 +1813,9 @@ export function Timeline({
             );
           })()}
 
-          {/* Track */}
+          {/* Video track */}
           <div
-            className="relative flex-1 rounded cursor-pointer min-h-0 bg-secondary/70 dark:bg-zinc-800/50 border border-border/50"
+            className="timeline-lane relative shrink-0 rounded cursor-pointer bg-secondary/70 dark:bg-zinc-800/50 border border-border/50"
             onClick={handleTrackClick}
           >
             {/* Time tick marks */}
@@ -1848,7 +1841,7 @@ export function Timeline({
                 <div
                   key={segment.id}
                   className={cn(
-                    "absolute top-1 bottom-1 cursor-pointer rounded",
+                    "absolute inset-y-0 cursor-pointer rounded",
                     selectedId === segment.id && selectionMode === "segment"
                       ? "bg-blue-500 ring-2 ring-blue-400 z-10"
                       : selectedId === segment.id
