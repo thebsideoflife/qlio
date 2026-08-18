@@ -35,6 +35,7 @@ import {
 } from "@/services/api";
 import {
   Download,
+  FolderDown,
   Loader2,
   CheckCircle2,
   XCircle,
@@ -63,6 +64,11 @@ import {
   downloadExportMetadataJson,
   normalizeContentAdvisory,
 } from "@/lib/exportMetadataJson";
+import {
+  downloadExportPackage,
+  type ExportPackageProgress,
+  type ExportPackageSceneInput,
+} from "@/lib/exportPackage";
 
 interface ExportPanelProps {
   projectId: string;
@@ -100,6 +106,9 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   );
   const globalFraming = useSelector(
     (state: RootState) => state.editor.globalFraming,
+  );
+  const transcriptionVersion = useSelector(
+    (state: RootState) => state.editor.transcriptionVersion,
   );
   const lastSegmentRenders = useSelector(
     (state: RootState) => state.editor.lastSegmentRenders,
@@ -139,7 +148,14 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   const [metadataResumeChecked, setMetadataResumeChecked] = useState(false);
   const segmentMetadataRef = useRef(segmentMetadata);
   segmentMetadataRef.current = segmentMetadata;
-  const lastMetadataDownloadJobRef = useRef<string | null>(null);
+  const lastPackageDownloadJobRef = useRef<string | null>(null);
+  const packageAbortRef = useRef<AbortController | null>(null);
+  const [packageStatus, setPackageStatus] = useState<
+    "idle" | "bundling" | "ready" | "failed"
+  >("idle");
+  const [packageProgress, setPackageProgress] =
+    useState<ExportPackageProgress | null>(null);
+  const [packageError, setPackageError] = useState<string | null>(null);
 
   // The IQ agent owns the cut while it runs and writes its own metadata as it
   // wraps up, so everything on this panel stands down until it lets go. The
@@ -396,6 +412,99 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     downloadExportMetadataJson(buildMetadataDocument());
   }, [buildMetadataDocument]);
 
+  const collectPackageScenes = useCallback(
+    (downloads?: SegmentDownload[]): ExportPackageSceneInput[] => {
+      return segments
+        .filter((s) => selectedSegmentIds.has(s.id))
+        .map((s) => {
+          const fromJob = downloads?.find((d) => d.segmentId === s.id);
+          const cached = cachedRenderMap.get(s.id);
+          const contentHash = computeSegmentRenderFingerprint(
+            s,
+            captionSettings,
+            globalFraming,
+            transcriptionVersion,
+          );
+          const cachedFresh =
+            Boolean(cached?.url) && !isSegmentRenderStale(cached, contentHash);
+          const videoUrl =
+            (fromJob?.status === "completed" && fromJob.downloadUrl) ||
+            (cachedFresh ? cached?.url : undefined) ||
+            undefined;
+          const meta = cachedMetadataMap.get(s.id);
+          return {
+            segmentId: s.id,
+            title: s.title,
+            videoUrl,
+            thumbnailUrl:
+              metadataEnabled && includeThumbnails
+                ? meta?.thumbnailUrl
+                : undefined,
+          };
+        });
+    },
+    [
+      segments,
+      selectedSegmentIds,
+      cachedRenderMap,
+      cachedMetadataMap,
+      captionSettings,
+      globalFraming,
+      transcriptionVersion,
+      metadataEnabled,
+      includeThumbnails,
+    ],
+  );
+
+  const runPackageDownload = useCallback(
+    async (downloads?: SegmentDownload[]) => {
+      packageAbortRef.current?.abort();
+      const controller = new AbortController();
+      packageAbortRef.current = controller;
+
+      setPackageStatus("bundling");
+      setPackageError(null);
+      setPackageProgress({
+        phase: "downloading",
+        completed: 0,
+        total: 1,
+        label: "Preparing download…",
+      });
+
+      try {
+        const result = await downloadExportPackage({
+          projectTitle: projectTitle || "Untitled",
+          scenes: collectPackageScenes(downloads),
+          posterUrl:
+            metadataEnabled && includeThumbnails ? projectThumbnailUrl : null,
+          metadataDocument: metadataEnabled ? buildMetadataDocument() : null,
+          includeThumbnails: metadataEnabled && includeThumbnails,
+          signal: controller.signal,
+          onProgress: setPackageProgress,
+        });
+        if (controller.signal.aborted) return;
+        setPackageStatus("ready");
+        if (result.warnings.length > 0) {
+          console.warn("Export package warnings:", result.warnings);
+        }
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        const message =
+          err instanceof Error ? err.message : "Failed to prepare download";
+        setPackageStatus("failed");
+        setPackageError(message);
+      }
+    },
+    [
+      projectTitle,
+      collectPackageScenes,
+      metadataEnabled,
+      includeThumbnails,
+      projectThumbnailUrl,
+      buildMetadataDocument,
+    ],
+  );
+
   const runMetadataGeneration = useCallback(
     async (segmentIds: string[]) => {
       if (segmentIds.length === 0 || metadataInFlightRef.current) return;
@@ -447,6 +556,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       s,
       captionSettings,
       globalFraming,
+      transcriptionVersion,
     );
     return !isSegmentRenderStale(cached, hash);
   });
@@ -611,6 +721,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                         segment,
                         captionSettings,
                         globalFraming,
+                        transcriptionVersion,
                       )
                     : undefined,
                 };
@@ -626,13 +737,9 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
             dispatch(setLastSegmentRenders(Array.from(mergedMap.values())));
           }
 
-          if (
-            metadataEnabled &&
-            jobId &&
-            lastMetadataDownloadJobRef.current !== jobId
-          ) {
-            lastMetadataDownloadJobRef.current = jobId;
-            downloadExportMetadataJson(buildMetadataDocument());
+          if (jobId && lastPackageDownloadJobRef.current !== jobId) {
+            lastPackageDownloadJobRef.current = jobId;
+            void runPackageDownload(result.segmentDownloads);
           }
           return;
         } else if (result.status === "failed") {
@@ -664,9 +771,15 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     segments,
     captionSettings,
     globalFraming,
-    metadataEnabled,
-    buildMetadataDocument,
+    transcriptionVersion,
+    runPackageDownload,
   ]);
+
+  useEffect(() => {
+    return () => {
+      packageAbortRef.current?.abort();
+    };
+  }, []);
 
   const handleStartRender = useCallback(async () => {
     if (isProcessing) return; // Prevent concurrent renders
@@ -677,6 +790,9 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     setSegmentDownloads([]);
     setCompletedCount(0);
     setRenderingSegmentCount(selectedSegmentIds.size);
+    setPackageStatus("idle");
+    setPackageError(null);
+    setPackageProgress(null);
 
     try {
       const result = await startRender(projectId, {
@@ -703,6 +819,9 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       setSegmentDownloads([]);
       setCompletedCount(0);
       setRenderingSegmentCount(1);
+      setPackageStatus("idle");
+      setPackageError(null);
+      setPackageProgress(null);
 
       try {
         const result = await startRender(projectId, {
@@ -730,12 +849,16 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   }, []);
 
   const handleDone = useCallback(() => {
+    packageAbortRef.current?.abort();
     setStatus("idle");
     setProgress(0);
     setJobId(null);
     setSegmentDownloads([]);
     setCompletedCount(0);
     setError(null);
+    setPackageStatus("idle");
+    setPackageError(null);
+    setPackageProgress(null);
     onDone?.();
   }, [onDone]);
 
@@ -784,6 +907,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
         seg,
         captionSettings,
         globalFraming,
+        transcriptionVersion,
       );
       const isStale = isSegmentRenderStale(cached, contentHash);
 
@@ -825,6 +949,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     isProcessing,
     captionSettings,
     globalFraming,
+    transcriptionVersion,
   ]);
 
   const metadataDisabled = !metadataEnabled || isProcessing || agentRunning;
@@ -856,7 +981,10 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
         </p>
       </header>
 
-      {(isProcessing || status === "failed") && (
+      {(isProcessing ||
+        status === "failed" ||
+        packageStatus === "bundling" ||
+        packageStatus === "failed") && (
         <div className="shrink-0 space-y-2 rounded-lg border border-border bg-card px-4 py-3">
           {isProcessing && (
             <>
@@ -873,6 +1001,24 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
               <Progress value={progress} className="h-1.5" />
             </>
           )}
+          {packageStatus === "bundling" && !isProcessing && (
+            <>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">
+                  {packageProgress?.label ?? "Preparing download…"}
+                </span>
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              </div>
+              {packageProgress && packageProgress.total > 0 && (
+                <Progress
+                  value={Math.round(
+                    (packageProgress.completed / packageProgress.total) * 100,
+                  )}
+                  className="h-1.5"
+                />
+              )}
+            </>
+          )}
           {status === "failed" && (
             <div className="flex items-start gap-2 text-sm text-destructive">
               <XCircle className="h-4 w-4 shrink-0 mt-0.5" />
@@ -882,6 +1028,30 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                   <p className="text-xs text-destructive/80 mt-0.5">{error}</p>
                 )}
               </div>
+            </div>
+          )}
+          {packageStatus === "failed" && status !== "failed" && (
+            <div className="flex items-start justify-between gap-3 text-sm text-destructive">
+              <div className="flex items-start gap-2 min-w-0">
+                <XCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <p className="font-medium">Could not prepare download folder</p>
+                  {packageError && (
+                    <p className="text-xs text-destructive/80 mt-0.5">
+                      {packageError}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="shrink-0 h-7 px-2 text-xs text-destructive hover:text-destructive"
+                onClick={() => void runPackageDownload()}
+              >
+                Retry
+              </Button>
             </div>
           )}
         </div>
@@ -1378,13 +1548,15 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
               ? "IQ is still working on this cut. Export unlocks when it finishes."
               : isProcessing
               ? "Export in progress — you can leave and return later."
-              : status === "completed"
-                ? metadataEnabled
-                  ? "Export complete. Scene videos and metadata JSON are ready to download."
-                  : "Export complete. Download individual scenes or return to the editor."
-                : hasAnySelection
-                  ? `${selectedSegmentIds.size} scene${selectedSegmentIds.size === 1 ? "" : "s"} selected`
-                  : "Select at least one scene to export"}
+              : packageStatus === "bundling"
+                ? "Export complete. Packing videos, poster art, thumbnails, and metadata…"
+                : packageStatus === "failed"
+                  ? "Export complete, but the download folder could not be prepared."
+                  : status === "completed" || packageStatus === "ready"
+                    ? "Export complete. Your organized download folder is ready."
+                    : hasAnySelection
+                      ? `${selectedSegmentIds.size} scene${selectedSegmentIds.size === 1 ? "" : "s"} selected`
+                      : "Select at least one scene to export"}
           </p>
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:shrink-0">
             <Button
@@ -1406,6 +1578,23 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                 >
                   <Download className="h-4 w-4 mr-2" />
                   Metadata JSON
+                </Button>
+              )}
+            {hasAnySelection &&
+              (status === "completed" || someRendered) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void runPackageDownload()}
+                  disabled={packageStatus === "bundling" || agentRunning}
+                  className="w-full sm:w-auto"
+                >
+                  {packageStatus === "bundling" ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <FolderDown className="h-4 w-4 mr-2" />
+                  )}
+                  {packageStatus === "failed" ? "Retry download" : "Download all"}
                 </Button>
               )}
             {(status === "idle" || status === "failed") && (

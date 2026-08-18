@@ -56,13 +56,189 @@ export function isOriginalCaptionLanguage(
   return activeLanguage === originalLanguage;
 }
 
+/** ISO code when Whisper actually detected a language; otherwise null. */
+export function detectedOriginalLanguage(
+  originalLanguage: string | null | undefined,
+): string | null {
+  if (
+    !originalLanguage ||
+    originalLanguage === ORIGINAL_CAPTION_LANGUAGE ||
+    originalLanguage === "und"
+  ) {
+    return null;
+  }
+  return originalLanguage;
+}
+
+export interface TranscriptWordCard {
+  startTime: number;
+  endTime: number;
+  words: CaptionWord[];
+}
+
+export interface TranscriptLineCard {
+  startTime: number;
+  endTime: number;
+  lines: CaptionLine[];
+}
+
+export interface TranscriptGroupingOptions {
+  targetDuration?: number;
+  fallbackMaxDuration?: number;
+  fallbackMaxItems?: number;
+  longPause?: number;
+}
+
+const SENTENCE_END = /[.!?…]+(?:["'”’)\]}]+)?$/u;
+
+function endsSentence(text: string): boolean {
+  return SENTENCE_END.test(text.trim());
+}
+
+function packGroups<T>(
+  groups: Array<{ items: T[]; hardBreakAfter: boolean }>,
+  start: (item: T) => number,
+  end: (item: T) => number,
+  targetDuration: number,
+): Array<{ startTime: number; endTime: number; items: T[] }> {
+  const cards: Array<{ startTime: number; endTime: number; items: T[] }> = [];
+  let current: T[] = [];
+
+  const flush = () => {
+    if (current.length === 0) return;
+    cards.push({
+      startTime: start(current[0]),
+      endTime: end(current[current.length - 1]),
+      items: current,
+    });
+    current = [];
+  };
+
+  for (const group of groups) {
+    if (group.items.length === 0) continue;
+    const combinedStart =
+      current.length > 0 ? start(current[0]) : start(group.items[0]);
+    const combinedEnd = end(group.items[group.items.length - 1]);
+    if (
+      current.length > 0 &&
+      combinedEnd - combinedStart > targetDuration
+    ) {
+      flush();
+    }
+    current.push(...group.items);
+    if (group.hardBreakAfter) flush();
+  }
+  flush();
+  return cards;
+}
+
+/**
+ * Split at sentence punctuation, then use pause/size limits only for an
+ * unfinished punctuation-free run. A completed long sentence stays intact.
+ */
+function sentenceGroups<T>(
+  items: T[],
+  text: (item: T) => string,
+  start: (item: T) => number,
+  end: (item: T) => number,
+  options: Required<TranscriptGroupingOptions>,
+): Array<{ items: T[]; hardBreakAfter: boolean }> {
+  const groups: Array<{ items: T[]; hardBreakAfter: boolean }> = [];
+  let sentence: T[] = [];
+
+  const flush = (hardBreakAfter = false) => {
+    if (sentence.length === 0) return;
+    groups.push({ items: sentence, hardBreakAfter });
+    sentence = [];
+  };
+
+  for (const item of items) {
+    const previous = sentence[sentence.length - 1];
+    const punctuationFreeFallback =
+      previous != null &&
+      !sentence.some((entry) => endsSentence(text(entry))) &&
+      (start(item) - end(previous) >= options.longPause ||
+        sentence.length >= options.fallbackMaxItems ||
+        end(previous) - start(sentence[0]) >= options.fallbackMaxDuration);
+
+    if (punctuationFreeFallback) flush(true);
+    sentence.push(item);
+    if (endsSentence(text(item))) flush();
+  }
+  flush();
+  return groups;
+}
+
+function groupingOptions(
+  options: TranscriptGroupingOptions,
+): Required<TranscriptGroupingOptions> {
+  return {
+    targetDuration: options.targetDuration ?? 10,
+    fallbackMaxDuration: options.fallbackMaxDuration ?? 20,
+    fallbackMaxItems: options.fallbackMaxItems ?? 60,
+    longPause: options.longPause ?? 2,
+  };
+}
+
+export function groupWordsForTranscript(
+  words: CaptionWord[],
+  options: TranscriptGroupingOptions = {},
+): TranscriptWordCard[] {
+  if (words.length === 0) return [];
+  const resolved = groupingOptions(options);
+  return packGroups(
+    sentenceGroups(
+      words,
+      (word) => word.value,
+      (word) => word.start,
+      (word) => word.end,
+      resolved,
+    ),
+    (word) => word.start,
+    (word) => word.end,
+    resolved.targetDuration,
+  ).map(({ startTime, endTime, items }) => ({
+    startTime,
+    endTime,
+    words: items,
+  }));
+}
+
+/**
+ * Display-only grouping for translated captions. Lines remain atomic so their
+ * real timing can still drive highlighting and seeking.
+ */
+export function groupLinesForTranscript(
+  lines: CaptionLine[],
+  options: TranscriptGroupingOptions = {},
+): TranscriptLineCard[] {
+  if (lines.length === 0) return [];
+  const resolved = groupingOptions(options);
+  return packGroups(
+    sentenceGroups(
+      lines,
+      (line) => line.text,
+      (line) => line.startTime,
+      (line) => line.endTime,
+      resolved,
+    ),
+    (line) => line.startTime,
+    (line) => line.endTime,
+    resolved.targetDuration,
+  ).map(({ startTime, endTime, items }) => ({
+    startTime,
+    endTime,
+    lines: items,
+  }));
+}
+
 export function parseTranscriptPayload(data: unknown): {
   language?: string;
   words: CaptionWord[];
   lines: CaptionLine[];
 } {
   if (Array.isArray(data)) {
-    return { words: data as CaptionWord[], lines: [] };
+    return { language: "en", words: data as CaptionWord[], lines: [] };
   }
   if (!data || typeof data !== "object") {
     return { words: [], lines: [] };

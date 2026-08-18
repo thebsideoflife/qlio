@@ -10,7 +10,9 @@
     "test:fingerprint": "npx tsx src/scripts/test-segment-metadata-fingerprint.ts",
     "test:agent-thread": "npx tsx --tsconfig tsconfig.app.json src/scripts/test-agent-thread.ts",
     "test:zoom-math": "npx tsx src/scripts/test-zoom-math.ts",
-    "test": "npm run test:fingerprint && npm run test:agent-thread && npm run test:zoom-math",
+    "test:export-package": "npx tsx src/lib/exportPackage.test.ts",
+    "test:transcript": "npx tsx --tsconfig tsconfig.app.json src/lib/transcript.test.ts",
+    "test": "npm run test:fingerprint && npm run test:agent-thread && npm run test:zoom-math && npm run test:export-package && npm run test:transcript",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -37,6 +39,7 @@
     "axios": "^1.13.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.554.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

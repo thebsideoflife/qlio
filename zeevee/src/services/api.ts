@@ -246,6 +246,7 @@ export const translateProjectCaptions = async (
   cached?: boolean;
   alreadyPending?: boolean;
   translationUrl?: string | null;
+  transcriptionVersion?: string;
 }> => {
   const response = await axios.post(
     `${API_URL}/projects/${projectId}/captions/translate`,

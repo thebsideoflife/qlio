@@ -24,6 +24,7 @@ export function computeSegmentRenderFingerprint(
   segment: Pick<Segment, "startTime" | "endTime" | "framing">,
   captionSettings: CaptionSettings,
   globalFraming: GlobalFramingSettings,
+  transcriptionVersion?: string | null,
 ): string {
   const payload = {
     startTime: segment.startTime,
@@ -35,6 +36,9 @@ export function computeSegmentRenderFingerprint(
       ...(captionSettings.activeLanguage &&
       captionSettings.activeLanguage !== "original"
         ? { activeLanguage: captionSettings.activeLanguage }
+        : {}),
+      ...(captionSettings.enabled && transcriptionVersion
+        ? { transcriptionVersion }
         : {}),
     },
     aspectRatio: globalFraming.aspectRatio,

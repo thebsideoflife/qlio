@@ -172,3 +172,6 @@ backfill-user-ids.sh
 evals/
 eval-results/
 evaluations/
+
+# Local consulting docs (SOWs, notes, etc.)
+local-docs/

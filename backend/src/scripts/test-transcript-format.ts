@@ -3,8 +3,14 @@
  */
 import {
   groupWordsIntoCaptions,
+  inferOriginalTranscriptLanguage,
   normalizeLanguageCode,
+  originalTranscriptKey,
   parseTranscriptJson,
+  selectSupersededTranscriptKeys,
+  transcriptVersionMatches,
+  translationTranscriptKey,
+  whisperChunkKey,
 } from "../utils/transcript-format";
 import {
   mapChunkWordsToVideoClock,
@@ -20,6 +26,8 @@ import {
   type StoredWhisperChunk,
 } from "../utils/transcript-timing";
 import { isEffectivelySilent } from "../utils/wav";
+import { classifyTranscriptionRun } from "../utils/transcription-run";
+import { computeSegmentRenderFingerprint } from "../utils/segmentRenderFingerprint";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -36,6 +44,10 @@ const legacy = parseTranscriptJson([
 ]);
 assert(legacy.kind === "original", "legacy array is original");
 assert(legacy.kind === "original" && legacy.words[0].value === "Sí", "sorts by start");
+assert(
+  legacy.kind === "original" && legacy.language === "en",
+  "bare legacy arrays infer English",
+);
 
 const wrapped = parseTranscriptJson({
   language: "Spanish",
@@ -58,6 +70,132 @@ assert(
 
 assert(normalizeLanguageCode("en-US") === "en", "en-US → en");
 assert(normalizeLanguageCode("castellano") === "es", "castellano → es");
+assert(
+  inferOriginalTranscriptLanguage({
+    assetId: "asset-1",
+    transcriptionUrl: "s3://bucket/transcriptions/asset-1.json",
+  }) === "en",
+  "legacy flat transcript keys infer English",
+);
+assert(
+  inferOriginalTranscriptLanguage({
+    assetId: "asset-1",
+    originalLanguage: "Spanish",
+    transcriptionUrl: "s3://bucket/transcriptions/asset-1.json",
+  }) === "es",
+  "explicit language wins over legacy inference",
+);
+
+// --- versioned storage and cleanup ---
+const version = "run-123";
+const originalKey = originalTranscriptKey("asset-1", version);
+assert(
+  originalKey ===
+    "transcriptions/asset-1/versions/run-123/original.json",
+  "original transcript key includes the source version",
+);
+assert(
+  translationTranscriptKey("asset-1", version, "Spanish") ===
+    "transcriptions/asset-1/versions/run-123/translations/es.json",
+  "translation key is scoped to the source version",
+);
+assert(
+  whisperChunkKey("asset-1", version, 2) ===
+    "transcriptions/asset-1/versions/run-123/chunks/2.json",
+  "Whisper chunks are scoped to one run",
+);
+assert(transcriptVersionMatches(version, version), "matching source version is current");
+assert(
+  !transcriptVersionMatches("run-older", version),
+  "stale translation source version is rejected",
+);
+
+const staleKeys = selectSupersededTranscriptKeys({
+  assetId: "asset-1",
+  listedKeys: [
+    "transcriptions/asset-1.json",
+    "transcriptions/asset-1/en.json",
+    "transcriptions/asset-1/chunks/0.json",
+    originalKey,
+    "scene-cache/asset-1/result.json",
+  ],
+  keepKeys: [originalKey],
+});
+assert(
+  staleKeys.includes("transcriptions/asset-1.json") &&
+    staleKeys.includes("transcriptions/asset-1/en.json") &&
+    staleKeys.includes("transcriptions/asset-1/chunks/0.json"),
+  "cleanup selects legacy originals, prior originals, and old chunks",
+);
+assert(!staleKeys.includes(originalKey), "cleanup keeps the replacement original");
+assert(
+  !staleKeys.includes("scene-cache/asset-1/result.json"),
+  "cleanup leaves unrelated video-analysis data alone",
+);
+assert(
+  classifyTranscriptionRun(
+    {
+      pendingTranscriptionVersion: version,
+      transcriptionStatus: "pending",
+    },
+    version,
+  ) === "current",
+  "a matching pending run is current",
+);
+assert(
+  classifyTranscriptionRun(
+    {
+      transcriptionVersion: version,
+      transcriptionStatus: "ready",
+      transcriptionUrl: `s3://bucket/${originalKey}`,
+    },
+    version,
+  ) === "committed",
+  "a duplicate delivery recognizes the already-committed run",
+);
+assert(
+  classifyTranscriptionRun(
+    {
+      pendingTranscriptionVersion: "newer-run",
+      transcriptionStatus: "pending",
+    },
+    version,
+  ) === "superseded",
+  "a different pending run supersedes the old version",
+);
+const renderSegment = { startTime: 0, endTime: 10 };
+const renderCaptions = { enabled: true, style: {} };
+const renderFraming = { aspectRatio: "9:16" };
+assert(
+  computeSegmentRenderFingerprint(
+    renderSegment,
+    renderCaptions,
+    renderFraming,
+    "transcript-a",
+  ) !==
+    computeSegmentRenderFingerprint(
+      renderSegment,
+      renderCaptions,
+      renderFraming,
+      "transcript-b",
+    ),
+  "retranscription invalidates captioned renders",
+);
+assert(
+  computeSegmentRenderFingerprint(
+    renderSegment,
+    { ...renderCaptions, enabled: false },
+    renderFraming,
+    "transcript-a",
+  ) ===
+    computeSegmentRenderFingerprint(
+      renderSegment,
+      { ...renderCaptions, enabled: false },
+      renderFraming,
+      "transcript-b",
+    ),
+  "retranscription does not invalidate renders with captions disabled",
+);
 
 const grouped = groupWordsIntoCaptions([
   { start: 0, end: 0.2, value: "a" },

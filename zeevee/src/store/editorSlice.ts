@@ -51,6 +51,7 @@ interface EditorState {
   captions: CaptionLine[];
   captionSettings: CaptionSettings;
   originalLanguage: string | null;
+  transcriptionVersion: string | null;
   transcriptionStatus: "pending" | "ready" | "failed" | null;
   translations: Record<string, string>;
   // Framing state
@@ -126,6 +127,7 @@ const initialState: EditorState = {
   captions: [],
   captionSettings: DEFAULT_CAPTION_SETTINGS,
   originalLanguage: null,
+  transcriptionVersion: null,
   transcriptionStatus: null,
   translations: {},
   // Framing state
@@ -595,11 +597,15 @@ export const editorSlice = createSlice({
       state,
       action: PayloadAction<{
         originalLanguage: string | null;
+        transcriptionVersion?: string | null;
         transcriptionStatus: "pending" | "ready" | "failed" | null;
         translations: Record<string, string>;
       }>,
     ) => {
       state.originalLanguage = action.payload.originalLanguage;
+      if (action.payload.transcriptionVersion !== undefined) {
+        state.transcriptionVersion = action.payload.transcriptionVersion;
+      }
       state.transcriptionStatus = action.payload.transcriptionStatus;
       state.translations = action.payload.translations;
     },
@@ -623,6 +629,40 @@ export const editorSlice = createSlice({
         state.captions = groupWordsIntoCaptions(state.transcriptWords);
       }
       markEdited(state);
+    },
+    applyTranslatedCaptionLanguage: (
+      state,
+      action: PayloadAction<{
+        language: string;
+        lines: CaptionLine[];
+        translationUrl: string;
+        transcriptionVersion?: string | null;
+      }>,
+    ) => {
+      if (state.transcriptionStatus !== "ready") return;
+      const version = action.payload.transcriptionVersion;
+      if (
+        version &&
+        state.transcriptionVersion &&
+        version !== state.transcriptionVersion
+      ) {
+        return;
+      }
+      if (version) state.transcriptionVersion = version;
+      state.translations[action.payload.language] =
+        action.payload.translationUrl;
+      state.captionSettings.activeLanguage = action.payload.language;
+      state.captions = action.payload.lines;
+      markEdited(state);
+    },
+    restoreActiveCaptionLanguage: (
+      state,
+      action: PayloadAction<{ language: string; lines?: CaptionLine[] }>,
+    ) => {
+      state.captionSettings.activeLanguage = action.payload.language;
+      state.captions = action.payload.lines
+        ? action.payload.lines
+        : groupWordsIntoCaptions(state.transcriptWords);
     },
     setCaptionSettings: (state, action: PayloadAction<CaptionSettings>) => {
       state.captionSettings = action.payload;
@@ -1000,6 +1040,8 @@ export const {
   setTranslations,
   setCaptionLines,
   setActiveCaptionLanguage,
+  applyTranslatedCaptionLanguage,
+  restoreActiveCaptionLanguage,
   setCaptionSettings,
   updateCaptionStyle,
   setCaptionsEnabled,

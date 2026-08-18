@@ -3,7 +3,6 @@ import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
 import {
   setCaptionsEnabled,
-  setActiveCaptionLanguage,
   setCaptionLanguageMeta,
   updateCaptionStyle,
   updateCaptionPosition,
@@ -23,18 +22,9 @@ import { cn } from "@/lib/utils";
 import { Upload, Palette, X, Loader2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { STARDOS_STENCIL_FONT_FAMILY } from "@/remotion/loadCaptionFonts";
-import {
-  getAsset,
-  translateProjectCaptions,
-  retryAssetTranscription,
-  waitForCaptionTranslation,
-} from "@/services/api";
-import {
-  TRANSLATE_TARGETS,
-  ORIGINAL_CAPTION_LANGUAGE,
-  languageLabel,
-  parseTranscriptPayload,
-} from "@/lib/transcript";
+import { getAsset, retryAssetTranscription } from "@/services/api";
+import { detectedOriginalLanguage, languageLabel } from "@/lib/transcript";
+import { CaptionLanguageToggle } from "@/components/editor/CaptionLanguageToggle";
 
 const FONTS = [
   { value: "Arial, sans-serif", label: "Arial", weight: "700" },
@@ -94,17 +84,15 @@ const SIZES = [
 export function CaptionEditor() {
   const dispatch = useDispatch();
   const [brandColors, setBrandColors] = useState<string[]>([]);
-  const [translatingTo, setTranslatingTo] = useState<string | null>(null);
   const [translateError, setTranslateError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { enabled, style, activeLanguage } = useSelector(
+  const { enabled, style } = useSelector(
     (state: RootState) => state.editor.captionSettings,
   );
   const captionCount = useSelector(
     (state: RootState) => state.editor.captions.length,
   );
-  const projectId = useSelector((state: RootState) => state.editor.projectId);
   const assetId = useSelector((state: RootState) => state.editor.assetId);
   const originalLanguage = useSelector(
     (state: RootState) => state.editor.originalLanguage,
@@ -116,9 +104,7 @@ export function CaptionEditor() {
     (state: RootState) => state.editor.translations,
   );
 
-  const displayLanguage =
-    activeLanguage || originalLanguage || ORIGINAL_CAPTION_LANGUAGE;
-  const originalOptionValue = originalLanguage || ORIGINAL_CAPTION_LANGUAGE;
+  const detectedOriginal = detectedOriginalLanguage(originalLanguage);
 
   const textColor = style.color || "#ffffff";
   const highlightColor = style.highlightColor || "#fbbf24";
@@ -174,145 +160,51 @@ export function CaptionEditor() {
     e.target.value = "";
   };
 
-  const switchLanguage = async (language: string) => {
-    setTranslateError(null);
-    try {
-      if (
-        language === originalOptionValue ||
-        language === ORIGINAL_CAPTION_LANGUAGE
-      ) {
-        dispatch(setActiveCaptionLanguage({ language: originalOptionValue }));
-        return;
-      }
-
-      let url = translations[language];
-      if (!url || !url.startsWith("http")) {
-        await handleTranslate(language);
-        return;
-      }
-
-      let res = await fetch(url);
-      if (!res.ok && assetId) {
-        const asset = await getAsset(assetId);
-        const refreshedUrl = asset.translations?.[language];
-        if (typeof refreshedUrl === "string") {
-          url = refreshedUrl;
-          res = await fetch(url);
-          dispatch(
-            setCaptionLanguageMeta({
-              originalLanguage: asset.originalLanguage || originalLanguage,
-              transcriptionStatus,
-              translations: { ...translations, [language]: url },
-            }),
-          );
-        }
-      }
-      if (!res.ok) {
-        throw new Error(`Could not load translated captions (${res.status})`);
-      }
-      const data = await res.json();
-      const lines = parseTranscriptPayload(data).lines;
-      if (lines.length === 0) {
-        throw new Error("Translated captions are empty");
-      }
-      dispatch(setActiveCaptionLanguage({ language, lines }));
-    } catch (err) {
-      setTranslateError(
-        err instanceof Error ? err.message : "Could not switch caption language",
-      );
-    }
-  };
-
-  const handleTranslate = async (target: string) => {
-    if (!projectId || !assetId) return;
-    setTranslateError(null);
-    setTranslatingTo(target);
-    try {
-      const result = await translateProjectCaptions(projectId, target);
-      const translationUrl =
-        result.translationUrl ||
-        (await waitForCaptionTranslation(assetId, target));
-      const response = await fetch(translationUrl);
-      if (!response.ok) {
-        throw new Error(`Could not load translated captions (${response.status})`);
-      }
-      const data = await response.json();
-      const lines = parseTranscriptPayload(data).lines;
-      if (lines.length === 0) {
-        throw new Error("Translation completed without caption lines");
-      }
-      dispatch(
-        setCaptionLanguageMeta({
-          originalLanguage: originalLanguage || result.sourceLanguage || null,
-          transcriptionStatus,
-          translations: {
-            ...translations,
-            [target]: translationUrl,
-          },
-        }),
-      );
-      dispatch(
-        setActiveCaptionLanguage({
-          language: target,
-          lines,
-        }),
-      );
-    } catch (err) {
-      const axiosErr = err as { response?: { data?: { error?: string } } };
-      setTranslateError(
-        axiosErr.response?.data?.error ||
-          (err instanceof Error ? err.message : "Translation failed"),
-      );
-    } finally {
-      setTranslatingTo(null);
-    }
-  };
-
   const handleRetryTranscription = async () => {
     if (!assetId) return;
     setTranslateError(null);
-    dispatch(
-      setCaptionLanguageMeta({
-        originalLanguage,
-        transcriptionStatus: "pending",
-        translations,
-      }),
-    );
     try {
       await retryAssetTranscription(assetId);
-    } catch (err) {
       dispatch(
         setCaptionLanguageMeta({
           originalLanguage,
-          transcriptionStatus: "failed",
+          transcriptionStatus: "pending",
           translations,
         }),
       );
-      setTranslateError(
-        err instanceof Error ? err.message : "Could not restart transcription",
+    } catch (err) {
+      const responseStatus = (
+        err as { response?: { status?: number } }
+      ).response?.status;
+      let authoritativeStatus =
+        responseStatus === 409 ? "pending" : transcriptionStatus;
+      let authoritativeLanguage = originalLanguage;
+      let authoritativeTranslations = translations;
+      try {
+        const asset = await getAsset(assetId);
+        authoritativeStatus =
+          asset.transcriptionStatus || authoritativeStatus;
+        authoritativeLanguage =
+          asset.originalLanguage || authoritativeLanguage;
+        authoritativeTranslations =
+          asset.translations || authoritativeTranslations;
+      } catch {
+        // Keep the last known state when the status refresh also fails.
+      }
+      dispatch(
+        setCaptionLanguageMeta({
+          originalLanguage: authoritativeLanguage,
+          transcriptionStatus: authoritativeStatus,
+          translations: authoritativeTranslations,
+        }),
       );
+      if (authoritativeStatus !== "pending") {
+        setTranslateError(
+          err instanceof Error ? err.message : "Could not restart transcription",
+        );
+      }
     }
   };
-
-  const displayOptions: { value: string; label: string }[] = [
-    {
-      value: originalOptionValue,
-      label: originalLanguage && originalLanguage !== "und"
-        ? `Original (${languageLabel(originalLanguage)})`
-        : "Original",
-    },
-  ];
-  const translateTargets = TRANSLATE_TARGETS.filter(
-    (code) => code !== originalLanguage,
-  );
-  for (const code of translateTargets) {
-    if (translations[code]) {
-      displayOptions.push({
-        value: code,
-        label: languageLabel(code),
-      });
-    }
-  }
 
   return (
     <div className="p-5 space-y-5">
@@ -347,11 +239,6 @@ export function CaptionEditor() {
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               Transcribing original audio…
             </p>
-            <Skeleton className="h-4 w-44" />
-            <div className="flex flex-wrap gap-2">
-              <Skeleton className="h-8 w-36 rounded-md" />
-              <Skeleton className="h-8 w-32 rounded-md" />
-            </div>
           </div>
         )}
         {transcriptionStatus === "failed" && (
@@ -370,50 +257,26 @@ export function CaptionEditor() {
             </Button>
           </div>
         )}
-        {originalLanguage && transcriptionStatus !== "pending" && (
+        {transcriptionStatus === "ready" && (
           <p className="text-xs text-muted-foreground font-medium">
-            Detected original: {languageLabel(originalLanguage)}
+            {detectedOriginal
+              ? `Detected original: ${languageLabel(detectedOriginal)}`
+              : "Original language not detected"}
           </p>
         )}
-        {displayOptions.length > 1 && (
-          <Select
-            value={displayLanguage}
-            onValueChange={(v) => {
-              void switchLanguage(v);
-            }}
-          >
-            <SelectTrigger className="h-10 text-sm font-semibold border-2 border-border">
-              <SelectValue placeholder="Display language" />
-            </SelectTrigger>
-            <SelectContent>
-              {displayOptions.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-        {translateTargets.filter((code) => !translations[code]).length > 0 &&
-          transcriptionStatus === "ready" && (
-          <div className="flex flex-wrap gap-2">
-            {translateTargets
-              .filter((code) => !translations[code])
-              .map((code) => (
-              <Button
-                key={code}
-                variant="outline"
-                size="sm"
-                className="text-xs h-8"
-                disabled={translatingTo !== null}
-                onClick={() => void handleTranslate(code)}
-              >
-                {translatingTo === code ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
-                ) : null}
-                Translate to {languageLabel(code)}
-              </Button>
-            ))}
+        {transcriptionStatus !== "failed" && <CaptionLanguageToggle />}
+        {transcriptionStatus === "ready" && (
+          <div className="border-t border-border pt-3">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="text-xs h-8"
+              disabled={!assetId}
+              onClick={() => void handleRetryTranscription()}
+            >
+              Re-transcribe
+            </Button>
           </div>
         )}
         {translateError && (
@@ -577,21 +440,32 @@ export function CaptionEditor() {
                   />
                 )}
               </label>
-              <Button
-                variant={highlightColor === "none" ? "default" : "outline"}
-                size="sm"
-                className="text-xs h-8"
-                onClick={() =>
-                  dispatch(
-                    updateCaptionStyle({
-                      highlightColor:
-                        highlightColor === "none" ? "#fbbf24" : "none",
-                    }),
-                  )
-                }
-              >
-                {highlightColor === "none" ? "Disabled" : "Disable"}
-              </Button>
+              {highlightColor !== "none" ? (
+                <span className="text-xs font-mono text-muted-foreground">
+                  {highlightColor}
+                </span>
+              ) : (
+                <span className="text-xs font-medium text-muted-foreground">
+                  Off
+                </span>
+              )}
+              <div className="flex gap-1.5">
+                <Button
+                  variant={highlightColor === "none" ? "default" : "outline"}
+                  size="sm"
+                  className="text-xs h-8 px-2"
+                  onClick={() =>
+                    dispatch(
+                      updateCaptionStyle({
+                        highlightColor:
+                          highlightColor === "none" ? "#fbbf24" : "none",
+                      }),
+                    )
+                  }
+                >
+                  {highlightColor === "none" ? "On" : "None"}
+                </Button>
+              </div>
             </div>
           </div>
 

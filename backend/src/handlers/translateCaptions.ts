@@ -3,7 +3,12 @@ import {
   APIGatewayProxyResult,
   Handler,
 } from "aws-lambda";
-import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  S3Client,
+  GetObjectCommand,
+  PutObjectCommand,
+} from "@aws-sdk/client-s3";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
@@ -16,8 +21,12 @@ import { getOpenRouterApiKey, translateCaptionLines, TRANSLATE_MODEL } from "../
 import { presignS3Uri } from "../utils/s3";
 import {
   groupWordsIntoCaptions,
+  inferOriginalTranscriptLanguage,
+  LEGACY_TRANSCRIPTION_VERSION,
   normalizeLanguageCode,
   parseTranscriptJson,
+  transcriptVersionMatches,
+  translationTranscriptKey,
   type CaptionLine,
 } from "../utils/transcript-format";
 
@@ -47,6 +56,7 @@ type TranslateWorkerEvent = {
   kind: "translate-captions-worker";
   projectId: string;
   targetLanguage: string;
+  transcriptionVersion: string;
 };
 
 type TranslationStatus = "pending" | "ready" | "failed";
@@ -61,15 +71,72 @@ function isConditionalFailure(err: unknown): boolean {
   return (err as { name?: string })?.name === "ConditionalCheckFailedException";
 }
 
-async function ensureMap(assetId: string, attribute: string): Promise<void> {
+async function ensureTranscriptionVersion(
+  asset: Record<string, unknown>,
+): Promise<string> {
+  if (typeof asset.transcriptionVersion === "string") {
+    return asset.transcriptionVersion;
+  }
+  if (typeof asset.transcriptionUrl !== "string" || !asset.transcriptionUrl) {
+    throw new Error("Original transcript is not ready yet");
+  }
+  const assetId = String(asset.assetId);
+  const version = LEGACY_TRANSCRIPTION_VERSION;
+  const inferredLanguage = inferOriginalTranscriptLanguage({
+    assetId,
+    originalLanguage: asset.originalLanguage,
+    transcriptionUrl: asset.transcriptionUrl,
+  });
   await docClient.send(
     new UpdateCommand({
       TableName: ASSETS_TABLE,
       Key: { assetId },
-      UpdateExpression: "SET #map = if_not_exists(#map, :empty)",
-      ConditionExpression: "attribute_exists(#pk)",
-      ExpressionAttributeNames: { "#map": attribute, "#pk": "assetId" },
-      ExpressionAttributeValues: { ":empty": {} },
+      UpdateExpression:
+        "SET transcriptionVersion = if_not_exists(transcriptionVersion, :version), " +
+        "#status = if_not_exists(#status, :ready), " +
+        "originalLanguage = if_not_exists(originalLanguage, :language), updatedAt = :updatedAt",
+      ConditionExpression:
+        "attribute_exists(assetId) AND transcriptionUrl = :transcriptionUrl AND (attribute_not_exists(#status) OR #status <> :pending)",
+      ExpressionAttributeNames: { "#status": "transcriptionStatus" },
+      ExpressionAttributeValues: {
+        ":version": version,
+        ":ready": "ready",
+        ":pending": "pending",
+        ":language": inferredLanguage || "und",
+        ":transcriptionUrl": asset.transcriptionUrl,
+        ":updatedAt": new Date().toISOString(),
+      },
+    }),
+  );
+  asset.transcriptionVersion = version;
+  asset.transcriptionStatus = asset.transcriptionStatus || "ready";
+  if (!asset.originalLanguage && inferredLanguage) {
+    asset.originalLanguage = inferredLanguage;
+  }
+  return version;
+}
+
+async function ensureTranslationMaps(
+  assetId: string,
+  transcriptionVersion: string,
+): Promise<void> {
+  await docClient.send(
+    new UpdateCommand({
+      TableName: ASSETS_TABLE,
+      Key: { assetId },
+      UpdateExpression:
+        "SET translations = if_not_exists(translations, :empty), " +
+        "translationStatuses = if_not_exists(translationStatuses, :empty), " +
+        "translationErrors = if_not_exists(translationErrors, :empty), " +
+        "translationStartedAt = if_not_exists(translationStartedAt, :empty)",
+      ConditionExpression:
+        "attribute_exists(assetId) AND transcriptionVersion = :version AND #status = :ready",
+      ExpressionAttributeNames: { "#status": "transcriptionStatus" },
+      ExpressionAttributeValues: {
+        ":empty": {},
+        ":version": transcriptionVersion,
+        ":ready": "ready",
+      },
     }),
   );
 }
@@ -78,42 +145,52 @@ async function setTranslationStatus(
   assetId: string,
   language: string,
   status: TranslationStatus,
+  transcriptionVersion: string,
   error?: string,
 ): Promise<void> {
-  await ensureMap(assetId, "translationStatuses");
+  await ensureTranslationMaps(assetId, transcriptionVersion);
   await docClient.send(
     new UpdateCommand({
       TableName: ASSETS_TABLE,
       Key: { assetId },
       UpdateExpression:
         "SET #statuses.#language = :status, updatedAt = :updatedAt",
-      ConditionExpression: "attribute_exists(#pk)",
+      ConditionExpression:
+        "attribute_exists(#pk) AND transcriptionVersion = :version AND #transcriptionStatus = :ready",
       ExpressionAttributeNames: {
         "#statuses": "translationStatuses",
         "#language": language,
         "#pk": "assetId",
+        "#transcriptionStatus": "transcriptionStatus",
       },
       ExpressionAttributeValues: {
         ":status": status,
+        ":version": transcriptionVersion,
+        ":ready": "ready",
         ":updatedAt": new Date().toISOString(),
       },
     }),
   );
 
   if (error) {
-    await ensureMap(assetId, "translationErrors");
     await docClient.send(
       new UpdateCommand({
         TableName: ASSETS_TABLE,
         Key: { assetId },
         UpdateExpression: "SET #errors.#language = :error",
-        ConditionExpression: "attribute_exists(#pk)",
+        ConditionExpression:
+          "attribute_exists(#pk) AND transcriptionVersion = :version AND #transcriptionStatus = :ready",
         ExpressionAttributeNames: {
           "#errors": "translationErrors",
           "#language": language,
           "#pk": "assetId",
+          "#transcriptionStatus": "transcriptionStatus",
         },
-        ExpressionAttributeValues: { ":error": error },
+        ExpressionAttributeValues: {
+          ":error": error,
+          ":version": transcriptionVersion,
+          ":ready": "ready",
+        },
       }),
     );
   }
@@ -122,9 +199,9 @@ async function setTranslationStatus(
 async function claimTranslation(
   assetId: string,
   language: string,
+  transcriptionVersion: string,
 ): Promise<boolean> {
-  await ensureMap(assetId, "translationStatuses");
-  await ensureMap(assetId, "translationStartedAt");
+  await ensureTranslationMaps(assetId, transcriptionVersion);
   const now = new Date();
   const staleBefore = new Date(now.getTime() - 15 * 60_000).toISOString();
   try {
@@ -135,17 +212,20 @@ async function claimTranslation(
         UpdateExpression:
           "SET #statuses.#language = :pending, #started.#language = :updatedAt, updatedAt = :updatedAt",
         ConditionExpression:
-          "attribute_exists(#pk) AND (attribute_not_exists(#statuses.#language) OR #statuses.#language = :failed OR #statuses.#language = :ready OR #started.#language < :staleBefore)",
+          "attribute_exists(#pk) AND transcriptionVersion = :version AND #transcriptionStatus = :ready AND " +
+          "(attribute_not_exists(#statuses.#language) OR #statuses.#language = :failed OR #statuses.#language = :ready OR #started.#language < :staleBefore)",
         ExpressionAttributeNames: {
           "#statuses": "translationStatuses",
           "#started": "translationStartedAt",
           "#language": language,
           "#pk": "assetId",
+          "#transcriptionStatus": "transcriptionStatus",
         },
         ExpressionAttributeValues: {
           ":pending": "pending",
           ":failed": "failed",
           ":ready": "ready",
+          ":version": transcriptionVersion,
           ":updatedAt": now.toISOString(),
           ":staleBefore": staleBefore,
         },
@@ -192,8 +272,9 @@ async function getProjectAndAsset(projectId: string) {
 }
 
 async function translateWorker(event: TranslateWorkerEvent): Promise<void> {
-  const { projectId, targetLanguage } = event;
+  const { projectId, targetLanguage, transcriptionVersion } = event;
   let assetId: string | undefined;
+  let writtenKey: string | null = null;
   try {
     if (!TRANSLATE_TARGETS.has(targetLanguage)) {
       throw new Error(`Unsupported target language: ${targetLanguage}`);
@@ -202,14 +283,34 @@ async function translateWorker(event: TranslateWorkerEvent): Promise<void> {
     if (!project) throw new Error(`Project ${projectId} not found`);
     if (!asset) throw new Error(`Asset ${project.assetId} not found`);
     assetId = String(asset.assetId);
-    await setTranslationStatus(assetId, targetLanguage, "pending");
+    const currentVersion = await ensureTranscriptionVersion(asset);
+    if (!transcriptVersionMatches(currentVersion, transcriptionVersion)) {
+      console.log(
+        `[translateCaptions worker] discarded stale run ${transcriptionVersion}; current=${currentVersion}`,
+      );
+      return;
+    }
+    if (asset.transcriptionStatus === "pending") {
+      throw new Error("Original transcript is still being prepared");
+    }
+    await setTranslationStatus(
+      assetId,
+      targetLanguage,
+      "pending",
+      transcriptionVersion,
+    );
 
     const existing =
       asset.translations && typeof asset.translations === "object"
         ? (asset.translations as Record<string, string>)
         : {};
     if (existing[targetLanguage]) {
-      await setTranslationStatus(assetId, targetLanguage, "ready");
+      await setTranslationStatus(
+        assetId,
+        targetLanguage,
+        "ready",
+        transcriptionVersion,
+      );
       return;
     }
     if (!asset.transcriptionUrl) {
@@ -225,9 +326,13 @@ async function translateWorker(event: TranslateWorkerEvent): Promise<void> {
       parsed.kind === "original"
         ? groupWordsIntoCaptions(parsed.words)
         : parsed.lines;
-    const originalLanguage = normalizeLanguageCode(
-      String(asset.originalLanguage || parsedLanguage || "und"),
-    );
+    const originalLanguage =
+      inferOriginalTranscriptLanguage({
+        assetId,
+        originalLanguage: asset.originalLanguage,
+        transcriptionUrl: asset.transcriptionUrl,
+        parsedLanguage,
+      }) || "und";
     if (targetLanguage === originalLanguage) {
       throw new Error("Target language is the original language");
     }
@@ -258,7 +363,12 @@ async function translateWorker(event: TranslateWorkerEvent): Promise<void> {
       words: [],
     }));
 
-    const s3Key = `transcriptions/${asset.assetId}/${targetLanguage}.json`;
+    const s3Key = translationTranscriptKey(
+      assetId,
+      transcriptionVersion,
+      targetLanguage,
+    );
+    writtenKey = s3Key;
     const translationUri = `s3://${BUCKET_NAME}/${s3Key}`;
     await s3Client.send(
       new PutObjectCommand({
@@ -267,6 +377,7 @@ async function translateWorker(event: TranslateWorkerEvent): Promise<void> {
         Body: JSON.stringify({
           language: targetLanguage,
           sourceLanguage: originalLanguage,
+          transcriptionVersion,
           model: TRANSLATE_MODEL,
           generatedAt: new Date().toISOString(),
           lines: lines.map(({ id, startTime, endTime, text }) => ({
@@ -282,27 +393,43 @@ async function translateWorker(event: TranslateWorkerEvent): Promise<void> {
       }),
     );
 
-    await ensureMap(assetId, "translations");
-    await docClient.send(
-      new UpdateCommand({
-        TableName: ASSETS_TABLE,
-        Key: { assetId },
-        UpdateExpression:
-          "SET #translations.#language = :uri, originalLanguage = if_not_exists(originalLanguage, :original), updatedAt = :updatedAt",
-        ConditionExpression: "attribute_exists(#pk)",
-        ExpressionAttributeNames: {
-          "#translations": "translations",
-          "#language": targetLanguage,
-          "#pk": "assetId",
-        },
-        ExpressionAttributeValues: {
-          ":uri": translationUri,
-          ":original": originalLanguage,
-          ":updatedAt": new Date().toISOString(),
-        },
-      }),
-    );
-    await setTranslationStatus(assetId, targetLanguage, "ready");
+    try {
+      await docClient.send(
+        new UpdateCommand({
+          TableName: ASSETS_TABLE,
+          Key: { assetId },
+          UpdateExpression:
+            "SET #translations.#language = :uri, originalLanguage = if_not_exists(originalLanguage, :original), " +
+            "#statuses.#language = :ready, updatedAt = :updatedAt",
+          ConditionExpression:
+            "attribute_exists(#pk) AND transcriptionVersion = :version AND #transcriptionStatus = :ready",
+          ExpressionAttributeNames: {
+            "#translations": "translations",
+            "#statuses": "translationStatuses",
+            "#language": targetLanguage,
+            "#pk": "assetId",
+            "#transcriptionStatus": "transcriptionStatus",
+          },
+          ExpressionAttributeValues: {
+            ":uri": translationUri,
+            ":original": originalLanguage,
+            ":ready": "ready",
+            ":version": transcriptionVersion,
+            ":updatedAt": new Date().toISOString(),
+          },
+        }),
+      );
+    } catch (err) {
+      if (!isConditionalFailure(err)) throw err;
+      await s3Client.send(
+        new DeleteObjectCommand({ Bucket: BUCKET_NAME, Key: s3Key }),
+      );
+      writtenKey = null;
+      console.log(
+        `[translateCaptions worker] discarded result for superseded source ${transcriptionVersion}`,
+      );
+      return;
+    }
   } catch (err) {
     console.error("[translateCaptions worker]", err);
     if (assetId) {
@@ -312,10 +439,16 @@ async function translateWorker(event: TranslateWorkerEvent): Promise<void> {
         assetId,
         targetLanguage,
         "failed",
+        transcriptionVersion,
         message.slice(0, 500),
       ).catch((statusErr) =>
         console.error("[translateCaptions worker status]", statusErr),
       );
+    }
+    if (writtenKey && isConditionalFailure(err)) {
+      await s3Client
+        .send(new DeleteObjectCommand({ Bucket: BUCKET_NAME, Key: writtenKey }))
+        .catch(() => undefined);
     }
     throw err;
   }
@@ -351,6 +484,21 @@ async function handleApi(
     const { project, asset } = await getProjectAndAsset(projectId);
     if (!project) return json(404, { error: "Project not found" });
     if (!asset) return json(404, { error: "Asset not found" });
+    if (asset.transcriptionStatus === "pending") {
+      return json(409, {
+        error: "Original transcript is still being prepared",
+      });
+    }
+    if (!asset.transcriptionUrl) {
+      return json(409, { error: "Original transcript is not ready yet" });
+    }
+    const transcriptionVersion = await ensureTranscriptionVersion(asset);
+    const originalLanguage =
+      inferOriginalTranscriptLanguage({
+        assetId: String(asset.assetId),
+        originalLanguage: asset.originalLanguage,
+        transcriptionUrl: asset.transcriptionUrl,
+      }) || "und";
 
     const existing =
       asset.translations && typeof asset.translations === "object"
@@ -358,35 +506,37 @@ async function handleApi(
         : {};
 
     if (existing[targetLanguage]) {
-      await setTranslationStatus(asset.assetId, targetLanguage, "ready");
+      await setTranslationStatus(
+        asset.assetId,
+        targetLanguage,
+        "ready",
+        transcriptionVersion,
+      );
       return json(200, {
         language: targetLanguage,
-        sourceLanguage: normalizeLanguageCode(
-          String(asset.originalLanguage || "und"),
-        ),
+        sourceLanguage: originalLanguage,
         status: "ready",
         cached: true,
+        transcriptionVersion,
         translationUrl: await presignS3Uri(existing[targetLanguage]),
       });
     }
-    if (!asset.transcriptionUrl) {
-      return json(409, { error: "Original transcript is not ready yet" });
-    }
-
-    const originalLanguage = normalizeLanguageCode(
-      String(asset.originalLanguage || "und"),
-    );
     if (targetLanguage === originalLanguage) {
       return json(400, { error: "Target language is the original language" });
     }
 
-    const claimed = await claimTranslation(asset.assetId, targetLanguage);
+    const claimed = await claimTranslation(
+      asset.assetId,
+      targetLanguage,
+      transcriptionVersion,
+    );
     if (claimed) {
       if (!TRANSLATE_FUNCTION_NAME) {
         await setTranslationStatus(
           asset.assetId,
           targetLanguage,
           "failed",
+          transcriptionVersion,
           "Translation worker is not configured",
         );
         return json(500, { error: "Translation worker is not configured" });
@@ -401,6 +551,7 @@ async function handleApi(
                 kind: "translate-captions-worker",
                 projectId,
                 targetLanguage,
+                transcriptionVersion,
               } satisfies TranslateWorkerEvent),
             ),
           }),
@@ -410,6 +561,7 @@ async function handleApi(
           asset.assetId,
           targetLanguage,
           "failed",
+          transcriptionVersion,
           "Could not start translation worker",
         );
         throw err;
@@ -421,6 +573,7 @@ async function handleApi(
       sourceLanguage: originalLanguage,
       status: "pending",
       alreadyPending: !claimed,
+      transcriptionVersion,
     });
   } catch (err) {
     console.error("[translateCaptions]", err);

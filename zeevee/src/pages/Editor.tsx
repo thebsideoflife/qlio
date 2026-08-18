@@ -48,6 +48,10 @@ import {
 } from "lucide-react";
 import { getEffectiveKeyframes } from "@/remotion/types";
 import type { AspectRatio } from "@/remotion/types";
+import {
+  groupWordsForTranscript,
+  languageLabel,
+} from "@/lib/transcript";
 
 function platformToAspectRatio(platform: string): AspectRatio {
   if (platform === "tv") return "16:9";
@@ -885,56 +889,6 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
-// Group words into chunks of ~10 seconds each
-function groupWordsIntoChunks(
-  words: Array<{ start: number; end: number; value: string }>,
-  chunkDuration = 10,
-): Array<{
-  startTime: number;
-  endTime: number;
-  words: Array<{ start: number; end: number; value: string }>;
-}> {
-  if (words.length === 0) return [];
-
-  const chunks: Array<{
-    startTime: number;
-    endTime: number;
-    words: Array<{ start: number; end: number; value: string }>;
-  }> = [];
-
-  let currentChunk: {
-    startTime: number;
-    endTime: number;
-    words: Array<{ start: number; end: number; value: string }>;
-  } | null = null;
-
-  for (const word of words) {
-    if (!currentChunk) {
-      currentChunk = {
-        startTime: word.start,
-        endTime: word.end,
-        words: [word],
-      };
-    } else if (word.start - currentChunk.startTime < chunkDuration) {
-      currentChunk.words.push(word);
-      currentChunk.endTime = word.end;
-    } else {
-      chunks.push(currentChunk);
-      currentChunk = {
-        startTime: word.start,
-        endTime: word.end,
-        words: [word],
-      };
-    }
-  }
-
-  if (currentChunk) {
-    chunks.push(currentChunk);
-  }
-
-  return chunks;
-}
-
 function TranscriptSkeleton() {
   return (
     <div className="space-y-4" aria-busy="true" aria-label="Transcribing audio">
@@ -979,6 +933,9 @@ function TranscriptPanel({
   const dispatch = useDispatch();
   // Use transcriptWords from Redux (includes edits) instead of prop
   const transcription = useSelector((state: RootState) => state.editor.transcriptWords);
+  const originalLanguage = useSelector(
+    (state: RootState) => state.editor.originalLanguage,
+  );
   const transcriptionStatus = useSelector(
     (state: RootState) => state.editor.transcriptionStatus,
   );
@@ -1044,11 +1001,12 @@ function TranscriptPanel({
     );
   }, [transcription, segments, previewMode]);
 
-  // Memoize chunks - expensive operation that shouldn't run on every frame
-  const chunks = React.useMemo(
-    () => groupWordsIntoChunks(filteredTranscription),
+  // Display grouping never changes the short caption lines used by video/export.
+  const wordCards = React.useMemo(
+    () => groupWordsForTranscript(filteredTranscription),
     [filteredTranscription],
   );
+  const hasTranscript = wordCards.length > 0;
 
   // Memoize total duration calculation
   const shownDuration = React.useMemo(
@@ -1070,6 +1028,7 @@ function TranscriptPanel({
               : previewMode
                 ? "Preview Transcript"
                 : "Full Transcript"}
+            {originalLanguage ? ` · ${languageLabel(originalLanguage)}` : ""}
           </span>
           <div className="flex items-center gap-3">
             {transcription.length > 0 && (
@@ -1102,9 +1061,9 @@ function TranscriptPanel({
         </div>
       )}
 
-      {chunks.length > 0 ? (
+      {hasTranscript ? (
         <div className="space-y-4">
-          {chunks.map((chunk, chunkIdx) => {
+          {wordCards.map((chunk, chunkIdx) => {
             const isChunkActive =
               currentTime >= chunk.startTime && currentTime <= chunk.endTime;
 
