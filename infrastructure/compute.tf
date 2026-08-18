@@ -88,10 +88,13 @@ data "aws_iam_policy_document" "lambda_policy" {
       "${aws_dynamodb_table.render_jobs.arn}/index/*"
     ]
   }
-  # S3 read access for Remotion bucket (presigning download URLs)
+  # S3 read access for Remotion + copied render outputs (presigning download URLs)
   statement {
-    actions   = ["s3:GetObject"]
-    resources = ["arn:aws:s3:::remotionlambda-*/*"]
+    actions = ["s3:GetObject"]
+    resources = [
+      "arn:aws:s3:::remotionlambda-*/*",
+      "${aws_s3_bucket.renders.arn}/*",
+    ]
   }
   # Allow Lambda to invoke other Lambdas (for split -> indexChunks flow)
   statement {

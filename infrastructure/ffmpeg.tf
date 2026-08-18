@@ -144,7 +144,7 @@ resource "aws_lambda_function" "stitch_segments" {
     variables = {
       RENDER_JOBS_TABLE      = aws_dynamodb_table.render_jobs.name
       MEDIA_BUCKET           = aws_s3_bucket.media.id
-      REMOTION_SERVE_URL     = "https://remotionlambda-uswest2-0g1upoverr.s3.us-west-2.amazonaws.com/sites/zeevee-renderer/index.html"
+      REMOTION_SERVE_URL     = "https://${var.remotion_lambda_bucket}.s3.${var.aws_region}.amazonaws.com/sites/zeevee-renderer/index.html"
       REMOTION_FUNCTION_NAME = "remotion-render-4-0-387-mem2048mb-disk2048mb-240sec"
       AWS_REGION_NAME        = var.aws_region
     }

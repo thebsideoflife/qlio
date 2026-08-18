@@ -23,6 +23,12 @@ variable "stage" {
   default     = "dev"
 }
 
+variable "remotion_lambda_bucket" {
+  description = "S3 bucket created by Remotion Lambda for site + render artifacts"
+  type        = string
+  default     = "remotionlambda-uswest2-0g1upoverr"
+}
+
 variable "twelve_labs_index_id" {
   description = "The Index ID from Twelve Labs"
   type        = string

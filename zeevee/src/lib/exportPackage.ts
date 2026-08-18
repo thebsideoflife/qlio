@@ -154,6 +154,17 @@ export function localizeExportMetadataDocument(
   return localized;
 }
 
+export function applyFreshVideoUrls(
+  scenes: ExportPackageSceneInput[],
+  freshBySegmentId: ReadonlyMap<string, string>,
+): ExportPackageSceneInput[] {
+  if (freshBySegmentId.size === 0) return scenes;
+  return scenes.map((scene) => {
+    const videoUrl = freshBySegmentId.get(scene.segmentId);
+    return videoUrl ? { ...scene, videoUrl } : scene;
+  });
+}
+
 function triggerBlobDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -168,7 +179,11 @@ async function fetchAssetBlob(
   maxBytes: number,
   signal?: AbortSignal,
 ): Promise<{ blob: Blob; bytes: number }> {
-  const response = await fetch(url, { mode: "cors", signal });
+  const response = await fetch(url, {
+    mode: "cors",
+    credentials: "omit",
+    signal,
+  });
   if (!response.ok) {
     throw new Error(`Download failed (${response.status})`);
   }
@@ -233,6 +248,9 @@ export interface DownloadExportPackageParams {
  *     scene_01_{Scene}.jpg
  *     {Title} Video Scenes/{Scene}.mp4
  *     {kebab-title}-metadata.json
+ *
+ * Scene MP4s are fetched with CORS because JSZip needs the bytes. Per-scene
+ * downloads in the export panel use an <a> navigation instead and do not.
  */
 export async function downloadExportPackage(
   params: DownloadExportPackageParams,
