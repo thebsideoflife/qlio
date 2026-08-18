@@ -97,6 +97,10 @@ echo ""
 
 # Step 4: Apply all infrastructure
 echo "[4/4] Applying infrastructure..."
+if [ ! -f infrastructure/layers/ffmpeg-layer.zip ]; then
+  echo "  FFmpeg layer zip missing; building layer..."
+  bash ./build-ffmpeg-layer.sh
+fi
 cd infrastructure
 tofu apply "${TOFU_VAR_ARGS[@]}" -auto-approve
 cd ..

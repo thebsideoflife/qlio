@@ -548,13 +548,24 @@ resource "aws_lambda_function" "generate_segments" {
 }
 
 # --- FFmpeg Lambda Layer ---
-# Built by running ./build-ffmpeg-layer.sh before tofu apply
+# Built by running ./build-ffmpeg-layer.sh before tofu apply.
+# Published via S3 because the static zip exceeds Lambda's direct-upload limit.
+resource "aws_s3_object" "ffmpeg_layer_zip" {
+  bucket = aws_s3_bucket.media.id
+  key    = "lambda-layers/ffmpeg-layer.zip"
+  source = "${path.module}/layers/ffmpeg-layer.zip"
+  etag   = filemd5("${path.module}/layers/ffmpeg-layer.zip")
+}
+
 resource "aws_lambda_layer_version" "ffmpeg" {
-  filename            = "${path.module}/layers/ffmpeg-layer.zip"
   layer_name          = "${var.project_name}-ffmpeg"
+  s3_bucket           = aws_s3_bucket.media.bucket
+  s3_key              = aws_s3_object.ffmpeg_layer_zip.key
   compatible_runtimes = ["nodejs20.x"]
   description         = "Static FFmpeg binary for video segment cutting"
   source_code_hash    = filebase64sha256("${path.module}/layers/ffmpeg-layer.zip")
+
+  depends_on = [aws_s3_object.ffmpeg_layer_zip]
 }
 
 # --- Analyze Framing (Smart Autoframing with Gemini) ---
