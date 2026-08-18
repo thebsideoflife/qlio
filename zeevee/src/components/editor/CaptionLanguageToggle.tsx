@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
-import { Loader2, RotateCcw } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import type { RootState } from "@/store/store";
 import {
   applyTranslatedCaptionLanguage,
@@ -18,20 +18,12 @@ import {
   parseTranscriptPayload,
   type TranslateTarget,
 } from "@/lib/transcript";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-function friendlyTranslateError(raw: string): string {
-  if (/length mismatch/i.test(raw)) {
-    return "Translation couldn’t keep every caption line. Try again.";
-  }
-  if (/target language is the original/i.test(raw)) {
-    return "Captions are already in that language.";
-  }
-  if (/original transcript is not ready|transcription.*pending/i.test(raw)) {
-    return "The original transcript is still being prepared.";
-  }
-  return raw;
+const MAX_TRANSLATION_ATTEMPTS = 3;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function loadTranslation(url: string) {
@@ -44,6 +36,42 @@ async function loadTranslation(url: string) {
     throw new Error("Translated captions are empty");
   }
   return lines;
+}
+
+async function resolveTranslation(params: {
+  projectId: string;
+  assetId: string;
+  target: TranslateTarget;
+  translations: Record<string, string>;
+  transcriptionVersion: string | null;
+}) {
+  let url = params.translations[params.target];
+  let loadedVersion = params.transcriptionVersion;
+
+  if (typeof url === "string" && url.startsWith("http")) {
+    try {
+      const lines = await loadTranslation(url);
+      return { lines, url, loadedVersion };
+    } catch {
+      const refreshed = await getAsset(params.assetId);
+      const refreshedUrl = refreshed.translations?.[params.target];
+      if (typeof refreshedUrl !== "string") {
+        throw new Error("Stored translation is no longer available");
+      }
+      url = refreshedUrl;
+      loadedVersion = refreshed.transcriptionVersion || loadedVersion;
+      const lines = await loadTranslation(url);
+      return { lines, url, loadedVersion };
+    }
+  }
+
+  const result = await translateProjectCaptions(params.projectId, params.target);
+  loadedVersion = result.transcriptionVersion || loadedVersion;
+  url =
+    result.translationUrl ||
+    (await waitForCaptionTranslation(params.assetId, params.target));
+  const lines = await loadTranslation(url);
+  return { lines, url, loadedVersion };
 }
 
 export function CaptionLanguageToggle() {
@@ -67,8 +95,6 @@ export function CaptionLanguageToggle() {
   );
   const [translatingTo, setTranslatingTo] =
     useState<TranslateTarget | null>(null);
-  const [failedTarget, setFailedTarget] = useState<TranslateTarget | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const sourceLanguage = detectedOriginalLanguage(originalLanguage);
   const showingOriginal = isOriginalCaptionLanguage(
@@ -82,105 +108,80 @@ export function CaptionLanguageToggle() {
   const translationTargets = TRANSLATE_TARGETS.filter(
     (language) => language !== sourceLanguage,
   );
+  const disabled =
+    translatingTo !== null || transcriptionStatus === "pending";
 
   const switchToOriginal = () => {
     if (showingOriginal || translatingTo) return;
-    setError(null);
-    setFailedTarget(null);
     dispatch(setActiveCaptionLanguage({ language: "original" }));
   };
 
   const switchLanguage = async (target: TranslateTarget) => {
     if (target === selected || translatingTo) return;
-    setError(null);
-    setFailedTarget(null);
 
     if (target === sourceLanguage) {
       dispatch(setActiveCaptionLanguage({ language: target }));
       return;
     }
-    if (!projectId || !assetId) {
-      setError("The project is still loading.");
-      setFailedTarget(target);
-      return;
-    }
-    if (transcriptionStatus !== "ready") {
-      setError("The original transcript is still being prepared.");
-      setFailedTarget(target);
-      return;
-    }
+    if (!projectId || !assetId || transcriptionStatus !== "ready") return;
 
     setTranslatingTo(target);
     try {
-      let url = translations[target];
-      let lines;
-      let loadedVersion = transcriptionVersion;
-
-      if (typeof url === "string" && url.startsWith("http")) {
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= MAX_TRANSLATION_ATTEMPTS; attempt++) {
         try {
-          lines = await loadTranslation(url);
-        } catch {
-          const refreshed = await getAsset(assetId);
-          const refreshedUrl = refreshed.translations?.[target];
-          if (typeof refreshedUrl !== "string") {
-            throw new Error("Stored translation is no longer available");
+          const { lines, url, loadedVersion } = await resolveTranslation({
+            projectId,
+            assetId,
+            target,
+            translations,
+            transcriptionVersion,
+          });
+          dispatch(
+            applyTranslatedCaptionLanguage({
+              language: target,
+              lines,
+              translationUrl: url,
+              transcriptionVersion: loadedVersion,
+            }),
+          );
+          return;
+        } catch (err) {
+          lastError = err;
+          if (attempt < MAX_TRANSLATION_ATTEMPTS) {
+            await sleep(400 * attempt);
           }
-          url = refreshedUrl;
-          loadedVersion =
-            refreshed.transcriptionVersion || loadedVersion;
-          lines = await loadTranslation(url);
         }
-      } else {
-        const result = await translateProjectCaptions(projectId, target);
-        loadedVersion = result.transcriptionVersion || loadedVersion;
-        url =
-          result.translationUrl ||
-          (await waitForCaptionTranslation(assetId, target));
-        lines = await loadTranslation(url);
       }
-
-      dispatch(
-        applyTranslatedCaptionLanguage({
-          language: target,
-          lines,
-          translationUrl: url,
-          transcriptionVersion: loadedVersion,
-        }),
-      );
+      throw lastError;
     } catch (err) {
-      const axiosError = err as { response?: { data?: { error?: string } } };
-      setError(
-        friendlyTranslateError(
-          axiosError.response?.data?.error ||
-            (err instanceof Error ? err.message : "Translation failed"),
-        ),
-      );
-      setFailedTarget(target);
+      console.warn("[captions] translation failed after retries:", err);
+      dispatch(setActiveCaptionLanguage({ language: "original" }));
     } finally {
       setTranslatingTo(null);
     }
   };
 
   return (
-    <div className="space-y-2.5">
+    <div className="space-y-2">
       <div
         className={cn(
-          "grid rounded-lg border-2 border-border bg-background p-1",
-          translationTargets.length === 2 ? "grid-cols-3" : "grid-cols-2",
+          "inline-flex w-full rounded-lg bg-muted p-1",
+          translationTargets.length === 2 ? "grid grid-cols-3" : "grid grid-cols-2",
         )}
         aria-label="Caption language"
       >
         <button
           type="button"
           aria-pressed={showingOriginal}
-          disabled={translatingTo !== null || transcriptionStatus === "pending"}
+          disabled={disabled}
           onClick={switchToOriginal}
           className={cn(
-            "flex h-9 items-center justify-center rounded-md text-sm font-bold transition-colors",
+            "h-8 rounded-md text-xs font-semibold transition-colors",
             showingOriginal
-              ? "bg-blue-600 text-white shadow-sm"
-              : "text-muted-foreground hover:bg-muted hover:text-foreground",
-            "disabled:cursor-not-allowed disabled:opacity-60",
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground",
+            disabled && "cursor-not-allowed opacity-60",
           )}
         >
           Original
@@ -193,17 +194,17 @@ export function CaptionLanguageToggle() {
               key={language}
               type="button"
               aria-pressed={active}
-              disabled={translatingTo !== null || transcriptionStatus === "pending"}
+              disabled={disabled}
               onClick={() => void switchLanguage(language)}
               className={cn(
-                "flex h-9 items-center justify-center gap-1.5 rounded-md text-sm font-bold transition-colors",
+                "flex h-8 items-center justify-center gap-1 rounded-md text-xs font-semibold transition-colors",
                 active
-                  ? "bg-blue-600 text-white shadow-sm"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                "disabled:cursor-not-allowed disabled:opacity-60",
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+                disabled && "cursor-not-allowed opacity-60",
               )}
             >
-              {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {loading && <Loader2 className="h-3 w-3 animate-spin" />}
               {language === "en" ? "English" : "Español"}
             </button>
           );
@@ -211,27 +212,9 @@ export function CaptionLanguageToggle() {
       </div>
 
       {translatingTo && (
-        <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          Translating the full video…
+        <p className="text-[11px] text-muted-foreground">
+          Translating captions…
         </p>
-      )}
-      {error && (
-        <div className="flex items-start justify-between gap-2">
-          <p className="text-xs font-medium text-red-500">{error}</p>
-          {failedTarget && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-7 shrink-0 gap-1 px-2 text-xs"
-              onClick={() => void switchLanguage(failedTarget)}
-            >
-              <RotateCcw className="h-3 w-3" />
-              Retry
-            </Button>
-          )}
-        </div>
       )}
     </div>
   );

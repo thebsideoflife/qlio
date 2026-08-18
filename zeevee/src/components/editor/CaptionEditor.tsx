@@ -23,7 +23,6 @@ import { Upload, Palette, X, Loader2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { STARDOS_STENCIL_FONT_FAMILY } from "@/remotion/loadCaptionFonts";
 import { getAsset, retryAssetTranscription } from "@/services/api";
-import { detectedOriginalLanguage, languageLabel } from "@/lib/transcript";
 import { CaptionLanguageToggle } from "@/components/editor/CaptionLanguageToggle";
 
 const FONTS = [
@@ -103,8 +102,6 @@ export function CaptionEditor() {
   const translations = useSelector(
     (state: RootState) => state.editor.translations,
   );
-
-  const detectedOriginal = detectedOriginalLanguage(originalLanguage);
 
   const textColor = style.color || "#ffffff";
   const highlightColor = style.highlightColor || "#fbbf24";
@@ -229,17 +226,15 @@ export function CaptionEditor() {
         />
       </div>
 
-      <div className="space-y-3 p-4 bg-muted/40 rounded-xl border-2 border-border">
+      <div className="space-y-3">
         <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
           Language
         </Label>
         {transcriptionStatus === "pending" && (
-          <div className="space-y-2.5" aria-busy="true">
-            <p className="text-xs text-muted-foreground font-medium flex items-center gap-2">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Transcribing original audio…
-            </p>
-          </div>
+          <p className="text-xs text-muted-foreground font-medium flex items-center gap-2">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Transcribing original audio…
+          </p>
         )}
         {transcriptionStatus === "failed" && (
           <div className="space-y-2">
@@ -257,27 +252,18 @@ export function CaptionEditor() {
             </Button>
           </div>
         )}
-        {transcriptionStatus === "ready" && (
-          <p className="text-xs text-muted-foreground font-medium">
-            {detectedOriginal
-              ? `Detected original: ${languageLabel(detectedOriginal)}`
-              : "Original language not detected"}
-          </p>
-        )}
         {transcriptionStatus !== "failed" && <CaptionLanguageToggle />}
-        {transcriptionStatus === "ready" && (
-          <div className="border-t border-border pt-3">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="text-xs h-8"
-              disabled={!assetId}
-              onClick={() => void handleRetryTranscription()}
-            >
-              Re-transcribe
-            </Button>
-          </div>
+        {import.meta.env.DEV && transcriptionStatus === "ready" && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="text-xs h-8"
+            disabled={!assetId}
+            onClick={() => void handleRetryTranscription()}
+          >
+            Re-transcribe
+          </Button>
         )}
         {translateError && (
           <p className="text-xs text-red-500 font-medium">{translateError}</p>
