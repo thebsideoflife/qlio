@@ -518,7 +518,7 @@ export default function Editor() {
           <div className="flex-1 min-h-0 overflow-hidden bg-muted flex items-center justify-center">
             <Skeleton className="w-[80%] aspect-video" />
           </div>
-          <div className="shrink-0 h-[clamp(12rem,24vh,20rem)] border-t bg-card p-2">
+          <div className="shrink-0 h-36 border-t bg-card p-2">
             <Skeleton className="w-full h-full" />
           </div>
         </div>
@@ -674,7 +674,7 @@ export default function Editor() {
         >
           <div className="flex h-full min-h-0 items-stretch justify-center gap-2 p-4">
             {/* Matches the zoom column so the frame stays optically centered. */}
-            <div className="w-[3.5rem] shrink-0" aria-hidden />
+            <div className="w-[4.5rem] shrink-0" aria-hidden />
 
             <div
               className="flex min-h-0 min-w-0 flex-1 items-center justify-center"
@@ -690,7 +690,7 @@ export default function Editor() {
             </div>
 
             <div
-              className="flex h-full w-[3.5rem] shrink-0 flex-col items-stretch justify-center gap-1.5"
+              className="flex h-full w-[4.5rem] shrink-0 flex-col items-stretch justify-center gap-1.5"
               onClick={(e) => e.stopPropagation()}
               onMouseDown={(e) => e.stopPropagation()}
             >
@@ -718,7 +718,7 @@ export default function Editor() {
                     : "Square Top portrait mode"}
                 </TooltipContent>
               </Tooltip>
-              <div className="h-52 min-h-0 max-h-[calc(100%-2.5rem)] rounded-2xl border border-zinc-600/70 bg-zinc-900/80 px-1 py-2.5 shadow-md backdrop-blur-md">
+              <div className="h-72 min-h-0 max-h-[calc(100%-2.5rem)] rounded-2xl border border-zinc-600/70 bg-zinc-900/80 px-1 py-2.5 shadow-md backdrop-blur-md">
                 <ZoomSlider
                   value={displayZoom}
                   canvasAspect={aspectRatioValue}
@@ -733,13 +733,11 @@ export default function Editor() {
 
         {/* Timeline */}
         <div className="shrink-0 border-t border-border bg-card">
-          <div className="h-[clamp(12rem,24vh,20rem)]">
-            <Timeline
-              videoRef={videoRef}
-              previewMode={previewMode}
-              onPreviewModeChange={setPreviewMode}
-            />
-          </div>
+          <Timeline
+            videoRef={videoRef}
+            previewMode={previewMode}
+            onPreviewModeChange={setPreviewMode}
+          />
         </div>
       </div>
 

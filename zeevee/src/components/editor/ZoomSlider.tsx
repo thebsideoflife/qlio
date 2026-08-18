@@ -110,7 +110,7 @@ export function ZoomSlider({
                   onChange(snap.zoom);
                 }}
                 className={cn(
-                  "absolute right-1.5 text-[9px] leading-[11px] tabular-nums tracking-wide whitespace-nowrap",
+                  "absolute right-1.5 text-sm font-semibold leading-none tabular-nums tracking-wide whitespace-nowrap",
                   "transition-colors hover:text-foreground",
                   i === activeIndex
                     ? "text-foreground font-medium"
