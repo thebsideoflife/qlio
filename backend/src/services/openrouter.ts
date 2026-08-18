@@ -207,6 +207,15 @@ function translationLanguageName(code: string): string {
   return languageLabel(normalized);
 }
 
+function alignTranslationBatch(
+  source: string[],
+  translated: string[],
+): string[] {
+  if (translated.length === source.length) return translated;
+  if (translated.length > source.length) return translated.slice(0, source.length);
+  return [...translated, ...source.slice(translated.length)];
+}
+
 export async function translateCaptionLines(params: {
   apiKey: string;
   sourceLanguage: string;
@@ -283,15 +292,18 @@ export async function translateCaptionLines(params: {
           );
         }
         if (translated && translated.length !== batch.length) {
-          lastError = new Error(
-            `Translation length mismatch: got ${translated.length}, expected ${batch.length}`,
-          );
-          translated = null;
           if (attempt < STT_RETRIES) {
+            lastError = new Error(
+              `Translation length mismatch: got ${translated.length}, expected ${batch.length}`,
+            );
+            translated = null;
             await sleep(1000 * 2 ** (attempt - 1));
             continue;
           }
-          throw lastError;
+          console.warn(
+            `[translate] length mismatch after ${STT_RETRIES} attempts; aligning ${translated.length} -> ${batch.length}`,
+          );
+          translated = alignTranslationBatch(batch, translated);
         }
         break;
       } catch (err) {
@@ -312,9 +324,10 @@ export async function translateCaptionLines(params: {
       throw lastError || new Error("Translation batch failed");
     }
     if (translated.length !== batch.length) {
-      throw new Error(
-        `Translation length mismatch: got ${translated.length}, expected ${batch.length}`,
+      console.warn(
+        `[translate] aligning batch length ${translated.length} -> ${batch.length}`,
       );
+      translated = alignTranslationBatch(batch, translated);
     }
     out.push(...translated);
   }
