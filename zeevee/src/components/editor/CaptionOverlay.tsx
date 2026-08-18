@@ -24,6 +24,9 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
   const { enabled, style } = useSelector(
     (state: RootState) => state.editor.captionSettings,
   );
+  const transcriptionStatus = useSelector(
+    (state: RootState) => state.editor.transcriptionStatus,
+  );
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -154,6 +157,40 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
+      {!activeCaption && transcriptionStatus === "pending" && (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            left: `${style.position.x}%`,
+            top: `${style.position.y}%`,
+            transform: "translate(-50%, -50%)",
+            width: `${style.maxWidth}%`,
+            display: "flex",
+            justifyContent: "center",
+          }}
+        >
+          <div
+            className="animate-pulse"
+            style={{
+              display: "inline-block",
+              padding: "0.45em 1.2em",
+              backgroundColor: style.backgroundColor,
+              borderRadius: 6,
+              minWidth: "55%",
+            }}
+          >
+            <div
+              style={{
+                height: `${(style.fontSize / 100) * REFERENCE_HEIGHT * 0.55}px`,
+                backgroundColor: "rgba(255,255,255,0.28)",
+                borderRadius: 4,
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {activeCaption && (
         <div
           style={{
@@ -187,27 +224,29 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
                   textAlign: "center",
                 }}
               >
-                {activeCaption.words
-                  .filter((word) => word.value !== "")
-                  .map((word, idx, filteredWords) => {
-                    const isActive =
-                      currentTime >= word.start && currentTime < word.end;
+                {activeCaption.words.length === 0
+                  ? activeCaption.text
+                  : activeCaption.words
+                      .filter((word) => word.value !== "")
+                      .map((word, idx, filteredWords) => {
+                        const isActive =
+                          currentTime >= word.start && currentTime < word.end;
 
-                    return (
-                      <span
-                        key={`${word.start}-${idx}`}
-                        style={{
-                          color:
-                            showAnimation && isActive
-                              ? highlightColor
-                              : style.color,
-                        }}
-                      >
-                        {word.value}
-                        {idx < filteredWords.length - 1 ? " " : ""}
-                      </span>
-                    );
-                  })}
+                        return (
+                          <span
+                            key={`${word.start}-${idx}`}
+                            style={{
+                              color:
+                                showAnimation && isActive
+                                  ? highlightColor
+                                  : style.color,
+                            }}
+                          >
+                            {word.value}
+                            {idx < filteredWords.length - 1 ? " " : ""}
+                          </span>
+                        );
+                      })}
               </span>
             </div>
 

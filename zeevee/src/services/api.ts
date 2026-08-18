@@ -208,6 +208,7 @@ export interface CaptionSettings {
     highlightColor?: string;
   };
   wordEdits?: Record<string, string>;
+  activeLanguage?: string;
 }
 
 export const updateProject = async (
@@ -232,6 +233,64 @@ export const updateProject = async (
   const response = await axios.patch(`${API_URL}/projects/${projectId}`, data, {
     headers: getAuthHeaders(),
   });
+  return response.data;
+};
+
+export const translateProjectCaptions = async (
+  projectId: string,
+  targetLanguage: string,
+): Promise<{
+  language: string;
+  sourceLanguage: string;
+  status: "pending" | "ready";
+  cached?: boolean;
+  alreadyPending?: boolean;
+  translationUrl?: string | null;
+}> => {
+  const response = await axios.post(
+    `${API_URL}/projects/${projectId}/captions/translate`,
+    { targetLanguage },
+    { headers: getAuthHeaders(), timeout: 15_000 },
+  );
+  return response.data;
+};
+
+export const waitForCaptionTranslation = async (
+  assetId: string,
+  targetLanguage: string,
+  timeoutMs = 16 * 60_000,
+): Promise<string> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const asset = await getAsset(assetId);
+      const url = asset.translations?.[targetLanguage];
+      if (typeof url === "string" && url.startsWith("http")) return url;
+
+      const status = asset.translationStatuses?.[targetLanguage];
+      if (status === "failed") {
+        throw new Error(
+          asset.translationErrors?.[targetLanguage] || "Translation failed",
+        );
+      }
+    } catch (err) {
+      if (!axios.isAxiosError(err)) throw err;
+      const status = err.response?.status;
+      if (status && status < 500 && status !== 429) throw err;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
+  }
+  throw new Error("Translation is still running. Try again shortly.");
+};
+
+export const retryAssetTranscription = async (
+  assetId: string,
+): Promise<{ assetId: string; transcriptionStatus: string }> => {
+  const response = await axios.post(
+    `${API_URL}/assets/${assetId}/transcribe`,
+    {},
+    { headers: getAuthHeaders() },
+  );
   return response.data;
 };
 

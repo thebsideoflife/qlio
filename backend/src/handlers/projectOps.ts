@@ -18,7 +18,7 @@ import type {
 import { pruneSegmentMetadata } from "../services/export-metadata";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { checkAuth } from "../utils/auth";
-import { presignS3Uri } from "../utils/s3";
+import { presignS3Uri, presignTranslationMap } from "../utils/s3";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -164,6 +164,8 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         const presignedUrl = await presignS3Uri(asset.transcriptionUrl);
         if (presignedUrl) asset.transcriptionUrl = presignedUrl;
       }
+
+      asset.translations = await presignTranslationMap(asset.translations);
     }
 
     // 5. Generate presigned URLs for stored segment renders

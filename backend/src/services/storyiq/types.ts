@@ -216,7 +216,7 @@ export interface JockeyV3Input {
 export interface StoryIQInput {
   assetId: string;
   goals: StoryIQGoals;
-  // Optional: S3 URI for cached transcript (faster than re-fetching from 12Labs)
+  // Whisper original on S3 (asset.transcriptionUrl). Required for legacy StoryIQ.
   transcriptS3Uri?: string;
   // Optional: video duration in seconds (from frontend or asset record)
   videoDuration?: number;

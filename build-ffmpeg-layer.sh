@@ -16,7 +16,8 @@ echo "Downloading static FFmpeg build..."
 curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o /tmp/ffmpeg-layer.tar.xz
 tar -xf /tmp/ffmpeg-layer.tar.xz -C /tmp
 cp /tmp/ffmpeg-*-amd64-static/ffmpeg "$LAYER_DIR/bin/ffmpeg"
-chmod +x "$LAYER_DIR/bin/ffmpeg"
+cp /tmp/ffmpeg-*-amd64-static/ffprobe "$LAYER_DIR/bin/ffprobe"
+chmod +x "$LAYER_DIR/bin/ffmpeg" "$LAYER_DIR/bin/ffprobe"
 rm -rf /tmp/ffmpeg-layer.tar.xz /tmp/ffmpeg-*-amd64-static
 
 echo "Creating layer zip..."

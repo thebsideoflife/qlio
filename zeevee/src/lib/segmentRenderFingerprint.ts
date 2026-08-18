@@ -32,6 +32,10 @@ export function computeSegmentRenderFingerprint(
     captions: {
       enabled: captionSettings.enabled,
       style: captionSettings.style,
+      ...(captionSettings.activeLanguage &&
+      captionSettings.activeLanguage !== "original"
+        ? { activeLanguage: captionSettings.activeLanguage }
+        : {}),
     },
     aspectRatio: globalFraming.aspectRatio,
     // Coerce to boolean so old projects (squareTop undefined) hash identically

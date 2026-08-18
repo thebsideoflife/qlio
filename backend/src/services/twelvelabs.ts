@@ -160,12 +160,6 @@ export interface AnalyzeResult {
   sourceChunks?: number[];
 }
 
-export interface TranscriptionSegment {
-  start: number; // Adjusted to original video timeline
-  end: number; // Adjusted to original video timeline
-  text: string;
-}
-
 export interface VideoMetadata {
   duration: number;
   width?: number;
@@ -488,118 +482,6 @@ export class TwelveLabsWrapper {
       data: results.join("\n\n"),
       sourceChunks,
     };
-  }
-
-  /**
-   * Get video transcription with timestamps adjusted to original video timeline
-   * For chunked videos, fetches all chunks IN PARALLEL
-   */
-  async getTranscription(assetId: string): Promise<TranscriptionSegment[]> {
-    const asset = await this.getAssetInfo(assetId);
-
-    if (!asset.isChunked) {
-      const videoId = asset.twelveLabsVideoId;
-      if (!videoId) {
-        throw new Error("No videoId available for asset");
-      }
-
-      // Fetch transcription from 12labs API
-      const response = await this.fetchTranscription(videoId);
-      return response;
-    }
-
-    // For chunked videos, fetch all transcriptions IN PARALLEL
-    const chunks = asset.chunks || [];
-    console.log(
-      `[12Labs] Getting transcription from ${chunks.length} chunks in parallel...`
-    );
-
-    const transcriptionPromises = chunks.map(async (chunk) => {
-      if (!chunk.videoId) return null;
-
-      try {
-        const chunkTranscription = await this.fetchTranscription(chunk.videoId);
-
-        // Adjust timestamps to original video timeline
-        return {
-          chunkIndex: chunk.chunkIndex,
-          segments: chunkTranscription.map((segment) => ({
-            start: this.toOriginalTimestamp(chunk, segment.start),
-            end: this.toOriginalTimestamp(chunk, segment.end),
-            text: segment.text,
-          })),
-        };
-      } catch (err) {
-        console.error(
-          `Failed to get transcription for chunk ${chunk.chunkIndex}:`,
-          err
-        );
-        return null;
-      }
-    });
-
-    const results = await Promise.all(transcriptionPromises);
-
-    // Merge all segments
-    const allSegments: TranscriptionSegment[] = [];
-    for (const result of results) {
-      if (result) {
-        allSegments.push(...result.segments);
-      }
-    }
-
-    // Sort by start time and remove duplicates from chunk overlaps
-    allSegments.sort((a, b) => a.start - b.start);
-
-    // Remove duplicate segments from overlap regions
-    const deduped: TranscriptionSegment[] = [];
-    for (const segment of allSegments) {
-      const last = deduped[deduped.length - 1];
-      // Skip if this segment overlaps significantly with the previous one
-      if (last && segment.start < last.end - 1) {
-        continue;
-      }
-      deduped.push(segment);
-    }
-
-    return deduped;
-  }
-
-  /**
-   * Fetch transcription from 12labs API for a single video
-   * Includes timeout and retry logic
-   */
-  private async fetchTranscription(
-    videoId: string
-  ): Promise<TranscriptionSegment[]> {
-    try {
-      const video = await withRetry(
-        () =>
-          withTimeout(
-            this.client.indexes.videos.retrieve(this.indexId, videoId),
-            TWELVE_LABS_TIMEOUT_MS,
-            `fetchTranscription(${videoId})`
-          ),
-        `fetchTranscription(${videoId})`
-      );
-
-      // The transcription might be in different places depending on API version
-      const anyVideo = video as any;
-      const transcription = anyVideo.transcription || anyVideo.transcript || [];
-
-      if (!Array.isArray(transcription)) {
-        return [];
-      }
-
-      return transcription.map((seg: any) => ({
-        start: seg.start || seg.startTime || 0,
-        end: seg.end || seg.endTime || 0,
-        text: seg.text || seg.value || "",
-      }));
-    } catch (err) {
-      console.error(`Failed to fetch transcription for video ${videoId}:`, err);
-      return [];
-    }
   }
 
   /**

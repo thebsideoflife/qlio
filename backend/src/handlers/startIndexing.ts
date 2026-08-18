@@ -26,6 +26,7 @@ const CHUNK_TASKS_TABLE = process.env.CHUNK_TASKS_TABLE;
 const SECRET_ARN = process.env.SECRET_ARN!;
 const TWELVE_LABS_INDEX_ID = process.env.TWELVE_LABS_INDEX_ID!;
 const SPLIT_FUNCTION_NAME = process.env.SPLIT_FUNCTION_NAME;
+const TRANSCRIBE_FUNCTION_NAME = process.env.TRANSCRIBE_FUNCTION_NAME;
 
 // 12labs max video duration is 60 minutes (3600 seconds)
 // Only split if video exceeds 60 minutes (splitting adds complexity)
@@ -39,6 +40,67 @@ interface ChunkInfo {
   duration: number;
   taskId?: string;
   videoId?: string;
+}
+
+async function invokeWhisperTranscribe(
+  assetId: string,
+  bucket: string,
+  key: string,
+): Promise<void> {
+  if (!TRANSCRIBE_FUNCTION_NAME) {
+    console.warn("TRANSCRIBE_FUNCTION_NAME is not set; skipping Whisper");
+    return;
+  }
+  try {
+    try {
+      await docClient.send(
+        new UpdateCommand({
+          TableName: TABLE_NAME,
+          Key: { assetId },
+          UpdateExpression:
+            "SET transcriptionStatus = :pending, updatedAt = :updatedAt",
+          ConditionExpression:
+            "attribute_not_exists(transcriptionStatus) OR transcriptionStatus = :failed",
+          ExpressionAttributeValues: {
+            ":pending": "pending",
+            ":failed": "failed",
+            ":updatedAt": new Date().toISOString(),
+          },
+        }),
+      );
+    } catch (err) {
+      if ((err as { name?: string })?.name === "ConditionalCheckFailedException") {
+        console.log(`Whisper transcription already started for asset ${assetId}`);
+        return;
+      }
+      throw err;
+    }
+    await lambdaClient.send(
+      new InvokeCommand({
+        FunctionName: TRANSCRIBE_FUNCTION_NAME,
+        InvocationType: "Event",
+        Payload: Buffer.from(JSON.stringify({ assetId, bucket, key })),
+      }),
+    );
+    console.log(`Invoked Whisper transcribe for asset ${assetId}`);
+  } catch (err) {
+    console.error(`Failed to invoke Whisper transcribe for ${assetId}:`, err);
+    try {
+      await docClient.send(
+        new UpdateCommand({
+          TableName: TABLE_NAME,
+          Key: { assetId },
+          UpdateExpression: "SET transcriptionStatus = :ts, updatedAt = :ua",
+          ExpressionAttributeValues: {
+            ":ts": "failed",
+            ":ua": new Date().toISOString(),
+          },
+        }),
+      );
+    } catch (statusErr) {
+      console.error(`Failed to mark transcription failed for ${assetId}:`, statusErr);
+    }
+  }
 }
 
 /**
@@ -75,7 +137,18 @@ async function indexVideo(
 
 export const handler: Handler<S3Event> = async (event) => {
   try {
-    // 1. Get 12Labs API Key
+    // Start Whisper first. Transcription must not depend on TwelveLabs
+    // credentials or task creation succeeding.
+    for (const record of event.Records) {
+      const bucket = record.s3.bucket.name;
+      const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, " "));
+      if (!key.startsWith("chunks/")) {
+        const assetId = key.split("/")[1]?.split(".")[0];
+        if (assetId) await invokeWhisperTranscribe(assetId, bucket, key);
+      }
+    }
+
+    // TwelveLabs indexing is a separate best-effort pipeline.
     const secretVal = await secretsClient.send(
       new GetSecretValueCommand({ SecretId: SECRET_ARN }),
     );

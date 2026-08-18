@@ -1,5 +1,6 @@
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import type { TranscriptSegment } from "../services/storyiq/types";
+import { parseTranscriptJson } from "./transcript-format";
 
 const s3Client = new S3Client({});
 
@@ -22,12 +23,18 @@ export async function fetchTranscriptFromS3(
     throw new Error("Empty response from S3");
   }
 
-  const data = JSON.parse(bodyString);
-  return data.map((seg: Record<string, unknown>) => ({
-    startTime: (seg.start ?? seg.startTime ?? 0) as number,
-    endTime: (seg.end ?? seg.endTime ?? 0) as number,
-    text: String(seg.text ?? seg.value ?? ""),
-    speaker: typeof seg.speaker === "string" ? seg.speaker : undefined,
+  const parsed = parseTranscriptJson(JSON.parse(bodyString));
+  if (parsed.kind === "translation") {
+    return parsed.lines.map((line) => ({
+      startTime: line.startTime,
+      endTime: line.endTime,
+      text: line.text,
+    }));
+  }
+  return parsed.words.map((word) => ({
+    startTime: word.start,
+    endTime: word.end,
+    text: word.value,
   }));
 }
 

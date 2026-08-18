@@ -41,5 +41,13 @@ resource "aws_secretsmanager_secret" "gemini_api_key" {
   description = "API Key for Google Gemini"
 }
 
+# Created out of band (same pattern as Anthropic):
+# aws --profile zeevee --region us-west-2 secretsmanager create-secret \
+#   --name zeevee/openrouter-api-key \
+#   --secret-string 'sk-or-...'
+data "aws_secretsmanager_secret" "openrouter_api_key" {
+  name = "${var.project_name}/openrouter-api-key"
+}
+
 # We don't set the version/value here to keep it out of git.
 # User must manually set it in console: aws secretsmanager put-secret-value ...

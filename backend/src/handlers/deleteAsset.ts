@@ -174,23 +174,43 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         console.error("Error deleting video from S3:", err);
       }
 
-      // Delete transcription file
-      if (
-        asset.transcriptionUrl &&
-        asset.transcriptionUrl.startsWith("s3://")
-      ) {
-        try {
-          const transParts = asset.transcriptionUrl
-            .replace("s3://", "")
-            .split("/");
-          const transKey = transParts.slice(1).join("/");
-          console.log(`Deleting transcription from S3: ${transKey}`);
-          await s3Client.send(
-            new DeleteObjectCommand({ Bucket: bucket, Key: transKey })
-          );
-        } catch (err) {
-          console.error("Error deleting transcription from S3:", err);
+      // Delete transcriptions: legacy file and language-prefixed folder
+      try {
+        const transPrefix = `transcriptions/${assetId}`;
+        console.log(`Deleting transcriptions from S3: ${transPrefix}`);
+        const keys = new Set<string>([`${transPrefix}.json`]);
+        const listed = await s3Client.send(
+          new ListObjectsV2Command({
+            Bucket: bucket,
+            Prefix: `${transPrefix}/`,
+          }),
+        );
+        for (const obj of listed.Contents || []) {
+          if (obj.Key) keys.add(obj.Key);
         }
+        if (
+          asset.transcriptionUrl &&
+          typeof asset.transcriptionUrl === "string" &&
+          asset.transcriptionUrl.startsWith("s3://")
+        ) {
+          const transKey = asset.transcriptionUrl
+            .replace("s3://", "")
+            .split("/")
+            .slice(1)
+            .join("/");
+          if (transKey) keys.add(transKey);
+        }
+        const toDelete = [...keys];
+        if (toDelete.length > 0) {
+          await s3Client.send(
+            new DeleteObjectsCommand({
+              Bucket: bucket,
+              Delete: { Objects: toDelete.map((Key) => ({ Key })) },
+            }),
+          );
+        }
+      } catch (err) {
+        console.error("Error deleting transcriptions from S3:", err);
       }
 
       // Delete video chunks folder if this is a chunked video

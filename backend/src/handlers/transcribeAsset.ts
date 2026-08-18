@@ -1,0 +1,678 @@
+import { Handler } from "aws-lambda";
+import { Readable } from "stream";
+import { pipeline } from "stream/promises";
+import { createReadStream, createWriteStream } from "fs";
+import { open, readFile, unlink, mkdir, rm } from "fs/promises";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import * as path from "path";
+import {
+  S3Client,
+  GetObjectCommand,
+  PutObjectCommand,
+} from "@aws-sdk/client-s3";
+import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
+import {
+  getOpenRouterApiKey,
+  transcribeAudioChunk,
+  STT_RETRIES,
+  STT_TIMEOUT_MS,
+  WHISPER_MODEL,
+} from "../services/openrouter";
+import {
+  normalizeLanguageCode,
+  type CaptionWord,
+} from "../utils/transcript-format";
+import {
+  mapStoredChunkToVideoClock,
+  mergeChunkWords,
+  parseFfmpegStreamProbe,
+  parseFfprobeStreamProbe,
+  parseTranscribeHop,
+  planAudioChunks,
+  storedChunkMatchesPlan,
+  transcribeContinuationDecision,
+  MAX_TRANSCRIBE_HOPS,
+  WHISPER_SAMPLE_RATE,
+  type AudioChunkPlan,
+  type StoredWhisperChunk,
+} from "../utils/transcript-timing";
+import {
+  isEffectivelySilent,
+  parseWavInfo,
+  type PcmAudioLevel,
+  type WavInfo,
+} from "../utils/wav";
+
+const execFileAsync = promisify(execFile);
+
+const s3Client = new S3Client({});
+const lambdaClient = new LambdaClient({});
+const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  marshallOptions: { removeUndefinedValues: true },
+});
+
+const TABLE_NAME = process.env.TABLE_NAME!;
+const BUCKET_NAME = process.env.BUCKET_NAME!;
+const FFMPEG_PATH = process.env.FFMPEG_PATH || "/opt/bin/ffmpeg";
+const FFPROBE_PATH = process.env.FFPROBE_PATH || "/opt/bin/ffprobe";
+/** One atrim + one STT attempt + S3 put. Do not start a chunk inside this window. */
+const CHUNK_START_BUDGET_MS = STT_TIMEOUT_MS + 25_000;
+
+export type TranscribeAssetEvent = {
+  assetId: string;
+  bucket?: string;
+  key?: string;
+  /** Continuations already taken for this asset run. First invocation is 0. */
+  hop?: number;
+};
+
+function chunkKey(assetId: string, index: number): string {
+  return `transcriptions/${assetId}/chunks/${index}.json`;
+}
+
+function parseS3Uri(uri: string): { bucket: string; key: string } {
+  const match = uri.match(/^s3:\/\/([^/]+)\/(.+)$/);
+  if (!match) throw new Error(`Invalid S3 URI: ${uri}`);
+  return { bucket: match[1], key: match[2] };
+}
+
+function isS3NotFound(err: unknown): boolean {
+  const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+  return (
+    e.name === "NoSuchKey" ||
+    e.name === "NotFound" ||
+    e.$metadata?.httpStatusCode === 404
+  );
+}
+
+async function downloadS3ToFile(
+  bucket: string,
+  key: string,
+  dest: string,
+): Promise<void> {
+  const obj = await s3Client.send(
+    new GetObjectCommand({ Bucket: bucket, Key: key }),
+  );
+  if (!obj.Body) throw new Error(`Empty S3 object s3://${bucket}/${key}`);
+  await pipeline(obj.Body as Readable, createWriteStream(dest));
+}
+
+async function putJson(key: string, body: unknown): Promise<void> {
+  await s3Client.send(
+    new PutObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: key,
+      Body: JSON.stringify(body),
+      ContentType: "application/json",
+    }),
+  );
+}
+
+async function loadStoredChunk(
+  assetId: string,
+  index: number,
+): Promise<StoredWhisperChunk | null> {
+  try {
+    const obj = await s3Client.send(
+      new GetObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: chunkKey(assetId, index),
+      }),
+    );
+    const text = await obj.Body?.transformToString();
+    if (!text) return null;
+    return JSON.parse(text) as StoredWhisperChunk;
+  } catch (err) {
+    if (isS3NotFound(err)) return null;
+    throw err;
+  }
+}
+
+async function setTranscriptionStatus(
+  assetId: string,
+  status: "pending" | "ready" | "failed",
+  extra?: Record<string, unknown>,
+): Promise<void> {
+  const names: Record<string, string> = { "#ts": "transcriptionStatus" };
+  const values: Record<string, unknown> = {
+    ":ts": status,
+    ":ua": new Date().toISOString(),
+  };
+  let expr = "SET #ts = :ts, updatedAt = :ua";
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      const token = k.replace(/[^a-zA-Z]/g, "");
+      names[`#${token}`] = k;
+      values[`:${token}`] = v;
+      expr += `, #${token} = :${token}`;
+    }
+  }
+  await docClient.send(
+    new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { assetId },
+      UpdateExpression: expr,
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
+    }),
+  );
+}
+
+async function setTranscriptionReady(
+  assetId: string,
+  extra: { transcriptionUrl: string; originalLanguage: string },
+): Promise<void> {
+  await docClient.send(
+    new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { assetId },
+      UpdateExpression:
+        "SET #ts = :ts, transcriptionUrl = :url, originalLanguage = :lang, updatedAt = :ua " +
+        "REMOVE translations, translationStatuses, translationErrors, translationStartedAt",
+      ExpressionAttributeNames: { "#ts": "transcriptionStatus" },
+      ExpressionAttributeValues: {
+        ":ts": "ready",
+        ":url": extra.transcriptionUrl,
+        ":lang": extra.originalLanguage,
+        ":ua": new Date().toISOString(),
+      },
+    }),
+  );
+}
+
+async function probeWithFfmpeg(inputPath: string): Promise<string> {
+  try {
+    const { stderr } = await execFileAsync(FFMPEG_PATH, ["-hide_banner", "-i", inputPath], {
+      timeout: 30_000,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    return String(stderr || "");
+  } catch (err) {
+    const e = err as { stderr?: string; killed?: boolean };
+    if (e.killed) throw new Error("ffmpeg probe timed out");
+    return String(e.stderr || "");
+  }
+}
+
+async function probeMedia(inputPath: string) {
+  try {
+    const { stdout } = await execFileAsync(
+      FFPROBE_PATH,
+      [
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "format=start_time,duration:stream=start_time,sample_rate",
+        "-of",
+        "json",
+        inputPath,
+      ],
+      { timeout: 30_000, maxBuffer: 2 * 1024 * 1024 },
+    );
+    return parseFfprobeStreamProbe(String(stdout));
+  } catch (err) {
+    console.warn("[transcribe] ffprobe failed; using container timing fallback", err);
+    return parseFfmpegStreamProbe(await probeWithFfmpeg(inputPath));
+  }
+}
+
+async function readWavInfoFromFile(filePath: string) {
+  const fh = await open(filePath, "r");
+  try {
+    const header = Buffer.alloc(65_536);
+    const { bytesRead } = await fh.read(header, 0, header.length, 0);
+    return parseWavInfo(header.subarray(0, bytesRead));
+  } finally {
+    await fh.close();
+  }
+}
+
+async function measurePcm16Level(
+  filePath: string,
+  wav: WavInfo,
+): Promise<PcmAudioLevel> {
+  if (wav.bitsPerSample !== 16) {
+    throw new Error(`Cannot measure ${wav.bitsPerSample}-bit PCM audio`);
+  }
+
+  let peakAmplitude = 0;
+  let sumSquares = 0;
+  let sampleCount = 0;
+  let carry: Buffer | null = null;
+  const stream = createReadStream(filePath, {
+    start: wav.dataOffset,
+    end: wav.dataOffset + wav.dataBytes - 1,
+  });
+  for await (const rawChunk of stream) {
+    let chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
+    if (carry) {
+      chunk = Buffer.concat([carry, chunk]);
+      carry = null;
+    }
+    if (chunk.length % 2 !== 0) {
+      carry = chunk.subarray(chunk.length - 1);
+      chunk = chunk.subarray(0, chunk.length - 1);
+    }
+    for (let offset = 0; offset < chunk.length; offset += 2) {
+      const amplitude = Math.abs(chunk.readInt16LE(offset)) / 32768;
+      peakAmplitude = Math.max(peakAmplitude, amplitude);
+      sumSquares += amplitude * amplitude;
+      sampleCount += 1;
+    }
+  }
+  return {
+    peakAmplitude,
+    rmsAmplitude: sampleCount > 0 ? Math.sqrt(sumSquares / sampleCount) : 0,
+  };
+}
+
+function majority(values: string[]): string | undefined {
+  if (values.length === 0) return undefined;
+  const counts = new Map<string, number>();
+  for (const v of values) counts.set(v, (counts.get(v) || 0) + 1);
+  let best = values[0];
+  let bestN = 0;
+  for (const [k, n] of counts) {
+    if (n > bestN) {
+      best = k;
+      bestN = n;
+    }
+  }
+  return best;
+}
+
+function fingerprint(params: {
+  audioStartInVideoSec: number;
+  sampleRate: number;
+  totalSamples: number;
+}) {
+  return {
+    startInVideo: params.audioStartInVideoSec,
+    sampleRate: params.sampleRate,
+    totalSamples: params.totalSamples,
+  };
+}
+
+function continuationAbortMessage(
+  decision: "abort-no-progress" | "abort-max-hops",
+  remaining: number,
+  hop: number,
+  nextChunk: number,
+): string {
+  if (decision === "abort-max-hops") {
+    return `Transcription hit the continuation cap (${MAX_TRANSCRIBE_HOPS}) at chunk ${nextChunk} (hop ${hop})`;
+  }
+  return (
+    `Lambda low on time (${remaining}ms) before completing a Whisper chunk ` +
+    `(hop ${hop}, next=${nextChunk}); refusing to continue without progress`
+  );
+}
+
+async function invokeContinuation(
+  context: { invokedFunctionArn?: string },
+  payload: {
+    assetId: string;
+    bucket?: string;
+    key?: string;
+    hop: number;
+  },
+  nextChunk: number,
+  remaining: number,
+): Promise<{ assetId: string; continued: true; nextChunk: number; hop: number }> {
+  const arn = context.invokedFunctionArn;
+  if (!arn) {
+    throw new Error(
+      `Lambda low on time (${remaining}ms) at chunk ${nextChunk} and cannot self-invoke`,
+    );
+  }
+  console.log(
+    `[transcribe] low on time (${remaining}ms); continuing hop ${payload.hop} from chunk ${nextChunk}`,
+  );
+  await lambdaClient.send(
+    new InvokeCommand({
+      FunctionName: arn,
+      InvocationType: "Event",
+      Payload: Buffer.from(JSON.stringify(payload)),
+    }),
+  );
+  return {
+    assetId: payload.assetId,
+    continued: true,
+    nextChunk,
+    hop: payload.hop,
+  };
+}
+
+function finalizeWords(params: {
+  stored: StoredWhisperChunk[];
+  plans: AudioChunkPlan[];
+}): { words: CaptionWord[]; languages: string[]; heardText: string } {
+  const mapped: CaptionWord[] = [];
+  const languages: string[] = [];
+  let heardText = "";
+  for (const plan of params.plans) {
+    const chunk = params.stored[plan.index];
+    heardText += chunk.text || "";
+    if (chunk.language) languages.push(normalizeLanguageCode(chunk.language));
+    mapped.push(...mapStoredChunkToVideoClock(chunk, plan));
+  }
+  return { words: mergeChunkWords(mapped), languages, heardText };
+}
+
+export const handler: Handler<TranscribeAssetEvent> = async (event, context) => {
+  const assetId = event.assetId;
+  if (!assetId) throw new Error("assetId is required");
+  const hop = parseTranscribeHop(event.hop);
+  if (hop >= MAX_TRANSCRIBE_HOPS) {
+    throw new Error(
+      `Transcription hit the continuation cap (${MAX_TRANSCRIBE_HOPS})`,
+    );
+  }
+
+  const workDir = `/tmp/transcribe-${assetId}`;
+  await mkdir(workDir, { recursive: true });
+
+  try {
+    await setTranscriptionStatus(assetId, "pending");
+
+    const assetRes = await docClient.send(
+      new GetCommand({ TableName: TABLE_NAME, Key: { assetId } }),
+    );
+    const asset = assetRes.Item;
+    if (!asset) throw new Error(`Asset ${assetId} not found`);
+
+    let bucket = event.bucket;
+    let key = event.key;
+    if (!bucket || !key) {
+      if (typeof asset.s3VideoUrl === "string" && asset.s3VideoUrl.startsWith("s3://")) {
+        const parsed = parseS3Uri(asset.s3VideoUrl);
+        bucket = parsed.bucket;
+        key = parsed.key;
+      } else {
+        bucket = BUCKET_NAME;
+        key = `raw/${assetId}.mp4`;
+      }
+    }
+    if (!bucket || !key) {
+      throw new Error(`Could not resolve source video for asset ${assetId}`);
+    }
+
+    const sourcePath = path.join(workDir, "source");
+    const audioPath = path.join(workDir, "audio.wav");
+    console.log(`[transcribe] downloading s3://${bucket}/${key}`);
+    await downloadS3ToFile(bucket, key, sourcePath);
+
+    // Honor edit lists / audio delay: do not pass -ignore_editlist or -ss.
+    // Sample 0 of the WAV is the first presented audio sample.
+    const probe = await probeMedia(sourcePath);
+    const audioStartInVideoSec = probe.audioStartSec;
+    console.log(
+      `[transcribe] container duration=${probe.formatDurationSec}s ` +
+        `formatStart=${probe.formatStartSec}s audioStart=${audioStartInVideoSec}s ` +
+        `srcHz=${probe.audioSampleRate ?? "?"}`,
+    );
+
+    console.log("[transcribe] extracting 16 kHz mono PCM");
+    await execFileAsync(
+      FFMPEG_PATH,
+      [
+        "-y",
+        "-i",
+        sourcePath,
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        String(WHISPER_SAMPLE_RATE),
+        "-c:a",
+        "pcm_s16le",
+        audioPath,
+      ],
+      { timeout: 600_000, maxBuffer: 20 * 1024 * 1024 },
+    );
+    await unlink(sourcePath).catch(() => undefined);
+
+    const wav = await readWavInfoFromFile(audioPath);
+    if (wav.sampleRate !== WHISPER_SAMPLE_RATE || wav.channels !== 1) {
+      throw new Error(
+        `Unexpected WAV layout: ${wav.sampleRate} Hz ${wav.channels}ch`,
+      );
+    }
+    if (wav.samplesPerChannel < 1) {
+      throw new Error("Decoded audio is empty");
+    }
+    console.log(
+      `[transcribe] PCM samples=${wav.samplesPerChannel} ` +
+        `duration=${wav.durationSec.toFixed(6)}s ` +
+        `(not using container duration ${probe.formatDurationSec}s)`,
+    );
+
+    const plans = planAudioChunks({
+      totalSamples: wav.samplesPerChannel,
+      sampleRate: wav.sampleRate,
+    });
+    if (plans.length === 0) throw new Error("No audio chunks to transcribe");
+
+    const audioFp = fingerprint({
+      audioStartInVideoSec,
+      sampleRate: wav.sampleRate,
+      totalSamples: wav.samplesPerChannel,
+    });
+
+    const stored: Array<StoredWhisperChunk | undefined> = [];
+    let nextMissing = -1;
+    for (const plan of plans) {
+      const existing = await loadStoredChunk(assetId, plan.index);
+      if (
+        existing &&
+        storedChunkMatchesPlan(existing, plan, audioFp, WHISPER_MODEL)
+      ) {
+        stored[plan.index] = existing;
+      } else if (nextMissing < 0) {
+        nextMissing = plan.index;
+      }
+    }
+
+    const apiKey = nextMissing >= 0 ? await getOpenRouterApiKey() : "";
+    let wroteChunks = 0;
+
+    for (const plan of plans) {
+      if (stored[plan.index]) {
+        console.log(`[transcribe] chunk ${plan.index} reused from S3`);
+        continue;
+      }
+
+      const remaining = context.getRemainingTimeInMillis?.() ?? CHUNK_START_BUDGET_MS + 1;
+      const decision = transcribeContinuationDecision({
+        remainingMs: remaining,
+        budgetMs: CHUNK_START_BUDGET_MS,
+        wroteChunks,
+        hop,
+      });
+      if (decision === "continue") {
+        return invokeContinuation(
+          context,
+          { assetId, bucket, key, hop: hop + 1 },
+          plan.index,
+          remaining,
+        );
+      }
+      if (decision !== "run") {
+        throw new Error(
+          continuationAbortMessage(decision, remaining, hop, plan.index),
+        );
+      }
+
+      const chunkPath = path.join(workDir, `chunk-${plan.index}.wav`);
+      await execFileAsync(
+        FFMPEG_PATH,
+        [
+          "-y",
+          "-i",
+          audioPath,
+          "-af",
+          `atrim=start_sample=${plan.startSample}:end_sample=${plan.endSample},asetpts=PTS-STARTPTS`,
+          "-ac",
+          "1",
+          "-ar",
+          String(WHISPER_SAMPLE_RATE),
+          "-c:a",
+          "pcm_s16le",
+          chunkPath,
+        ],
+        { timeout: 120_000, maxBuffer: 5 * 1024 * 1024 },
+      );
+
+      const chunkWav = await readWavInfoFromFile(chunkPath);
+      const expected = plan.endSample - plan.startSample;
+      if (chunkWav.samplesPerChannel !== expected) {
+        throw new Error(
+          `Chunk ${plan.index} sample mismatch: wrote ${chunkWav.samplesPerChannel}, expected ${expected} ` +
+            `(start_sample=${plan.startSample} end_sample=${plan.endSample})`,
+        );
+      }
+
+      const audio = await readFile(chunkPath);
+      await unlink(chunkPath).catch(() => undefined);
+      console.log(
+        `[transcribe] chunk ${plan.index} samples ${plan.startSample}–${plan.endSample} ` +
+          `videoOrigin=${(audioStartInVideoSec + plan.startSec).toFixed(6)}s ` +
+          `(${audio.length} bytes)`,
+      );
+
+      const remainingForStt =
+        context.getRemainingTimeInMillis?.() ?? STT_TIMEOUT_MS + 5_000;
+      if (remainingForStt < STT_TIMEOUT_MS + 5_000) {
+        const sttDecision = transcribeContinuationDecision({
+          remainingMs: remainingForStt,
+          budgetMs: STT_TIMEOUT_MS + 5_000,
+          wroteChunks,
+          hop,
+        });
+        if (sttDecision === "continue") {
+          return invokeContinuation(
+            context,
+            { assetId, bucket, key, hop: hop + 1 },
+            plan.index,
+            remainingForStt,
+          );
+        }
+        if (sttDecision !== "run") {
+          throw new Error(
+            continuationAbortMessage(sttDecision, remainingForStt, hop, plan.index),
+          );
+        }
+      }
+      const maxAttempts = Math.max(
+        1,
+        Math.min(
+          STT_RETRIES,
+          Math.floor((remainingForStt - 5_000) / (STT_TIMEOUT_MS + 1_000)),
+        ),
+      );
+
+      const result = await transcribeAudioChunk({
+        apiKey,
+        audio,
+        filename: `chunk-${plan.index}.wav`,
+        format: "wav",
+        maxAttempts,
+      });
+
+      const raw: StoredWhisperChunk = {
+        index: plan.index,
+        model: WHISPER_MODEL,
+        audio: audioFp,
+        plan: {
+          startSample: plan.startSample,
+          endSample: plan.endSample,
+          overlapSamples: plan.overlapSamples,
+          outboundOverlapSamples: plan.outboundOverlapSamples,
+        },
+        language: result.language
+          ? normalizeLanguageCode(result.language)
+          : undefined,
+        text: result.text || "",
+        words: result.words,
+      };
+      await putJson(chunkKey(assetId, plan.index), raw);
+      stored[plan.index] = raw;
+      wroteChunks += 1;
+    }
+
+    const complete = plans.map((plan) => stored[plan.index]);
+    if (complete.some((c) => !c)) {
+      throw new Error("Missing Whisper chunk after transcription loop");
+    }
+    const { words, languages, heardText } = finalizeWords({
+      stored: complete as StoredWhisperChunk[],
+      plans,
+    });
+
+    if (words.length === 0 && heardText.trim().length > 0) {
+      throw new Error("Whisper returned text but no word timestamps");
+    }
+    if (words.length === 0 && wav.durationSec > 1) {
+      const level = await measurePcm16Level(audioPath, wav);
+      if (!isEffectivelySilent(level)) {
+        throw new Error(
+          `Whisper returned no words for non-silent audio ` +
+            `(peak=${level.peakAmplitude.toFixed(6)}, rms=${level.rmsAmplitude.toFixed(6)})`,
+        );
+      }
+      console.log(
+        `[transcribe] accepted silent audio (peak=${level.peakAmplitude.toFixed(6)}, ` +
+          `rms=${level.rmsAmplitude.toFixed(6)})`,
+      );
+    }
+
+    const language =
+      majority(languages) ||
+      (typeof asset.originalLanguage === "string"
+        ? normalizeLanguageCode(asset.originalLanguage)
+        : "und");
+
+    const body = {
+      language,
+      model: WHISPER_MODEL,
+      generatedAt: new Date().toISOString(),
+      audio: {
+        startInVideo: audioStartInVideoSec,
+        sampleRate: wav.sampleRate,
+        samples: wav.samplesPerChannel,
+        duration: wav.durationSec,
+      },
+      words,
+    };
+    const s3Key = `transcriptions/${assetId}/${language}.json`;
+    await putJson(s3Key, body);
+
+    const transcriptionUrl = `s3://${BUCKET_NAME}/${s3Key}`;
+    await setTranscriptionReady(assetId, {
+      transcriptionUrl,
+      originalLanguage: language,
+    });
+
+    console.log(
+      `[transcribe] wrote ${transcriptionUrl} (${words.length} words, lang=${language}, chunks=${plans.length}, hop=${hop})`,
+    );
+    return { assetId, language, words: words.length, transcriptionUrl };
+  } catch (err) {
+    console.error("[transcribe] failed:", err);
+    await setTranscriptionStatus(assetId, "failed").catch((statusErr) =>
+      console.error("[transcribe] failed to mark status:", statusErr),
+    );
+    throw err;
+  } finally {
+    await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+};

@@ -74,6 +74,9 @@ export default function Editor() {
   const selectedKeyframeId = useSelector(
     (state: RootState) => state.editor.selectedKeyframeId,
   );
+  const transcriptionStatus = useSelector(
+    (state: RootState) => state.editor.transcriptionStatus,
+  );
 
   // Local State
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -821,7 +824,13 @@ export default function Editor() {
                     title={tab.tooltip}
                   >
                     <tab.icon className="h-4 w-4" />
-                    <span>{tab.label}</span>
+                    <span className="flex items-center gap-1.5">
+                      {tab.label}
+                      {tab.id === "transcript" &&
+                        transcriptionStatus === "pending" && (
+                          <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
+                        )}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -926,6 +935,30 @@ function groupWordsIntoChunks(
   return chunks;
 }
 
+function TranscriptSkeleton() {
+  return (
+    <div className="space-y-4" aria-busy="true" aria-label="Transcribing audio">
+      {[0, 1, 2, 3].map((i) => (
+        <div
+          key={i}
+          className="rounded-xl p-4 bg-muted/40 border-2 border-transparent"
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <Skeleton className="h-6 w-12 rounded-md" />
+            <div className="flex-1 h-px bg-border" />
+            <Skeleton className="h-6 w-12 rounded-md" />
+          </div>
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-[88%]" />
+            <Skeleton className={`h-4 ${i % 2 === 0 ? "w-2/3" : "w-3/4"}`} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 interface TranscriptPanelProps {
   segments: Array<{ id: string; startTime: number; endTime: number }>;
   currentTime: number;
@@ -944,28 +977,15 @@ function TranscriptPanel({
   loading,
 }: TranscriptPanelProps) {
   const dispatch = useDispatch();
-  const captions = useSelector((state: RootState) => state.editor.captions);
   // Use transcriptWords from Redux (includes edits) instead of prop
   const transcription = useSelector((state: RootState) => state.editor.transcriptWords);
+  const transcriptionStatus = useSelector(
+    (state: RootState) => state.editor.transcriptionStatus,
+  );
+  const transcribing = transcriptionStatus === "pending";
 
   // Edit mode state
   const [editMode, setEditMode] = React.useState(false);
-
-  // Find caption and word index by time
-  const findCaptionWord = React.useCallback(
-    (start: number, end: number) => {
-      for (const caption of captions) {
-        const wordIndex = caption.words.findIndex(
-          (w) => Math.abs(w.start - start) < 0.01 && Math.abs(w.end - end) < 0.01
-        );
-        if (wordIndex !== -1) {
-          return { captionId: caption.id, wordIndex };
-        }
-      }
-      return null;
-    },
-    [captions]
-  );
 
   // Handle word click - either seek or edit
   const handleWordClick = React.useCallback(
@@ -982,18 +1002,15 @@ function TranscriptPanel({
   // Save edited word on blur
   const handleWordBlur = React.useCallback(
     (word: { start: number; end: number }, newValue: string) => {
-      const match = findCaptionWord(word.start, word.end);
-      if (match) {
-        dispatch(
-          updateCaptionWord({
-            captionId: match.captionId,
-            wordIndex: match.wordIndex,
-            newValue: newValue.trim(),
-          })
-        );
-      }
+      dispatch(
+        updateCaptionWord({
+          start: word.start,
+          end: word.end,
+          newValue: newValue.trim(),
+        }),
+      );
     },
-    [dispatch, findCaptionWord]
+    [dispatch],
   );
 
   // Handle keydown in contentEditable
@@ -1048,7 +1065,11 @@ function TranscriptPanel({
       <div className="sticky top-0 z-10 bg-background px-5 pt-5 pb-3 border-b-2 border-border">
         <div className="flex justify-between items-center text-xs text-muted-foreground">
           <span className="font-bold uppercase tracking-wider">
-            {previewMode ? "Preview Transcript" : "Full Transcript"}
+            {transcribing
+              ? "Transcribing…"
+              : previewMode
+                ? "Preview Transcript"
+                : "Full Transcript"}
           </span>
           <div className="flex items-center gap-3">
             {transcription.length > 0 && (
@@ -1171,9 +1192,11 @@ function TranscriptPanel({
             );
           })}
         </div>
+      ) : loading || transcribing ? (
+        <TranscriptSkeleton />
       ) : (
         <div className="text-muted-foreground text-center py-12 font-medium">
-          {loading ? "Loading transcript..." : "No transcript available."}
+          No transcript available.
         </div>
       )}
       </div>

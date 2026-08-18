@@ -27,6 +27,10 @@ import { createWriteStream, createReadStream, promises as fs } from "fs";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
 import path from "path";
+import {
+  groupWordsIntoCaptions,
+  parseTranscriptJson,
+} from "../utils/transcript-format";
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client, {
@@ -153,47 +157,6 @@ function getVideoAspect(inputPath: string): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
-// Caption helpers
-// ---------------------------------------------------------------------------
-
-function groupWordsIntoCaptions(words: any[]): any[] {
-  if (!words?.length) return [];
-  const captions: any[] = [];
-  let currentWords: any[] = [];
-  let lineStartTime = words[0].start;
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i];
-    const prevWord = i > 0 ? words[i - 1] : null;
-    const shouldBreak =
-      currentWords.length >= 8 ||
-      (currentWords.length > 0 && word.end - lineStartTime > 3) ||
-      (prevWord && word.start - prevWord.end > 0.3);
-    if (shouldBreak && currentWords.length > 0) {
-      captions.push({
-        id: `caption-${captions.length}`,
-        startTime: lineStartTime,
-        endTime: currentWords[currentWords.length - 1].end,
-        text: currentWords.map((w: any) => w.value).join(" "),
-        words: [...currentWords],
-      });
-      currentWords = [];
-      lineStartTime = word.start;
-    }
-    currentWords.push(word);
-  }
-  if (currentWords.length > 0) {
-    captions.push({
-      id: `caption-${captions.length}`,
-      startTime: lineStartTime,
-      endTime: currentWords[currentWords.length - 1].end,
-      text: currentWords.map((w: any) => w.value).join(" "),
-      words: currentWords,
-    });
-  }
-  return captions;
-}
-
-// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -228,9 +191,12 @@ export const handler: Handler<{ jobId: string }, void> = async (event) => {
       const presignedUrl = await presignS3Uri(transcriptionS3Uri);
       if (presignedUrl) {
         const response = await fetch(presignedUrl);
-        const data = await response.json() as any;
-        const words: any[] = Array.isArray(data) ? data : (data.data || data.transcription || []);
-        captions = groupWordsIntoCaptions(words);
+        const data = await response.json() as unknown;
+        const parsed = parseTranscriptJson(data);
+        captions =
+          parsed.kind === "translation"
+            ? parsed.lines
+            : groupWordsIntoCaptions(parsed.words);
         console.log(`Loaded ${captions.length} caption lines from S3`);
       }
     } catch (error) {

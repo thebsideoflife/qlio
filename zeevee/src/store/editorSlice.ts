@@ -38,6 +38,7 @@ interface EditorState {
   duration: number;
   projectTitle: string;
   assetName: string;
+  assetId: string | null;
   // Sync tracking - uses version numbers to avoid race conditions
   projectId: string | null;
   localVersion: number; // Increments on each local edit
@@ -49,6 +50,9 @@ interface EditorState {
   transcriptWords: CaptionWord[];
   captions: CaptionLine[];
   captionSettings: CaptionSettings;
+  originalLanguage: string | null;
+  transcriptionStatus: "pending" | "ready" | "failed" | null;
+  translations: Record<string, string>;
   // Framing state
   globalFraming: GlobalFramingSettings;
   // Keyframe toggle — shows keyframe lane + framing controls
@@ -110,6 +114,7 @@ const initialState: EditorState = {
   duration: 0,
   projectTitle: "",
   assetName: "",
+  assetId: null,
   // Sync tracking - uses version numbers to avoid race conditions
   projectId: null,
   localVersion: 0,
@@ -120,6 +125,9 @@ const initialState: EditorState = {
   transcriptWords: [],
   captions: [],
   captionSettings: DEFAULT_CAPTION_SETTINGS,
+  originalLanguage: null,
+  transcriptionStatus: null,
+  translations: {},
   // Framing state
   globalFraming: DEFAULT_GLOBAL_FRAMING,
   showKeyframes: false,
@@ -292,10 +300,13 @@ export const editorSlice = createSlice({
     },
     setProjectMetadata: (
       state,
-      action: PayloadAction<{ title: string; assetName: string }>,
+      action: PayloadAction<{ title: string; assetName: string; assetId?: string | null }>,
     ) => {
       state.projectTitle = action.payload.title;
       state.assetName = action.payload.assetName;
+      if (action.payload.assetId !== undefined) {
+        state.assetId = action.payload.assetId;
+      }
     },
     updateProjectTitle: (state, action: PayloadAction<string>) => {
       state.projectTitle = action.payload;
@@ -569,8 +580,49 @@ export const editorSlice = createSlice({
         return word;
       });
       state.transcriptWords = transcriptWithEdits;
-      // Automatically generate captions when transcript is loaded
-      state.captions = groupWordsIntoCaptions(transcriptWithEdits);
+      const active = state.captionSettings.activeLanguage;
+      const original = state.originalLanguage;
+      const showingOriginal =
+        !active ||
+        active === "original" ||
+        (original != null && active === original) ||
+        !state.translations[active];
+      if (showingOriginal) {
+        state.captions = groupWordsIntoCaptions(transcriptWithEdits);
+      }
+    },
+    setCaptionLanguageMeta: (
+      state,
+      action: PayloadAction<{
+        originalLanguage: string | null;
+        transcriptionStatus: "pending" | "ready" | "failed" | null;
+        translations: Record<string, string>;
+      }>,
+    ) => {
+      state.originalLanguage = action.payload.originalLanguage;
+      state.transcriptionStatus = action.payload.transcriptionStatus;
+      state.translations = action.payload.translations;
+    },
+    setTranslations: (
+      state,
+      action: PayloadAction<Record<string, string>>,
+    ) => {
+      state.translations = action.payload;
+    },
+    setCaptionLines: (state, action: PayloadAction<CaptionLine[]>) => {
+      state.captions = action.payload;
+    },
+    setActiveCaptionLanguage: (
+      state,
+      action: PayloadAction<{ language: string; lines?: CaptionLine[] }>,
+    ) => {
+      state.captionSettings.activeLanguage = action.payload.language;
+      if (action.payload.lines) {
+        state.captions = action.payload.lines;
+      } else {
+        state.captions = groupWordsIntoCaptions(state.transcriptWords);
+      }
+      markEdited(state);
     },
     setCaptionSettings: (state, action: PayloadAction<CaptionSettings>) => {
       state.captionSettings = action.payload;
@@ -600,33 +652,36 @@ export const editorSlice = createSlice({
     updateCaptionWord: (
       state,
       action: PayloadAction<{
-        captionId: string;
-        wordIndex: number;
+        start: number;
+        end: number;
         newValue: string;
       }>,
     ) => {
-      const { captionId, wordIndex, newValue } = action.payload;
-      const caption = state.captions.find((c) => c.id === captionId);
-      if (caption && caption.words[wordIndex]) {
-        const word = caption.words[wordIndex];
-        word.value = newValue;
-        // Also update the full text field for consistency
-        caption.text = caption.words.map((w) => w.value).join(" ");
-        // Store in wordEdits for persistence
-        const key = `${word.start}-${word.end}`;
-        if (!state.captionSettings.wordEdits) {
-          state.captionSettings.wordEdits = {};
-        }
-        state.captionSettings.wordEdits[key] = newValue;
-        // Also update transcriptWords to keep them in sync
-        const transcriptWord = state.transcriptWords.find(
-          (w) => Math.abs(w.start - word.start) < 0.01 && Math.abs(w.end - word.end) < 0.01
-        );
-        if (transcriptWord) {
-          transcriptWord.value = newValue;
-        }
-        markEdited(state);
+      const { start, end, newValue } = action.payload;
+      const transcriptWord = state.transcriptWords.find(
+        (word) =>
+          Math.abs(word.start - start) < 0.01 &&
+          Math.abs(word.end - end) < 0.01,
+      );
+      if (!transcriptWord) return;
+
+      transcriptWord.value = newValue;
+      const key = `${transcriptWord.start}-${transcriptWord.end}`;
+      if (!state.captionSettings.wordEdits) {
+        state.captionSettings.wordEdits = {};
       }
+      state.captionSettings.wordEdits[key] = newValue;
+
+      const active = state.captionSettings.activeLanguage;
+      const showingOriginal =
+        !active ||
+        active === "original" ||
+        active === state.originalLanguage ||
+        !state.translations[active];
+      if (showingOriginal) {
+        state.captions = groupWordsIntoCaptions(state.transcriptWords);
+      }
+      markEdited(state);
     },
 
     // Framing actions
@@ -941,6 +996,10 @@ export const {
   setDuration,
   // Caption actions
   setTranscriptWords,
+  setCaptionLanguageMeta,
+  setTranslations,
+  setCaptionLines,
+  setActiveCaptionLanguage,
   setCaptionSettings,
   updateCaptionStyle,
   setCaptionsEnabled,
