@@ -7,8 +7,9 @@ import { languageLabel, type CaptionWord } from "../utils/transcript-format";
 const secretsClient = new SecretsManagerClient({});
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
-export const WHISPER_MODEL =
-  process.env.OPENROUTER_WHISPER_MODEL || "openai/whisper-large-v3";
+// Accuracy is the product requirement. Do not make this environment-selectable:
+// a silent switch to a distilled/turbo model changes transcript timing/content.
+export const WHISPER_MODEL = "openai/whisper-large-v3" as const;
 export const TRANSLATE_MODEL =
   process.env.OPENROUTER_TRANSLATE_MODEL || "openai/gpt-4o-mini";
 

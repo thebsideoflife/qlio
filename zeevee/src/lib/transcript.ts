@@ -73,6 +73,27 @@ export function detectedOriginalLanguage(
   return originalLanguage;
 }
 
+/**
+ * Preserve the backend's canonical original-source order while supporting
+ * older API responses that only expose transcriptionUrl.
+ */
+export function orderedOriginalTranscriptUrls(params: {
+  transcriptionCandidates?: string[];
+  transcriptionUrl?: string;
+}): string[] {
+  return [
+    ...(Array.isArray(params.transcriptionCandidates)
+      ? params.transcriptionCandidates
+      : []),
+    params.transcriptionUrl,
+  ].filter(
+    (url, index, urls): url is string =>
+      typeof url === "string" &&
+      url.length > 0 &&
+      urls.indexOf(url) === index,
+  );
+}
+
 export interface TranscriptWordCard {
   startTime: number;
   endTime: number;

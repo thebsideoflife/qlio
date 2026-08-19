@@ -20,14 +20,17 @@ import {
 } from "../utils/transcript-format";
 import {
   isOriginalCaptionLanguage,
+  resolveOriginalTranscriptCandidates,
+  resolveRenderTranscriptCandidates,
+  resolveRenderTranscriptUri,
+} from "../utils/transcript-source";
+import {
   mapChunkWordsToVideoClock,
   MAX_TRANSCRIBE_HOPS,
   mergeChunkWords,
   parseFfprobeStreamProbe,
   parseTranscribeHop,
   planAudioChunks,
-  resolveRenderTranscriptCandidates,
-  resolveRenderTranscriptUri,
   storedChunkMatchesPlan,
   transcribeContinuationDecision,
   WHISPER_OVERLAP_SAMPLES,
@@ -37,6 +40,7 @@ import {
 import { isEffectivelySilent } from "../utils/wav";
 import { classifyTranscriptionRun } from "../utils/transcription-run";
 import { computeSegmentRenderFingerprint } from "../utils/segmentRenderFingerprint";
+import { WHISPER_MODEL } from "../services/openrouter";
 import {
   buildExportPackageLayout,
   exportPackageObjectKey,
@@ -45,6 +49,11 @@ import {
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
 }
+
+assert(
+  WHISPER_MODEL === "openai/whisper-large-v3",
+  "production transcription is pinned to non-turbo Whisper large-v3",
+);
 
 function almost(a: number, b: number, eps = 1e-9): boolean {
   return Math.abs(a - b) < eps;
@@ -352,7 +361,7 @@ assert(
       outboundOverlapSamples: 0,
     },
     { startInVideo: 0, sampleRate: rate, totalSamples: 1000 },
-    "openai/whisper-large-v3-turbo",
+    "openai/whisper-1",
   ),
   "different Whisper model is a cache miss",
 );
@@ -514,6 +523,33 @@ assert(
       "s3://bucket/transcriptions/82ad13ed.json",
     ].join(","),
   "legacy Original toggle tries Whisper /en.json before the TwelveLabs file",
+);
+assert(
+  resolveOriginalTranscriptCandidates({
+    assetId: "asset-1",
+    activeLanguage: "es",
+    originalLanguage: "en",
+    transcriptionVersion: currentVersion,
+    translations: { es: currentSpanish },
+    transcriptionUrl: legacyOriginal,
+  }).join(",") ===
+    [
+      currentOriginal,
+      `s3://bucket/${languageNamedTranscriptKey("asset-1", "en")}`,
+      legacyOriginal,
+    ].join(","),
+  "editor originals use the same Whisper-first fallback order as rendering",
+);
+assert(
+  !resolveOriginalTranscriptCandidates({
+    assetId: "asset-1",
+    activeLanguage: "es",
+    originalLanguage: "en",
+    transcriptionVersion: currentVersion,
+    translations: { es: currentSpanish },
+    transcriptionUrl: legacyOriginal,
+  }).some((uri) => uri.includes("/translations/")),
+  "editor original candidates never include translated phrase files",
 );
 assert(
   !resolveRenderTranscriptCandidates({

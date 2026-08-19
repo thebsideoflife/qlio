@@ -1,4 +1,6 @@
 import { resolveCaptionContent } from "./captionContent";
+import { activeCaptionAt } from "./captionTiming";
+import type { CaptionLine } from "./types";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -41,5 +43,34 @@ const deleted = resolveCaptionContent({
   words: [{ start: 1, end: 2, value: "" }],
 });
 assert(deleted.mode === "empty", "deleted words with no line text stay empty");
+
+const timedLines: CaptionLine[] = [
+  {
+    id: "first",
+    startTime: 10,
+    endTime: 12,
+    text: "First",
+    words: [{ start: 10, end: 12, value: "First" }],
+  },
+  {
+    id: "translation",
+    startTime: 12,
+    endTime: 14,
+    text: "Segunda frase",
+    words: [],
+  },
+];
+assert(
+  activeCaptionAt(timedLines, 11.999)?.id === "first",
+  "shared renderer keeps a caption active until its exclusive end",
+);
+assert(
+  activeCaptionAt(timedLines, 12)?.id === "translation",
+  "editor and Remotion share the same exact boundary transition",
+);
+assert(
+  activeCaptionAt(timedLines, 14) === undefined,
+  "shared renderer hides captions at their exclusive end",
+);
 
 console.log("captionContent.test: ok");

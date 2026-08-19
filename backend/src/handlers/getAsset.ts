@@ -3,6 +3,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { checkAuth } from "../utils/auth";
 import { presignS3Uri, presignTranslationMap } from "../utils/s3";
+import { deliverOriginalTranscript } from "../utils/transcript-delivery";
 import { inferOriginalTranscriptLanguage } from "../utils/transcript-format";
 
 const dynamoClient = new DynamoDBClient({});
@@ -63,10 +64,18 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       if (presignedUrl) asset.videoUrl = presignedUrl;
     }
 
-    // Generate Presigned URL for Transcription
-    if (asset.transcriptionUrl) {
-      const presignedUrl = await presignS3Uri(asset.transcriptionUrl);
-      if (presignedUrl) asset.transcriptionUrl = presignedUrl;
+    // The editor and renderer must try the same ordered original sources.
+    // Translations remain separate line/phrase files in `translations`.
+    const deliveredTranscript = await deliverOriginalTranscript({
+      assetId,
+      originalLanguage: asset.originalLanguage,
+      transcriptionVersion: asset.transcriptionVersion,
+      transcriptionUrl: asset.transcriptionUrl,
+    });
+    if (deliveredTranscript.transcriptionUrl) {
+      asset.transcriptionCandidates =
+        deliveredTranscript.transcriptionCandidates;
+      asset.transcriptionUrl = deliveredTranscript.transcriptionUrl;
     }
 
     asset.translations = await presignTranslationMap(asset.translations);

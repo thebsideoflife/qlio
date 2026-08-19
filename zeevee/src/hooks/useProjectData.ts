@@ -26,6 +26,7 @@ import type {
 import {
   detectedOriginalLanguage,
   normalizeLanguageCode,
+  orderedOriginalTranscriptUrls,
   parseTranscriptPayload,
 } from "@/lib/transcript";
 
@@ -53,6 +54,7 @@ export function useProjectData(projectId: string | undefined) {
     async (asset: {
       assetId?: string;
       transcriptionUrl?: string;
+      transcriptionCandidates?: string[];
       transcriptionVersion?: string;
       originalLanguage?: string;
       transcriptionStatus?: "pending" | "ready" | "failed";
@@ -60,8 +62,9 @@ export function useProjectData(projectId: string | undefined) {
     }, displayLanguage?: string) => {
       const status = asset.transcriptionStatus || (asset.transcriptionUrl ? "ready" : null);
       const translations = asset.translations || {};
+      const originalTranscriptUrls = orderedOriginalTranscriptUrls(asset);
 
-      if (!asset.transcriptionUrl) {
+      if (originalTranscriptUrls.length === 0) {
         dispatch(
           setCaptionLanguageMeta({
             originalLanguage: asset.originalLanguage || null,
@@ -75,11 +78,25 @@ export function useProjectData(projectId: string | undefined) {
         return;
       }
 
-      const res = await fetch(asset.transcriptionUrl);
-      if (!res.ok) {
-        throw new Error(`Could not load transcript (${res.status})`);
+      let transcriptResponse: Response | null = null;
+      for (const url of originalTranscriptUrls) {
+        try {
+          const response = await fetch(url, { cache: "no-store" });
+          if (response.ok) {
+            transcriptResponse = response;
+            break;
+          }
+          console.warn(
+            `[captions] Original transcript candidate failed (${response.status})`,
+          );
+        } catch (error) {
+          console.warn("[captions] Original transcript candidate failed", error);
+        }
       }
-      const data = await res.json();
+      if (!transcriptResponse) {
+        throw new Error("Could not load any original transcript candidate");
+      }
+      const data = await transcriptResponse.json();
       const parsed = parseTranscriptPayload(data);
       const assetLanguage = normalizeLanguageCode(asset.originalLanguage);
       const parsedLanguage = normalizeLanguageCode(parsed.language);

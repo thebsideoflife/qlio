@@ -17,6 +17,7 @@ import type {
 import { pruneSegmentMetadata } from "../services/export-metadata";
 import { checkAuth } from "../utils/auth";
 import { presignS3Uri, presignTranslationMap } from "../utils/s3";
+import { deliverOriginalTranscript } from "../utils/transcript-delivery";
 import { inferOriginalTranscriptLanguage } from "../utils/transcript-format";
 import { presignRenderDownload } from "../utils/renderDownloads";
 
@@ -167,9 +168,16 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         if (presignedUrl) asset.videoUrl = presignedUrl;
       }
 
-      if (asset.transcriptionUrl) {
-        const presignedUrl = await presignS3Uri(asset.transcriptionUrl);
-        if (presignedUrl) asset.transcriptionUrl = presignedUrl;
+      const deliveredTranscript = await deliverOriginalTranscript({
+        assetId: String(asset.assetId || project.assetId),
+        originalLanguage: asset.originalLanguage,
+        transcriptionVersion: asset.transcriptionVersion,
+        transcriptionUrl: asset.transcriptionUrl,
+      });
+      if (deliveredTranscript.transcriptionUrl) {
+        asset.transcriptionCandidates =
+          deliveredTranscript.transcriptionCandidates;
+        asset.transcriptionUrl = deliveredTranscript.transcriptionUrl;
       }
 
       asset.translations = await presignTranslationMap(asset.translations);

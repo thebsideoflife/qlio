@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill, OffthreadVideo, useVideoConfig } from "remotion";
 import type { CaptionLine, CaptionSettings } from "./types";
-import { CaptionDisplay } from "../components/editor/CaptionDisplay";
+import { CaptionDisplay } from "./CaptionDisplay";
 
 interface SquareTopVideoProps {
   src: string;

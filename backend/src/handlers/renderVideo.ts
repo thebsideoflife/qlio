@@ -8,7 +8,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { checkAuth } from "../utils/auth";
-import { resolveRenderTranscriptCandidates } from "../utils/transcript-timing";
+import { resolveRenderTranscriptCandidates } from "../utils/transcript-source";
 import { v4 as uuidv4 } from "uuid";
 
 const client = new DynamoDBClient({});

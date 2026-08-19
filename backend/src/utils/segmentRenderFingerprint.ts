@@ -2,7 +2,7 @@
 
 // Bump whenever the Remotion bundle changes rendered pixels without changing
 // project inputs. This invalidates MP4s made by an older renderer.
-export const RENDER_PIPELINE_VERSION = 2;
+export const RENDER_PIPELINE_VERSION = 3;
 
 interface FramingKeyframe {
   time: number;
@@ -62,10 +62,7 @@ export function computeSegmentRenderFingerprint(
     captions: {
       enabled: captionSettings.enabled,
       style: captionSettings.style,
-      ...(captionSettings.activeLanguage &&
-      captionSettings.activeLanguage !== "original"
-        ? { activeLanguage: captionSettings.activeLanguage }
-        : {}),
+      activeLanguage: captionSettings.activeLanguage || "original",
       ...(captionSettings.enabled && transcriptionVersion
         ? { transcriptionVersion }
         : {}),
