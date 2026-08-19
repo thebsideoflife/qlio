@@ -2,8 +2,8 @@
 # Note: Remotion Lambda requires its own deployment process.
 # After this infrastructure is created, run:
 #
-# 1. Deploy the site bundle:
-#    npx remotion lambda sites create --site-name=zeevee-renderer
+# 1. Deploy the site bundle (required after CaptionText / remotion changes):
+#    ./zeevee/deploy-remotion-site.sh
 #
 # 2. Deploy the render function with OPTIMIZED settings:
 #    npx remotion lambda functions deploy \

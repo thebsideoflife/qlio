@@ -12,6 +12,10 @@ interface CaptionTextProps {
  * Shared caption text renderer used by both:
  * - CaptionOverlay (editor preview with drag/resize)
  * - CaptionDisplay in Remotion (final video render)
+ *
+ * Originals have word timings (karaoke highlight). Translations are line
+ * text only — show `caption.text` when `words` is empty. Redeploy the
+ * Remotion site after changing this file or Spanish exports go blank.
  */
 export function CaptionText({
   caption,
@@ -20,7 +24,7 @@ export function CaptionText({
   containerHeight,
 }: CaptionTextProps) {
   // Filter out empty (deleted) words
-  const visibleWords = caption.words.filter((word) => word.value !== "");
+  const visibleWords = (caption.words ?? []).filter((word) => word.value !== "");
 
   const activeWordIndex = visibleWords.findIndex(
     (w) => currentTime >= w.start && currentTime < w.end,
