@@ -6,6 +6,10 @@ import type {
 import { getEffectiveKeyframes } from "@/remotion/types";
 import type { Segment } from "@/store/editorSlice";
 
+// Keep in lockstep with backend/src/utils/segmentRenderFingerprint.ts. Bump
+// when a Remotion bundle change alters output without changing project inputs.
+export const RENDER_PIPELINE_VERSION = 2;
+
 function normalizeFraming(framing: SegmentFraming | undefined) {
   if (!framing) return null;
   const keyframes = getEffectiveKeyframes(framing)
@@ -27,6 +31,7 @@ export function computeSegmentRenderFingerprint(
   transcriptionVersion?: string | null,
 ): string {
   const payload = {
+    renderPipelineVersion: RENDER_PIPELINE_VERSION,
     startTime: segment.startTime,
     endTime: segment.endTime,
     framing: normalizeFraming(segment.framing),

@@ -22,6 +22,7 @@ import {
   exportPackageObjectKey,
   localizeExportMetadataDocument,
 } from "../utils/exportPackageLayout";
+import { computeExportPackageFingerprint } from "../utils/exportPackageFingerprint";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -73,6 +74,8 @@ interface AsyncJobPayload {
   projectId: string;
   jobId: string;
   body: RequestBody;
+  fingerprint: string;
+  renderSnapshot: StoredSegmentRender[];
 }
 
 interface StoredSegmentRender {
@@ -80,6 +83,10 @@ interface StoredSegmentRender {
   title?: string;
   bucket: string;
   key: string;
+  renderedAt?: string;
+  contentHash?: string;
+  sourceBucket?: string;
+  sourceKey?: string;
 }
 
 interface StoredSegmentMetadata {
@@ -93,16 +100,6 @@ function json(statusCode: number, body: unknown): APIGatewayProxyResult {
     headers: CORS_HEADERS,
     body: JSON.stringify(body),
   };
-}
-
-function packageFingerprint(body: RequestBody): string {
-  const ids = [...(body.segmentIds || [])].sort();
-  return JSON.stringify({
-    ids,
-    thumbs: body.includeThumbnails !== false,
-    poster: body.includePoster !== false,
-    meta: Boolean(body.metadataDocument),
-  });
 }
 
 async function presignPackage(
@@ -206,7 +203,17 @@ async function handleStart(
   ).Item;
   if (!project) return json(404, { error: "Project not found" });
 
-  const fingerprint = packageFingerprint(body);
+  const effectiveBody: RequestBody = {
+    ...body,
+    projectTitle:
+      body.projectTitle ||
+      (typeof project.title === "string" ? project.title : "Untitled"),
+  };
+  const renderSnapshot = (project.segmentRenders || []) as StoredSegmentRender[];
+  const fingerprint = computeExportPackageFingerprint(
+    effectiveBody,
+    renderSnapshot,
+  );
   const existing = project.exportPackageJob as ExportPackageJob | undefined;
   if (
     existing?.status === "completed" &&
@@ -220,6 +227,7 @@ async function handleStart(
   if (
     existing &&
     (existing.status === "pending" || existing.status === "packaging") &&
+    existing.fingerprint === fingerprint &&
     existing.startedAt &&
     Date.now() - new Date(existing.startedAt).getTime() < IN_FLIGHT_JOB_MAX_MS
   ) {
@@ -244,7 +252,9 @@ async function handleStart(
         kind: "package-export-worker",
         projectId,
         jobId,
-        body,
+        body: effectiveBody,
+        fingerprint,
+        renderSnapshot,
       } satisfies AsyncJobPayload),
     }),
   );
@@ -270,7 +280,7 @@ async function appendS3Object(
 }
 
 async function runWorker(event: AsyncJobPayload): Promise<void> {
-  const { projectId, jobId, body } = event;
+  const { projectId, jobId, body, fingerprint, renderSnapshot } = event;
   const warnings: string[] = [];
 
   const markFailed = async (error: string) => {
@@ -283,7 +293,7 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
         completedAt: new Date().toISOString(),
         error,
         warnings,
-        fingerprint: packageFingerprint(body),
+        fingerprint,
       },
       jobId,
     ).catch((err) => console.error("[packageExport] failed to mark failed", err));
@@ -296,7 +306,7 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
         status: "packaging",
         jobId,
         startedAt: new Date().toISOString(),
-        fingerprint: packageFingerprint(body),
+        fingerprint,
       },
       jobId,
     );
@@ -325,10 +335,7 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
     }
 
     const renders = new Map(
-      ((project.segmentRenders || []) as StoredSegmentRender[]).map((r) => [
-        r.segmentId,
-        r,
-      ]),
+      renderSnapshot.map((render) => [render.segmentId, render]),
     );
     const metadata = new Map(
       ((project.segmentMetadata || []) as StoredSegmentMetadata[]).map((m) => [
@@ -374,14 +381,16 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
     let requiredVideos = 0;
     for (const scene of layout.scenes) {
       const render = renders.get(scene.segmentId);
-      if (!render?.bucket || !render.key) {
+      const renderBucket = render?.sourceBucket || render?.bucket;
+      const renderKey = render?.sourceKey || render?.key;
+      if (!renderBucket || !renderKey) {
         warnings.push(`No rendered video for ${scene.videoFilename}`);
         continue;
       }
       await appendS3Object(
         archive,
-        render.bucket,
-        render.key,
+        renderBucket,
+        renderKey,
         scene.videoPath,
         true,
       );
@@ -463,7 +472,7 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
         bucket: RENDERS_BUCKET,
         key: zipKey,
         filename: layout.zipFilename,
-        fingerprint: packageFingerprint(body),
+        fingerprint,
         warnings: warnings.length ? warnings : undefined,
       },
       jobId,

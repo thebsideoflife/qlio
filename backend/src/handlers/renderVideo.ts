@@ -187,10 +187,12 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   // toggled language / edits and autosave has not flushed yet.
   let segments: Segment[] = project.segments || [];
   const captionSettings: CaptionSettings = {
-    ...(project.captionSettings || DEFAULT_CAPTION_SETTINGS),
+    ...DEFAULT_CAPTION_SETTINGS,
+    ...(project.captionSettings || {}),
     ...(body.captionSettings || {}),
     style: {
-      ...(project.captionSettings?.style || DEFAULT_CAPTION_SETTINGS.style),
+      ...DEFAULT_CAPTION_SETTINGS.style,
+      ...(project.captionSettings?.style || {}),
       ...(body.captionSettings?.style || {}),
     },
   };

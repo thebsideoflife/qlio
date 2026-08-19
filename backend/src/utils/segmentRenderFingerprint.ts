@@ -1,5 +1,9 @@
 /** Mirrors zeevee/src/lib/segmentRenderFingerprint.ts for render staleness checks. */
 
+// Bump whenever the Remotion bundle changes rendered pixels without changing
+// project inputs. This invalidates MP4s made by an older renderer.
+export const RENDER_PIPELINE_VERSION = 2;
+
 interface FramingKeyframe {
   time: number;
   focusX: number;
@@ -51,6 +55,7 @@ export function computeSegmentRenderFingerprint(
   transcriptionVersion?: string | null,
 ): string {
   const payload = {
+    renderPipelineVersion: RENDER_PIPELINE_VERSION,
     startTime: segment.startTime,
     endTime: segment.endTime,
     framing: normalizeFraming(segment.framing),
