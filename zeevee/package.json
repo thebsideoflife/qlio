@@ -12,7 +12,8 @@
     "test:zoom-math": "npx tsx src/scripts/test-zoom-math.ts",
     "test:export-package": "npx tsx src/lib/exportPackage.test.ts",
     "test:transcript": "npx tsx --tsconfig tsconfig.app.json src/lib/transcript.test.ts",
-    "test": "npm run test:fingerprint && npm run test:agent-thread && npm run test:zoom-math && npm run test:export-package && npm run test:transcript",
+    "test:caption-content": "npx tsx --tsconfig tsconfig.app.json src/remotion/captionContent.test.ts",
+    "test": "npm run test:fingerprint && npm run test:agent-thread && npm run test:zoom-math && npm run test:export-package && npm run test:transcript && npm run test:caption-content",
     "preview": "vite preview"
   },
   "dependencies": {

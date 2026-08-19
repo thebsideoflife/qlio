@@ -142,6 +142,9 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
   const activeCaption = captions.find(
     (c) => currentTime >= c.startTime && currentTime < c.endTime,
   );
+  const overlayWords = (activeCaption?.words ?? []).filter(
+    (word) => word.value !== "",
+  );
 
   if (!enabled) return null;
 
@@ -224,11 +227,9 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
                   textAlign: "center",
                 }}
               >
-                {activeCaption.words.length === 0
+                {overlayWords.length === 0
                   ? activeCaption.text
-                  : activeCaption.words
-                      .filter((word) => word.value !== "")
-                      .map((word, idx, filteredWords) => {
+                  : overlayWords.map((word, idx, filteredWords) => {
                         const isActive =
                           currentTime >= word.start && currentTime < word.end;
 

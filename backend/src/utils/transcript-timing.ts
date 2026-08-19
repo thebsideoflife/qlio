@@ -4,6 +4,7 @@ import {
   bucketFromS3Uri,
   isLegacyTranscriptKey,
   normalizeLanguageCode,
+  languageNamedTranscriptKey,
   originalTranscriptKey,
   pickTranslationUri,
   translationTranscriptKey,
@@ -361,6 +362,19 @@ function asS3Uri(uri: string | null | undefined): string | null {
   return uri && uri.startsWith("s3://") ? uri : null;
 }
 
+function languageNamedWhisperUri(
+  params: ResolveRenderTranscriptParams,
+): string | null {
+  const assetId = params.assetId || undefined;
+  const language = params.originalLanguage
+    ? normalizeLanguageCode(params.originalLanguage)
+    : "";
+  if (!assetId || !language || language === "und") return null;
+  const bucket = bucketFromS3Uri(params.transcriptionUrl);
+  if (!bucket) return null;
+  return `s3://${bucket}/${languageNamedTranscriptKey(assetId, language)}`;
+}
+
 export type ResolveRenderTranscriptParams = {
   assetId?: string | null;
   activeLanguage?: string | null;
@@ -410,8 +424,10 @@ function currentTranslationUri(
  * Ordered S3 URIs to try when burning captions.
  *
  * 1. Translation for the toggled language, if it belongs to this Whisper run
- * 2. Current Whisper original
- * 3. TwelveLabs / leftover transcriptionUrl only if Whisper is missing
+ * 2. Versioned Whisper original (`versions/{run}/original.json`)
+ * 3. Stored transcriptionUrl when it is already a Whisper path
+ * 4. Older language-named Whisper file (`/{en}.json`)
+ * 5. TwelveLabs flat `transcriptions/{id}.json` only if those are missing
  */
 export function resolveRenderTranscriptCandidates(
   params: ResolveRenderTranscriptParams,
@@ -426,22 +442,23 @@ export function resolveRenderTranscriptCandidates(
 
   add(currentTranslationUri(params));
 
-  const whisper = whisperOriginalUri({
-    assetId: params.assetId || undefined,
-    transcriptionVersion: params.transcriptionVersion,
-    transcriptionUrl: params.transcriptionUrl,
-  });
-  add(whisper);
+  add(
+    whisperOriginalUri({
+      assetId: params.assetId || undefined,
+      transcriptionVersion: params.transcriptionVersion,
+      transcriptionUrl: params.transcriptionUrl,
+    }),
+  );
 
-  // TwelveLabs flat file is last-resort only — never preferred over Whisper.
-  if (!whisper) {
-    add(asS3Uri(params.transcriptionUrl));
-  } else if (
-    params.assetId &&
-    isLegacyTranscriptKey(params.assetId, params.transcriptionUrl)
-  ) {
-    add(asS3Uri(params.transcriptionUrl));
-  }
+  const stored = asS3Uri(params.transcriptionUrl);
+  const storedIsTwelveLabs = !!(
+    params.assetId && isLegacyTranscriptKey(params.assetId, stored)
+  );
+  if (stored && !storedIsTwelveLabs) add(stored);
+
+  add(languageNamedWhisperUri(params));
+
+  if (storedIsTwelveLabs) add(stored);
 
   return out;
 }
