@@ -15,6 +15,7 @@ import {
   corsRenderObjectKey,
   presignRenderDownload,
 } from "../utils/renderDownloads";
+import { isSameRenderArtifact } from "../utils/renderArtifactCache";
 import { getRenderProgress } from "@remotion/lambda/client";
 import type { AwsRegion } from "@remotion/lambda";
 
@@ -37,6 +38,8 @@ interface StoredSegmentRender {
   key: string;
   renderedAt: string;
   contentHash?: string;
+  sourceBucket?: string;
+  sourceKey?: string;
 }
 
 interface SegmentRender {
@@ -75,9 +78,7 @@ async function resolveDownloadLocation(
 
   if (
     existing?.bucket === RENDERS_BUCKET &&
-    existing.key &&
-    existing.contentHash &&
-    existing.contentHash === contentHash
+    isSameRenderArtifact(existing, source, contentHash)
   ) {
     return { bucket: existing.bucket, key: existing.key };
   }
@@ -162,25 +163,41 @@ async function persistRendersToProject(
               job.transcriptionVersion,
             )
           : undefined;
+        const existing = renderMap.get(seg.segmentId);
+        const source = { bucket: seg.bucketName, key: seg.outputKey };
+        const sameArtifact = isSameRenderArtifact(
+          existing,
+          source,
+          contentHash,
+        );
         const location = await resolveDownloadLocation(
           projectId,
           seg,
-          renderMap.get(seg.segmentId),
+          existing,
           contentHash,
         );
-        return { seg, location, contentHash };
+        return { seg, location, contentHash, existing, sameArtifact, source };
       }),
     );
 
-    for (const { seg, location, contentHash } of resolved) {
+    for (const {
+      seg,
+      location,
+      contentHash,
+      existing,
+      sameArtifact,
+      source,
+    } of resolved) {
       locations.set(seg.segmentId, location);
       renderMap.set(seg.segmentId, {
         segmentId: seg.segmentId,
         title: seg.title,
         bucket: location.bucket,
         key: location.key,
-        renderedAt: now,
+        renderedAt: sameArtifact && existing ? existing.renderedAt : now,
         contentHash,
+        sourceBucket: source.bucket,
+        sourceKey: source.key,
       });
     }
 
