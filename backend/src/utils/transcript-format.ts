@@ -212,8 +212,91 @@ export function transcriptWordsFromJson(data: unknown): CaptionWord[] {
 
 export function transcriptLinesFromJson(data: unknown): CaptionLine[] {
   const parsed = parseTranscriptJson(data);
+  return captionsFromParsedTranscript(parsed);
+}
+
+export function bucketFromS3Uri(uri: string | null | undefined): string | null {
+  if (!uri || !uri.startsWith("s3://")) return null;
+  const bucket = uri.slice(5).split("/")[0];
+  return bucket || null;
+}
+
+export function pickTranslationUri(
+  translations: Record<string, string> | null | undefined,
+  language: string,
+): string | undefined {
+  if (!translations) return undefined;
+  const wanted = normalizeLanguageCode(language);
+  const direct = translations[wanted];
+  if (typeof direct === "string" && direct) return direct;
+  for (const [key, uri] of Object.entries(translations)) {
+    if (normalizeLanguageCode(key) === wanted && typeof uri === "string" && uri) {
+      return uri;
+    }
+  }
+  return undefined;
+}
+
+export function translationUriMatchesVersion(
+  uri: string,
+  assetId: string,
+  transcriptionVersion: string,
+  language: string,
+): boolean {
+  const expected = translationTranscriptKey(
+    assetId,
+    transcriptionVersion,
+    language,
+  );
+  const withoutQuery = uri.split("?")[0];
+  const key = withoutQuery.startsWith("s3://")
+    ? withoutQuery.replace(/^s3:\/\/[^/]+\//, "")
+    : withoutQuery.replace(/^\/+/, "");
+  return key === expected || key.endsWith(`/${expected}`);
+}
+
+export function applyWordEditsToWords(
+  words: CaptionWord[],
+  wordEdits?: Record<string, string> | null,
+): CaptionWord[] {
+  if (!wordEdits || Object.keys(wordEdits).length === 0) return words;
+  return words.map((word) => {
+    const key = `${word.start}-${word.end}`;
+    return key in wordEdits ? { ...word, value: wordEdits[key] } : word;
+  });
+}
+
+export function captionsFromParsedTranscript(
+  parsed: ParsedTranscriptFile,
+  wordEdits?: Record<string, string> | null,
+): CaptionLine[] {
   if (parsed.kind === "translation") return parsed.lines;
-  return groupWordsIntoCaptions(parsed.words);
+  return groupWordsIntoCaptions(applyWordEditsToWords(parsed.words, wordEdits));
+}
+
+/** Same overlap rule as the editor overlay: any line that is on screen in-range. */
+export function captionsOverlappingRange(
+  captions: CaptionLine[],
+  startTime: number,
+  endTime: number,
+): CaptionLine[] {
+  return captions.filter((c) => c.endTime > startTime && c.startTime < endTime);
+}
+
+export function shiftCaptionsBy(
+  captions: CaptionLine[],
+  offset: number,
+): CaptionLine[] {
+  return captions.map((c) => ({
+    ...c,
+    startTime: c.startTime + offset,
+    endTime: c.endTime + offset,
+    words: (c.words ?? []).map((w) => ({
+      ...w,
+      start: w.start + offset,
+      end: w.end + offset,
+    })),
+  }));
 }
 
 /** ISO-639-1, lowercased. Whisper sometimes returns "spanish" / "en-US". */

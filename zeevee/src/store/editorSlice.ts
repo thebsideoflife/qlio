@@ -16,6 +16,7 @@ import {
   getEffectiveKeyframes,
 } from "@/remotion/types";
 import { groupWordsIntoCaptions } from "@/remotion/utils";
+import { isOriginalCaptionLanguage } from "@/lib/transcript";
 
 export interface Segment {
   id: string;
@@ -583,11 +584,9 @@ export const editorSlice = createSlice({
       });
       state.transcriptWords = transcriptWithEdits;
       const active = state.captionSettings.activeLanguage;
-      const original = state.originalLanguage;
       const showingOriginal =
+        isOriginalCaptionLanguage(active, state.originalLanguage) ||
         !active ||
-        active === "original" ||
-        (original != null && active === original) ||
         !state.translations[active];
       if (showingOriginal) {
         state.captions = groupWordsIntoCaptions(transcriptWithEdits);
@@ -714,9 +713,8 @@ export const editorSlice = createSlice({
 
       const active = state.captionSettings.activeLanguage;
       const showingOriginal =
+        isOriginalCaptionLanguage(active, state.originalLanguage) ||
         !active ||
-        active === "original" ||
-        active === state.originalLanguage ||
         !state.translations[active];
       if (showingOriginal) {
         state.captions = groupWordsIntoCaptions(state.transcriptWords);

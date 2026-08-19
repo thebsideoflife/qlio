@@ -114,6 +114,7 @@ export interface ProjectJobStatus {
   generationJob: JobStatus | null;
   framingJob: JobStatus | null;
   exportMetadataJob: JobStatus | null;
+  exportPackageJob?: JobStatus | null;
   activeRenderJobId: string | null;
   /** Absent on older deployments, so treat undefined as "no agent running". */
   agentRun?: AgentRunStatus | null;
@@ -570,12 +571,13 @@ export interface GlobalFramingSettings {
   squareTop?: boolean;
 }
 
-// Render request is minimal - all project data is read from DB by backend
-// This follows best practice: backend is source of truth
+// Project data is read from DB. captionSettings is sent so a language toggle
+// or word edit that has not flushed yet is still burned into the export.
 export interface RenderRequest {
   outputFormat?: "mp4" | "webm";
   quality?: "draft" | "standard" | "high";
   segmentIds?: string[]; // Optional: render only specific segments (by ID)
+  captionSettings?: CaptionSettings;
 }
 
 export interface SegmentDownload {
@@ -602,6 +604,64 @@ export interface RenderJobResponse {
   downloadUrl?: string;
   outputS3Uri?: string;
 }
+
+export interface ExportPackageResponse {
+  status: "pending" | "packaging" | "completed" | "failed";
+  jobId: string;
+  filename?: string;
+  downloadUrl?: string;
+  error?: string;
+  warnings?: string[];
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export const startExportPackage = async (
+  projectId: string,
+  body: {
+    segmentIds: string[];
+    includeThumbnails?: boolean;
+    includePoster?: boolean;
+    projectTitle?: string;
+    metadataDocument?: unknown;
+  },
+): Promise<ExportPackageResponse> => {
+  const response = await axios.post(
+    `${API_URL}/projects/${projectId}/export-package`,
+    body,
+    { headers: getAuthHeaders() },
+  );
+  return response.data;
+};
+
+export const getExportPackage = async (
+  projectId: string,
+): Promise<ExportPackageResponse> => {
+  const response = await axios.get(
+    `${API_URL}/projects/${projectId}/export-package`,
+    { headers: getAuthHeaders() },
+  );
+  return response.data;
+};
+
+export const pollExportPackage = async (
+  projectId: string,
+  options: {
+    signal?: AbortSignal;
+    pollIntervalMs?: number;
+    maxWaitMs?: number;
+  } = {},
+): Promise<ExportPackageResponse> => {
+  const { signal, pollIntervalMs = 4000, maxWaitMs = 900_000 } = options;
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    signal?.throwIfAborted();
+    const job = await getExportPackage(projectId);
+    if (job.status === "completed" || job.status === "failed") return job;
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+  throw new Error("Timed out waiting for the download folder");
+};
 
 export const startRender = async (
   projectId: string,

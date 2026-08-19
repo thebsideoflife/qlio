@@ -8,7 +8,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { checkAuth } from "../utils/auth";
-import { resolveRenderTranscriptUri } from "../utils/transcript-timing";
+import { resolveRenderTranscriptCandidates } from "../utils/transcript-timing";
 import { v4 as uuidv4 } from "uuid";
 
 const client = new DynamoDBClient({});
@@ -36,6 +36,7 @@ interface CaptionSettings {
     maxWidth: number;
     highlightColor?: string;
   };
+  wordEdits?: Record<string, string>;
   activeLanguage?: string;
 }
 
@@ -120,6 +121,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     outputFormat?: "mp4" | "webm";
     quality?: string;
     segmentIds?: string[];
+    captionSettings?: Partial<CaptionSettings>;
   };
   try {
     body = JSON.parse(event.body || "{}");
@@ -181,10 +183,17 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
   const asset = assetResult.Item;
 
-  // Read project data
+  // Read project data. Client captionSettings win when the editor just
+  // toggled language / edits and autosave has not flushed yet.
   let segments: Segment[] = project.segments || [];
-  const captionSettings: CaptionSettings =
-    project.captionSettings || DEFAULT_CAPTION_SETTINGS;
+  const captionSettings: CaptionSettings = {
+    ...(project.captionSettings || DEFAULT_CAPTION_SETTINGS),
+    ...(body.captionSettings || {}),
+    style: {
+      ...(project.captionSettings?.style || DEFAULT_CAPTION_SETTINGS.style),
+      ...(body.captionSettings?.style || {}),
+    },
+  };
   const globalFraming: GlobalFramingSettings =
     project.globalFraming || DEFAULT_GLOBAL_FRAMING;
 
@@ -252,11 +261,16 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     asset.translations && typeof asset.translations === "object"
       ? (asset.translations as Record<string, string>)
       : {};
-  const transcriptionS3Uri = resolveRenderTranscriptUri({
+  const transcriptionCandidates = resolveRenderTranscriptCandidates({
+    assetId: typeof asset.assetId === "string" ? asset.assetId : project.assetId,
     activeLanguage: captionSettings.activeLanguage,
     originalLanguage:
       typeof asset.originalLanguage === "string"
         ? asset.originalLanguage
+        : undefined,
+    transcriptionVersion:
+      typeof asset.transcriptionVersion === "string"
+        ? asset.transcriptionVersion
         : undefined,
     translations,
     transcriptionUrl:
@@ -264,6 +278,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         ? asset.transcriptionUrl
         : null,
   });
+  const transcriptionS3Uri = transcriptionCandidates[0] || null;
+  console.log(
+    `Render ${jobId} captions: language=${captionSettings.activeLanguage || "original"} uris=${transcriptionCandidates.join(",")}`,
+  );
 
   const renderJob = {
     jobId,
@@ -278,6 +296,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     compositionId,
     sourceS3Uri: asset.s3VideoUrl,
     transcriptionS3Uri,
+    transcriptionCandidates,
     transcriptionVersion:
       typeof asset.transcriptionVersion === "string"
         ? asset.transcriptionVersion

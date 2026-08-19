@@ -15,7 +15,7 @@ import { DEFAULT_SEGMENT_FRAMING } from "./types";
 import { AutoFramedVideo } from "./AutoFramedVideo";
 import { SquareTopVideo } from "./SquareTopVideo";
 import { CaptionDisplay } from "../components/editor/CaptionDisplay";
-// Ensures Stardos Stencil (and other caption Google fonts) are ready for Lambda.
+// Ensures Sanchez, Stardos Stencil (and other caption Google fonts) are ready for Lambda.
 import "./loadCaptionFonts";
 
 interface SegmentVideoProps {

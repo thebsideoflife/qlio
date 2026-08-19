@@ -28,8 +28,10 @@ import { pipeline } from "stream/promises";
 import { Readable } from "stream";
 import path from "path";
 import {
-  groupWordsIntoCaptions,
+  captionsFromParsedTranscript,
+  captionsOverlappingRange,
   parseTranscriptJson,
+  shiftCaptionsBy,
 } from "../utils/transcript-format";
 
 const client = new DynamoDBClient({});
@@ -174,6 +176,8 @@ export const handler: Handler<{ jobId: string }, void> = async (event) => {
   const {
     sourceS3Uri,
     transcriptionS3Uri,
+    transcriptionCandidates,
+    originalTranscriptionS3Uri,
     segments,
     captionSettings,
     globalFraming,
@@ -183,24 +187,40 @@ export const handler: Handler<{ jobId: string }, void> = async (event) => {
 
   if (!segments?.length) throw new Error("No segments in job");
 
-  // 2. Load captions directly from S3 (no need to store in DynamoDB)
-  let captions: any[] = [];
-  if (transcriptionS3Uri && captionSettings?.enabled) {
-    try {
-      const { presignS3Uri } = await import("../utils/s3");
-      const presignedUrl = await presignS3Uri(transcriptionS3Uri);
-      if (presignedUrl) {
+  // 2. Load captions from the current Whisper transcript (or its translation).
+  // Same grouping + overlap rules as the editor — never a leftover TL file.
+  let captions: ReturnType<typeof captionsFromParsedTranscript> = [];
+  if (captionSettings?.enabled) {
+    const uris = [
+      ...(Array.isArray(transcriptionCandidates) ? transcriptionCandidates : []),
+      transcriptionS3Uri,
+      originalTranscriptionS3Uri,
+    ].filter(
+      (uri, index, list): uri is string =>
+        typeof uri === "string" && uri.length > 0 && list.indexOf(uri) === index,
+    );
+    const { presignS3Uri } = await import("../utils/s3");
+    for (const uri of uris) {
+      try {
+        const presignedUrl = await presignS3Uri(uri);
+        if (!presignedUrl) continue;
         const response = await fetch(presignedUrl);
-        const data = await response.json() as unknown;
+        if (!response.ok) {
+          throw new Error(`Transcript fetch failed (${response.status}) for ${uri}`);
+        }
+        const data = (await response.json()) as unknown;
         const parsed = parseTranscriptJson(data);
-        captions =
-          parsed.kind === "translation"
-            ? parsed.lines
-            : groupWordsIntoCaptions(parsed.words);
-        console.log(`Loaded ${captions.length} caption lines from S3`);
+        captions = captionsFromParsedTranscript(
+          parsed,
+          parsed.kind === "original" ? captionSettings.wordEdits : undefined,
+        );
+        console.log(
+          `Loaded ${captions.length} caption lines from ${uri} (${parsed.kind})`,
+        );
+        break;
+      } catch (error) {
+        console.error(`Failed to load transcription ${uri}:`, error);
       }
-    } catch (error) {
-      console.error("Failed to load transcription, continuing without captions:", error);
     }
   }
 
@@ -249,19 +269,16 @@ export const handler: Handler<{ jobId: string }, void> = async (event) => {
         const clipUrl = clipUrls.get(segment.id)!;
         const duration = segment.endTime - segment.startTime;
 
-        // Adjust captions to clip-relative time (clip starts at 0)
-        const segmentCaptions = (captions || []).filter(
-          (c: any) => c.startTime >= segment.startTime && c.startTime < segment.endTime,
-        ).map((c: any) => ({
-          ...c,
-          startTime: c.startTime - segment.startTime,
-          endTime: c.endTime - segment.startTime,
-          words: c.words?.map((w: any) => ({
-            ...w,
-            start: w.start - segment.startTime,
-            end: w.end - segment.startTime,
-          })),
-        }));
+        // Include every line the editor would show in this range, then shift
+        // onto the clip clock (clip starts at 0).
+        const segmentCaptions = shiftCaptionsBy(
+          captionsOverlappingRange(
+            captions,
+            segment.startTime,
+            segment.endTime,
+          ),
+          -segment.startTime,
+        );
 
         const segmentFraming = segment.framing || {
           aspectRatio: globalFraming.aspectRatio,

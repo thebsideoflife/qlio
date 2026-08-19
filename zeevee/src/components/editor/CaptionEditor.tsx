@@ -21,7 +21,10 @@ import {
 import { cn } from "@/lib/utils";
 import { Upload, Palette, X, Loader2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { STARDOS_STENCIL_FONT_FAMILY } from "@/remotion/loadCaptionFonts";
+import {
+  SANCHEZ_FONT_FAMILY,
+  STARDOS_STENCIL_FONT_FAMILY,
+} from "@/remotion/loadCaptionFonts";
 import { getAsset, retryAssetTranscription } from "@/services/api";
 import { CaptionLanguageToggle } from "@/components/editor/CaptionLanguageToggle";
 
@@ -51,6 +54,7 @@ const FONTS = [
     weight: "700",
   },
   { value: "'Roboto Mono', monospace", label: "Roboto Mono", weight: "400" },
+  { value: SANCHEZ_FONT_FAMILY, label: "Sanchez", weight: "400" },
   {
     value: "'Source Code Pro', monospace",
     label: "Source Code",
