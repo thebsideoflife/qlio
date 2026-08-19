@@ -26,6 +26,7 @@ metadata:
 | Change touches | How it ships | Verify with |
 |---|---|---|
 | `zeevee/` (Vite frontend) | **Merge PR to `main`** — Vercel deploys automatically (`zeevee/vercel.json`) | Vercel deployment status / open the production URL |
+| `zeevee/src/remotion/**` or `CaptionText.tsx` | **GitHub Actions** (`.github/workflows/deploy-remotion-site.yml`) on merge, or `./zeevee/deploy-remotion-site.sh`. Vercel does **not** update the burn-in bundle. | Re-export a Spanish-toggled project and confirm captions appear |
 | `backend/`, `infrastructure/` | **GitHub Actions** (`.github/workflows/deploy.yml`) on merge to `main`, or **`./deploy.sh`** from a sandbox. Add `--skip-docker` unless the FFmpeg image changed. | harness MCP `aws_error_summary` / `aws_get_log_events` with `product_id=zeevee`, `region=us-west-2` |
 | Both | PR review → merge (frontend goes out via Vercel, backend deploys via GHA) | Both of the above |
 

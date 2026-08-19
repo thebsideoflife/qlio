@@ -562,6 +562,22 @@ assert(
   )[0].text === "Hola",
   "translated lines are used as-is",
 );
+assert(
+  captionsFromParsedTranscript({
+    kind: "translation",
+    language: "es",
+    lines: [
+      {
+        id: "line",
+        startTime: 19.28,
+        endTime: 20.389,
+        text: "Mira, así es como quería que se viera el",
+        words: [],
+      },
+    ],
+  })[0].words.length === 0,
+  "translations stay line-level; CaptionText renders text when words are empty",
+);
 
 const packed = buildExportPackageLayout({
   projectTitle: "Remembering Hayden Panettiere",
