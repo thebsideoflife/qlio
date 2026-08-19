@@ -2,6 +2,7 @@ import {
   groupLinesForTranscript,
   groupWordsForTranscript,
   isOriginalCaptionLanguage,
+  orderedOriginalTranscriptUrls,
   parseTranscriptPayload,
 } from "./transcript";
 import type { CaptionLine, CaptionWord } from "../remotion/types";
@@ -115,6 +116,21 @@ assert(
 assert(
   !isOriginalCaptionLanguage("es", "en"),
   "Spanish is not original when the source is English",
+);
+
+assert(
+  orderedOriginalTranscriptUrls({
+    transcriptionCandidates: [
+      "https://cdn.test/versioned-original.json",
+      "https://cdn.test/en.json",
+    ],
+    transcriptionUrl: "https://cdn.test/en.json",
+  }).join(",") ===
+    [
+      "https://cdn.test/versioned-original.json",
+      "https://cdn.test/en.json",
+    ].join(","),
+  "editor preserves canonical Whisper fallback order without duplicates",
 );
 
 console.log("transcript.test: ok");

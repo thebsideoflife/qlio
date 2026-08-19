@@ -145,6 +145,17 @@ export const presignS3Uri = async (
   return signWithS3(bucket, key, expiresIn);
 };
 
+export async function presignS3UriList(
+  s3Uris: string[],
+  expiresIn: number = 43200,
+): Promise<string[]> {
+  const uniqueUris = [...new Set(s3Uris)];
+  const signed = await Promise.all(
+    uniqueUris.map((uri) => presignS3Uri(uri, expiresIn)),
+  );
+  return signed.filter((url): url is string => url !== null);
+}
+
 export async function presignTranslationMap(
   translations: unknown,
   expiresIn: number = 43200,

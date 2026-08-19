@@ -8,7 +8,7 @@ import type { Segment } from "@/store/editorSlice";
 
 // Keep in lockstep with backend/src/utils/segmentRenderFingerprint.ts. Bump
 // when a Remotion bundle change alters output without changing project inputs.
-export const RENDER_PIPELINE_VERSION = 2;
+export const RENDER_PIPELINE_VERSION = 3;
 
 function normalizeFraming(framing: SegmentFraming | undefined) {
   if (!framing) return null;
@@ -38,10 +38,7 @@ export function computeSegmentRenderFingerprint(
     captions: {
       enabled: captionSettings.enabled,
       style: captionSettings.style,
-      ...(captionSettings.activeLanguage &&
-      captionSettings.activeLanguage !== "original"
-        ? { activeLanguage: captionSettings.activeLanguage }
-        : {}),
+      activeLanguage: captionSettings.activeLanguage || "original",
       ...(captionSettings.enabled && transcriptionVersion
         ? { transcriptionVersion }
         : {}),

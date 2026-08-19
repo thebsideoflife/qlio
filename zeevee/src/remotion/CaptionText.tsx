@@ -1,5 +1,5 @@
-import type { CaptionLine, CaptionStyle } from "../../remotion/types";
-import { resolveCaptionContent } from "../../remotion/captionContent";
+import type { CaptionLine, CaptionStyle } from "./types";
+import { resolveCaptionContent } from "./captionContent";
 
 interface CaptionTextProps {
   caption: CaptionLine;
@@ -10,13 +10,8 @@ interface CaptionTextProps {
 }
 
 /**
- * Shared caption text renderer used by both:
- * - CaptionOverlay (editor preview with drag/resize)
- * - CaptionDisplay in Remotion (final video render)
- *
- * Originals have word timings (karaoke highlight). Translations are line
- * text only — show `caption.text` when `words` is empty. Redeploy the
- * Remotion site after changing this file or Spanish exports go blank.
+ * One text implementation for the editor and Remotion.
+ * Whisper originals retain word timing; translations remain phrase text.
  */
 export function CaptionText({
   caption,
@@ -29,7 +24,7 @@ export function CaptionText({
   const displayText = content.mode === "text" ? content.text : null;
 
   const activeWordIndex = visibleWords.findIndex(
-    (w) => currentTime >= w.start && currentTime < w.end,
+    (word) => currentTime >= word.start && currentTime < word.end,
   );
 
   const highlightColor = style.highlightColor || "#fbbf24";
@@ -61,18 +56,18 @@ export function CaptionText({
         {displayText ? (
           <span>{displayText}</span>
         ) : (
-          visibleWords.map((word, idx) => (
+          visibleWords.map((word, index) => (
             <span
-              key={`${word.start}-${idx}`}
+              key={`${word.start}-${index}`}
               style={{
                 color:
-                  showAnimation && idx === activeWordIndex
+                  showAnimation && index === activeWordIndex
                     ? highlightColor
                     : style.color,
               }}
             >
               {word.value}
-              {idx < visibleWords.length - 1 ? " " : ""}
+              {index < visibleWords.length - 1 ? " " : ""}
             </span>
           ))
         )}

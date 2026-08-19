@@ -1,22 +1,18 @@
-import type { CaptionLine, CaptionSettings } from "../../remotion/types";
+import type { CaptionLine, CaptionSettings } from "./types";
 import { CaptionText } from "./CaptionText";
+import { activeCaptionAt } from "./captionTiming";
 
 interface CaptionDisplayProps {
   captions: CaptionLine[];
   settings: CaptionSettings;
   currentTime: number;
   containerHeight: number;
-  children?: React.ReactNode; // overlay controls (drag handles, etc.)
+  children?: React.ReactNode;
 }
 
 /**
- * Shared caption renderer used by both:
- * - CaptionedVideo (Remotion composition — server-side render)
- * - CaptionOverlay (editor preview — browser)
- *
- * Positions the active caption and renders CaptionText.
- * Pass containerHeight from useVideoConfig().height (Remotion)
- * or the overlay div's offsetHeight (editor).
+ * The only timed caption renderer. Both the browser editor and Remotion use
+ * this component, so source selection and clock behavior cannot drift by UI.
  */
 export function CaptionDisplay({
   captions,
@@ -28,11 +24,7 @@ export function CaptionDisplay({
   if (!settings.enabled) return null;
 
   const { style } = settings;
-
-  const activeCaption = captions.find(
-    (c) => currentTime >= c.startTime && currentTime < c.endTime,
-  );
-
+  const activeCaption = activeCaptionAt(captions, currentTime);
   if (!activeCaption) return null;
 
   return (
