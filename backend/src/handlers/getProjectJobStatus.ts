@@ -44,6 +44,7 @@ interface ProjectJobStatusResponse {
   generationJob: JobStatus | null;
   framingJob: JobStatus | null;
   exportMetadataJob: JobStatus | null;
+  exportPackageJob: JobStatus | null;
   // Include active render job if any
   activeRenderJobId: string | null;
   /** Null when no live agent run owns this project. Also null if the lookup failed. */
@@ -100,7 +101,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
           TableName: PROJECTS_TABLE,
           Key: { projectId },
           // Only fetch job-related fields
-          ProjectionExpression: "projectId, generationJob, framingJob, exportMetadataJob, activeRenderJobId",
+          ProjectionExpression: "projectId, generationJob, framingJob, exportMetadataJob, exportPackageJob, activeRenderJobId",
         })
       ),
       readAgentRun(projectId),
@@ -132,7 +133,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
     // Mark a stale job as failed in DynamoDB (fire-and-forget, don't block response)
     const markJobAsFailed = (
-      jobType: "generationJob" | "framingJob" | "exportMetadataJob",
+      jobType: "generationJob" | "framingJob" | "exportMetadataJob" | "exportPackageJob",
       job: any,
     ) => {
       const now = new Date().toISOString();
@@ -157,7 +158,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     // Extract job status, detecting and marking stale jobs as failed
     const extractJobStatus = (
       job: any,
-      jobType: "generationJob" | "framingJob" | "exportMetadataJob",
+      jobType: "generationJob" | "framingJob" | "exportMetadataJob" | "exportPackageJob",
     ): JobStatus | null => {
       if (!job) return null;
 
@@ -165,7 +166,9 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       const activeStatuses =
         jobType === "exportMetadataJob"
           ? ["pending", "generating"]
-          : ["pending", "analyzing"];
+          : jobType === "exportPackageJob"
+            ? ["pending", "packaging"]
+            : ["pending", "analyzing"];
 
       if (isStaleJob(job, activeStatuses)) {
         console.log(
@@ -210,6 +213,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       exportMetadataJob: extractJobStatus(
         project.exportMetadataJob,
         "exportMetadataJob",
+      ),
+      exportPackageJob: extractJobStatus(
+        project.exportPackageJob,
+        "exportPackageJob",
       ),
       activeRenderJobId: project.activeRenderJobId || null,
       agentRun,

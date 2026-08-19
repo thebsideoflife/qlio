@@ -96,6 +96,19 @@ data "aws_iam_policy_document" "lambda_policy" {
       "${aws_s3_bucket.renders.arn}/*",
     ]
   }
+  # Write delivery zips next to the copied scene renders
+  statement {
+    actions = [
+      "s3:PutObject",
+      "s3:AbortMultipartUpload",
+      "s3:ListBucketMultipartUploads",
+      "s3:ListMultipartUploadParts",
+    ]
+    resources = [
+      aws_s3_bucket.renders.arn,
+      "${aws_s3_bucket.renders.arn}/projects/*/exports/*",
+    ]
+  }
   # Allow Lambda to invoke other Lambdas (for split -> indexChunks flow)
   statement {
     actions = ["lambda:InvokeFunction"]

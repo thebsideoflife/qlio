@@ -248,6 +248,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       thumbnailLockUntil: _thumbLock,
       posterKey: _posterKey,
       exportMetadataJob: _exportMetadataJob,
+      exportPackageJob: _exportPackageJob,
       segmentMetadata: _segmentMetadata,
       ...projectPublic
     } = project;

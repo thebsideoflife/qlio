@@ -53,7 +53,10 @@ export function isOriginalCaptionLanguage(
   if (!activeLanguage) return true;
   if (activeLanguage === ORIGINAL_CAPTION_LANGUAGE) return true;
   if (!originalLanguage) return false;
-  return activeLanguage === originalLanguage;
+  const active = normalizeLanguageCode(activeLanguage);
+  const original = normalizeLanguageCode(originalLanguage);
+  if (active === "und" || original === "und") return false;
+  return active === original;
 }
 
 /** ISO code when Whisper actually detected a language; otherwise null. */

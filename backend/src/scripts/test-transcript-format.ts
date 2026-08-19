@@ -2,23 +2,31 @@
  * Tests for Whisper transcript JSON, chunk planning, and overlap mapping.
  */
 import {
+  applyWordEditsToWords,
+  captionsFromParsedTranscript,
+  captionsOverlappingRange,
   groupWordsIntoCaptions,
   inferOriginalTranscriptLanguage,
   normalizeLanguageCode,
   originalTranscriptKey,
   parseTranscriptJson,
+  pickTranslationUri,
   selectSupersededTranscriptKeys,
+  shiftCaptionsBy,
   transcriptVersionMatches,
   translationTranscriptKey,
   whisperChunkKey,
 } from "../utils/transcript-format";
 import {
+  isOriginalCaptionLanguage,
   mapChunkWordsToVideoClock,
   MAX_TRANSCRIBE_HOPS,
   mergeChunkWords,
   parseFfprobeStreamProbe,
   parseTranscribeHop,
   planAudioChunks,
+  resolveRenderTranscriptCandidates,
+  resolveRenderTranscriptUri,
   storedChunkMatchesPlan,
   transcribeContinuationDecision,
   WHISPER_OVERLAP_SAMPLES,
@@ -28,6 +36,10 @@ import {
 import { isEffectivelySilent } from "../utils/wav";
 import { classifyTranscriptionRun } from "../utils/transcription-run";
 import { computeSegmentRenderFingerprint } from "../utils/segmentRenderFingerprint";
+import {
+  buildExportPackageLayout,
+  exportPackageObjectKey,
+} from "../utils/exportPackageLayout";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
@@ -411,6 +423,165 @@ assert(
     hop: MAX_TRANSCRIBE_HOPS,
   }) === "abort-max-hops",
   "already at cap → stop even with time left",
+);
+
+// --- export burns the selected language from the current Whisper run ---
+const currentVersion = "run-new";
+const currentOriginal = `s3://bucket/${originalTranscriptKey("asset-1", currentVersion)}`;
+const currentSpanish = `s3://bucket/${translationTranscriptKey("asset-1", currentVersion, "es")}`;
+const staleSpanish = `s3://bucket/${translationTranscriptKey("asset-1", "run-old", "es")}`;
+const legacyOriginal = "s3://bucket/transcriptions/asset-1.json";
+
+assert(
+  resolveRenderTranscriptUri({
+    assetId: "asset-1",
+    activeLanguage: "es",
+    originalLanguage: "en",
+    transcriptionVersion: currentVersion,
+    translations: { es: currentSpanish },
+    transcriptionUrl: currentOriginal,
+  }) === currentSpanish,
+  "Spanish toggle burns the current Spanish file",
+);
+assert(
+  resolveRenderTranscriptUri({
+    assetId: "asset-1",
+    activeLanguage: "Spanish",
+    originalLanguage: "English",
+    transcriptionVersion: currentVersion,
+    translations: { Spanish: currentSpanish },
+    transcriptionUrl: currentOriginal,
+  }) === currentSpanish,
+  "language aliases still resolve to the Spanish file",
+);
+assert(
+  resolveRenderTranscriptUri({
+    assetId: "asset-1",
+    activeLanguage: "es",
+    originalLanguage: "en",
+    transcriptionVersion: currentVersion,
+    translations: { es: staleSpanish },
+    transcriptionUrl: currentOriginal,
+  }) === currentSpanish,
+  "stale Spanish from a previous transcript is replaced by this version",
+);
+assert(
+  resolveRenderTranscriptUri({
+    assetId: "asset-1",
+    activeLanguage: "original",
+    originalLanguage: "en",
+    transcriptionVersion: currentVersion,
+    translations: { es: currentSpanish },
+    transcriptionUrl: currentOriginal,
+  }) === currentOriginal,
+  "Original toggle burns the current Whisper file, not a translation",
+);
+assert(
+  resolveRenderTranscriptUri({
+    assetId: "asset-1",
+    activeLanguage: "es",
+    originalLanguage: "es",
+    transcriptionVersion: currentVersion,
+    translations: { en: `s3://bucket/${translationTranscriptKey("asset-1", currentVersion, "en")}` },
+    transcriptionUrl: currentOriginal,
+  }) === currentOriginal,
+  "Spanish source with Spanish selected uses the original Whisper file",
+);
+assert(
+  resolveRenderTranscriptUri({
+    assetId: "asset-1",
+    activeLanguage: "original",
+    transcriptionVersion: currentVersion,
+    transcriptionUrl: legacyOriginal,
+  }) === currentOriginal,
+  "legacy TwelveLabs path is not preferred once a Whisper version exists",
+);
+assert(
+  resolveRenderTranscriptCandidates({
+    assetId: "asset-1",
+    activeLanguage: "es",
+    originalLanguage: "en",
+    transcriptionVersion: currentVersion,
+    translations: { es: currentSpanish },
+    transcriptionUrl: legacyOriginal,
+  }).join(",") === `${currentSpanish},${currentOriginal},${legacyOriginal}`,
+  "Spanish first, then Whisper, TwelveLabs only if those files are missing",
+);
+assert(
+  resolveRenderTranscriptCandidates({
+    assetId: "asset-1",
+    activeLanguage: "original",
+    transcriptionUrl: legacyOriginal,
+  }).join(",") === legacyOriginal,
+  "TwelveLabs is used only when no Whisper original exists",
+);
+assert(
+  isOriginalCaptionLanguage("es", "Spanish"),
+  "es and Spanish are the same caption language",
+);
+assert(
+  pickTranslationUri({ Spanish: currentSpanish }, "es") === currentSpanish,
+  "translation map keys are normalized",
+);
+
+const overlapping = captionsOverlappingRange(
+  [
+    { id: "before", startTime: 9.2, endTime: 12.1, text: "Hola", words: [] },
+    { id: "inside", startTime: 12.5, endTime: 14, text: "mundo", words: [] },
+    { id: "after", startTime: 20, endTime: 22, text: "adiós", words: [] },
+  ],
+  10,
+  20,
+);
+assert(
+  overlapping.map((c) => c.id).join(",") === "before,inside",
+  "export includes lines that start before the cut but are still on screen",
+);
+const shifted = shiftCaptionsBy(overlapping, -10);
+assert(
+  almost(shifted[0].startTime, -0.8),
+  "overlapping line is shifted onto the clip clock",
+);
+assert(
+  almost(shifted[1].startTime, 2.5),
+  "in-range line is shifted onto the clip clock",
+);
+
+const edited = applyWordEditsToWords(
+  [
+    { start: 1, end: 1.2, value: "Hello" },
+    { start: 1.2, end: 1.5, value: "world" },
+  ],
+  { "1-1.2": "Hola" },
+);
+assert(edited[0].value === "Hola", "word edits apply before burn-in");
+assert(
+  captionsFromParsedTranscript(
+    { kind: "translation", language: "es", lines: overlapping },
+    { "1-1.2": "ignored" },
+  )[0].text === "Hola",
+  "translated lines are used as-is",
+);
+
+const packed = buildExportPackageLayout({
+  projectTitle: "Remembering Hayden Panettiere",
+  scenes: [
+    { segmentId: "a", title: "Juliette Woos Deacon" },
+    { segmentId: "b", title: "Mother calls Juliette" },
+  ],
+});
+assert(
+  packed.zipFilename === "Remembering Hayden Panettiere.zip",
+  "server zip uses the delivery folder name",
+);
+assert(
+  packed.scenes[0].videoPath.includes("Video Scenes/Juliette_Woos_Deacon.mp4"),
+  "server zip scene path matches the editor layout",
+);
+assert(
+  exportPackageObjectKey("proj-1", "job-1") ===
+    "projects/proj-1/exports/job-1.zip",
+  "export zip key is scoped to the project",
 );
 
 console.log("test-transcript-format: ok");

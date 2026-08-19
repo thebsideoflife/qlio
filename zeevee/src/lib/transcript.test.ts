@@ -1,6 +1,7 @@
 import {
   groupLinesForTranscript,
   groupWordsForTranscript,
+  isOriginalCaptionLanguage,
   parseTranscriptPayload,
 } from "./transcript";
 import type { CaptionLine, CaptionWord } from "../remotion/types";
@@ -106,5 +107,14 @@ const legacy = parseTranscriptPayload([
 ]);
 assert(legacy.language === "en", "bare legacy word arrays infer English");
 assert(legacy.words.length === 1, "legacy words still parse");
+
+assert(
+  isOriginalCaptionLanguage("es", "Spanish"),
+  "es and Spanish count as the original language",
+);
+assert(
+  !isOriginalCaptionLanguage("es", "en"),
+  "Spanish is not original when the source is English",
+);
 
 console.log("transcript.test: ok");

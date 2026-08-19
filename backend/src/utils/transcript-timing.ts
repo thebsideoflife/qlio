@@ -1,4 +1,14 @@
 import type { CaptionWord } from "./transcript-format";
+import {
+  LEGACY_TRANSCRIPTION_VERSION,
+  bucketFromS3Uri,
+  isLegacyTranscriptKey,
+  normalizeLanguageCode,
+  originalTranscriptKey,
+  pickTranslationUri,
+  translationTranscriptKey,
+  translationUriMatchesVersion,
+} from "./transcript-format";
 
 /** Whisper input is always decoded to this rate. Chunk math is in samples. */
 export const WHISPER_SAMPLE_RATE = 16_000;
@@ -322,29 +332,126 @@ export function isOriginalCaptionLanguage(
   if (!activeLanguage) return true;
   if (activeLanguage === ORIGINAL_CAPTION_LANGUAGE) return true;
   if (!originalLanguage) return false;
-  return activeLanguage === originalLanguage;
+  const active = normalizeLanguageCode(activeLanguage);
+  const original = normalizeLanguageCode(originalLanguage);
+  if (active === "und" || original === "und") return false;
+  return active === original;
+}
+
+function whisperOriginalUri(params: {
+  assetId?: string;
+  transcriptionVersion?: string | null;
+  transcriptionUrl?: string | null;
+}): string | null {
+  const version = params.transcriptionVersion;
+  const assetId = params.assetId;
+  if (
+    !assetId ||
+    !version ||
+    version === LEGACY_TRANSCRIPTION_VERSION
+  ) {
+    return null;
+  }
+  const bucket = bucketFromS3Uri(params.transcriptionUrl);
+  if (!bucket) return null;
+  return `s3://${bucket}/${originalTranscriptKey(assetId, version)}`;
+}
+
+function asS3Uri(uri: string | null | undefined): string | null {
+  return uri && uri.startsWith("s3://") ? uri : null;
+}
+
+export type ResolveRenderTranscriptParams = {
+  assetId?: string | null;
+  activeLanguage?: string | null;
+  originalLanguage?: string | null;
+  transcriptionVersion?: string | null;
+  translations?: Record<string, string> | null;
+  transcriptionUrl?: string | null;
+};
+
+function currentTranslationUri(
+  params: ResolveRenderTranscriptParams,
+): string | null {
+  const activeRaw = params.activeLanguage?.trim() || "";
+  const activeNorm = activeRaw ? normalizeLanguageCode(activeRaw) : "";
+  const originalNorm = params.originalLanguage
+    ? normalizeLanguageCode(params.originalLanguage)
+    : undefined;
+  const wantTranslation =
+    !!activeRaw &&
+    activeRaw !== ORIGINAL_CAPTION_LANGUAGE &&
+    activeNorm !== "und" &&
+    !isOriginalCaptionLanguage(activeNorm, originalNorm);
+  if (!wantTranslation || !activeNorm) return null;
+
+  const version =
+    typeof params.transcriptionVersion === "string" &&
+    params.transcriptionVersion &&
+    params.transcriptionVersion !== LEGACY_TRANSCRIPTION_VERSION
+      ? params.transcriptionVersion
+      : null;
+  const assetId = params.assetId || undefined;
+  const mapped = pickTranslationUri(params.translations, activeNorm);
+  const bucket =
+    bucketFromS3Uri(mapped) || bucketFromS3Uri(params.transcriptionUrl);
+  if (mapped && assetId && version && bucket) {
+    const canonical = `s3://${bucket}/${translationTranscriptKey(assetId, version, activeNorm)}`;
+    if (translationUriMatchesVersion(mapped, assetId, version, activeNorm)) {
+      return asS3Uri(mapped) || canonical;
+    }
+    // Stale map entry from a previous Whisper run — this version's file only.
+    return canonical;
+  }
+  return asS3Uri(mapped);
 }
 
 /**
- * Pick the S3 URI burned into the export. A stored translation wins whenever
- * the producer selected that language — including legacy assets that never
- * got `originalLanguage`.
+ * Ordered S3 URIs to try when burning captions.
+ *
+ * 1. Translation for the toggled language, if it belongs to this Whisper run
+ * 2. Current Whisper original
+ * 3. TwelveLabs / leftover transcriptionUrl only if Whisper is missing
  */
-export function resolveRenderTranscriptUri(params: {
-  activeLanguage?: string | null;
-  originalLanguage?: string | null;
-  translations?: Record<string, string> | null;
-  transcriptionUrl?: string | null;
-}): string | null {
-  const lang = params.activeLanguage?.trim() || "";
-  const translations = params.translations || {};
-  if (
-    lang &&
-    lang !== ORIGINAL_CAPTION_LANGUAGE &&
-    translations[lang] &&
-    !isOriginalCaptionLanguage(lang, params.originalLanguage)
+export function resolveRenderTranscriptCandidates(
+  params: ResolveRenderTranscriptParams,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (uri: string | null | undefined) => {
+    if (!uri || !uri.startsWith("s3://") || seen.has(uri)) return;
+    seen.add(uri);
+    out.push(uri);
+  };
+
+  add(currentTranslationUri(params));
+
+  const whisper = whisperOriginalUri({
+    assetId: params.assetId || undefined,
+    transcriptionVersion: params.transcriptionVersion,
+    transcriptionUrl: params.transcriptionUrl,
+  });
+  add(whisper);
+
+  // TwelveLabs flat file is last-resort only — never preferred over Whisper.
+  if (!whisper) {
+    add(asS3Uri(params.transcriptionUrl));
+  } else if (
+    params.assetId &&
+    isLegacyTranscriptKey(params.assetId, params.transcriptionUrl)
   ) {
-    return translations[lang];
+    add(asS3Uri(params.transcriptionUrl));
   }
-  return params.transcriptionUrl || null;
+
+  return out;
+}
+
+/**
+ * Preferred URI for the job record. Same order as
+ * `resolveRenderTranscriptCandidates` — first entry wins.
+ */
+export function resolveRenderTranscriptUri(
+  params: ResolveRenderTranscriptParams,
+): string | null {
+  return resolveRenderTranscriptCandidates(params)[0] ?? null;
 }
