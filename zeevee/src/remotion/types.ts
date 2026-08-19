@@ -9,7 +9,8 @@ export interface CaptionLine {
   startTime: number;
   endTime: number;
   text: string;
-  words: CaptionWord[];
+  /** Present on Whisper originals. Translations are line text only. */
+  words?: CaptionWord[];
 }
 
 export interface CaptionStyle {

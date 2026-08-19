@@ -1,4 +1,5 @@
 import type { CaptionLine, CaptionStyle } from "../../remotion/types";
+import { resolveCaptionContent } from "../../remotion/captionContent";
 
 interface CaptionTextProps {
   caption: CaptionLine;
@@ -23,8 +24,9 @@ export function CaptionText({
   currentTime,
   containerHeight,
 }: CaptionTextProps) {
-  // Filter out empty (deleted) words
-  const visibleWords = (caption.words ?? []).filter((word) => word.value !== "");
+  const content = resolveCaptionContent(caption);
+  const visibleWords = content.mode === "words" ? content.words : [];
+  const displayText = content.mode === "text" ? content.text : null;
 
   const activeWordIndex = visibleWords.findIndex(
     (w) => currentTime >= w.start && currentTime < w.end,
@@ -32,13 +34,8 @@ export function CaptionText({
 
   const highlightColor = style.highlightColor || "#fbbf24";
   const showAnimation = highlightColor !== "none" && visibleWords.length > 0;
-  const displayText =
-    visibleWords.length > 0
-      ? null
-      : caption.text.trim();
 
-  // Don't render anything if all words are deleted and there is no line text
-  if (visibleWords.length === 0 && !displayText) return null;
+  if (content.mode === "empty") return null;
 
   return (
     <div

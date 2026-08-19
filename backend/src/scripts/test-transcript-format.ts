@@ -7,6 +7,7 @@ import {
   captionsOverlappingRange,
   groupWordsIntoCaptions,
   inferOriginalTranscriptLanguage,
+  languageNamedTranscriptKey,
   normalizeLanguageCode,
   originalTranscriptKey,
   parseTranscriptJson,
@@ -479,6 +480,55 @@ assert(
 assert(
   resolveRenderTranscriptUri({
     assetId: "asset-1",
+    activeLanguage: "en",
+    originalLanguage: "en",
+    transcriptionVersion: currentVersion,
+    translations: { es: currentSpanish },
+    transcriptionUrl: currentOriginal,
+  }) === currentOriginal,
+  "English source with English selected uses the Whisper original",
+);
+assert(
+  resolveRenderTranscriptUri({
+    assetId: "asset-1",
+    originalLanguage: "en",
+    transcriptionVersion: currentVersion,
+    translations: { es: currentSpanish },
+    transcriptionUrl: currentOriginal,
+  }) === currentOriginal,
+  "missing activeLanguage defaults to the Whisper original",
+);
+assert(
+  resolveRenderTranscriptCandidates({
+    assetId: "82ad13ed",
+    activeLanguage: "original",
+    originalLanguage: "en",
+    transcriptionVersion: "legacy-v1",
+    translations: {
+      es: "s3://bucket/transcriptions/82ad13ed/versions/legacy-v1/translations/es.json",
+    },
+    transcriptionUrl: "s3://bucket/transcriptions/82ad13ed.json",
+  }).join(",") ===
+    [
+      "s3://bucket/transcriptions/82ad13ed/en.json",
+      "s3://bucket/transcriptions/82ad13ed.json",
+    ].join(","),
+  "legacy Original toggle tries Whisper /en.json before the TwelveLabs file",
+);
+assert(
+  !resolveRenderTranscriptCandidates({
+    assetId: "asset-1",
+    activeLanguage: "original",
+    originalLanguage: "en",
+    transcriptionVersion: currentVersion,
+    translations: { es: currentSpanish },
+    transcriptionUrl: currentOriginal,
+  })[0]?.includes("/translations/"),
+  "Original toggle never prefers a /translations/ object",
+);
+assert(
+  resolveRenderTranscriptUri({
+    assetId: "asset-1",
     activeLanguage: "es",
     originalLanguage: "es",
     transcriptionVersion: currentVersion,
@@ -504,8 +554,14 @@ assert(
     transcriptionVersion: currentVersion,
     translations: { es: currentSpanish },
     transcriptionUrl: legacyOriginal,
-  }).join(",") === `${currentSpanish},${currentOriginal},${legacyOriginal}`,
-  "Spanish first, then Whisper, TwelveLabs only if those files are missing",
+  }).join(",") ===
+    [
+      currentSpanish,
+      currentOriginal,
+      `s3://bucket/${languageNamedTranscriptKey("asset-1", "en")}`,
+      legacyOriginal,
+    ].join(","),
+  "Spanish first, then Whisper originals, TwelveLabs last",
 );
 assert(
   resolveRenderTranscriptCandidates({
@@ -514,6 +570,15 @@ assert(
     transcriptionUrl: legacyOriginal,
   }).join(",") === legacyOriginal,
   "TwelveLabs is used only when no Whisper original exists",
+);
+assert(
+  resolveRenderTranscriptUri({
+    assetId: "asset-1",
+    activeLanguage: "original",
+    originalLanguage: "en",
+    transcriptionUrl: legacyOriginal,
+  }) === `s3://bucket/${languageNamedTranscriptKey("asset-1", "en")}`,
+  "a leftover TwelveLabs pointer still prefers the Whisper /en.json if it exists",
 );
 assert(
   isOriginalCaptionLanguage("es", "Spanish"),

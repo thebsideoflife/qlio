@@ -45,6 +45,14 @@ export function originalTranscriptKey(
   return `transcriptions/${assetId}/versions/${encodeURIComponent(transcriptionVersion)}/original.json`;
 }
 
+/** Pre-versioned Whisper original (`transcriptions/{id}/en.json`). */
+export function languageNamedTranscriptKey(
+  assetId: string,
+  language: string,
+): string {
+  return `transcriptions/${assetId}/${normalizeLanguageCode(language)}.json`;
+}
+
 export function translationTranscriptKey(
   assetId: string,
   transcriptionVersion: string,
