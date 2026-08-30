@@ -47,6 +47,8 @@ import {
   PanelTop,
 } from "lucide-react";
 import { getEffectiveKeyframes } from "@/remotion/types";
+import { resolveFramingAtTime } from "@/remotion/framingInterpolation";
+import { probeSourceFps } from "@/lib/sourceFps";
 import type { AspectRatio } from "@/remotion/types";
 import {
   groupWordsForTranscript,
@@ -91,6 +93,7 @@ export default function Editor() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState(false);
   const [sourceAspect, setSourceAspect] = useState(DEFAULT_SOURCE_ASPECT);
+  const [sourceFps, setSourceFps] = useState<number | null>(null);
   // Sidebar width/open state persisted in localStorage (UI chrome, not Redux),
   // matching existing conventions (api_password, zeevee:recentAssets).
   const SIDEBAR_STORAGE_KEY = "zeevee:editorSidebar";
@@ -238,7 +241,6 @@ export default function Editor() {
   const [previewZoom, setPreviewZoom] = useState(1.0);
   const [previewFocus, setPreviewFocus] = useState({ x: 0.5, y: 0.5 });
 
-  // Get the currently selected keyframe's values
   const selectedKeyframe = React.useMemo(() => {
     if (!selectedSegment?.framing) return null;
     const kfs = getEffectiveKeyframes(selectedSegment.framing);
@@ -248,14 +250,30 @@ export default function Editor() {
     return kfs[0];
   }, [selectedSegment, selectedKeyframeId]);
 
-  // Derive display values from selected keyframe or preview state
-  const displayZoom = selectedKeyframe ? selectedKeyframe.zoom : previewZoom;
-  const displayFocusX = selectedKeyframe
-    ? selectedKeyframe.focusX
-    : previewFocus.x;
-  const displayFocusY = selectedKeyframe
-    ? selectedKeyframe.focusY
-    : previewFocus.y;
+  // Video follows playhead so a cut cannot flash keyframe 0 (default/fit).
+  const playheadSeg =
+    segments.find((s) => currentTime >= s.startTime && currentTime < s.endTime) ??
+    selectedSegment;
+  const playheadFraming = playheadSeg?.framing
+    ? resolveFramingAtTime(
+        getEffectiveKeyframes(playheadSeg.framing),
+        Math.max(0, currentTime - playheadSeg.startTime),
+        sourceFps,
+      )
+    : { zoom: previewZoom, focusX: previewFocus.x, focusY: previewFocus.y };
+  const displayZoom = playheadFraming.zoom;
+  const displayFocusX = playheadFraming.focusX;
+  const displayFocusY = playheadFraming.focusY;
+  // Sliders edit the selected keyframe. Until one is selected, follow the
+  // playhead so a segment change cannot flash keyframe 0.
+  const sliderFraming =
+    selectedKeyframeId && selectedKeyframe
+      ? {
+          zoom: selectedKeyframe.zoom,
+          focusX: selectedKeyframe.focusX,
+          focusY: selectedKeyframe.focusY,
+        }
+      : playheadFraming;
 
   // Unified helper: update keyframe if segment selected, otherwise update local preview
   const updateFramingValue = useCallback(
@@ -384,6 +402,25 @@ export default function Editor() {
     const video = videoRef.current;
     if (!video || video.videoWidth <= 0 || video.videoHeight <= 0) return;
     setSourceAspect(video.videoWidth / video.videoHeight);
+  }, [videoUrl]);
+
+  useEffect(() => {
+    if (!videoUrl) {
+      setSourceFps(null);
+      return;
+    }
+    let cancelled = false;
+    setSourceFps(null);
+    probeSourceFps(videoUrl)
+      .then((fps) => {
+        if (!cancelled) setSourceFps(fps);
+      })
+      .catch(() => {
+        if (!cancelled) setSourceFps(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [videoUrl]);
 
   // Set projectId in Redux for sync middleware
@@ -592,14 +629,6 @@ export default function Editor() {
                       objectPosition: "center center",
                     };
                   }
-                  if (displayZoom <= 0) {
-                    return {
-                      width: "100%",
-                      height: "100%",
-                      objectFit: "contain" as const,
-                      objectPosition: "center center",
-                    };
-                  }
                   const { scale, translateX, translateY } = cssContainTransform(
                     displayZoom,
                     aspectRatioValue,
@@ -638,13 +667,13 @@ export default function Editor() {
                     <>
                       <FramingSlider
                         orientation="vertical"
-                        value={displayFocusY}
+                        value={sliderFraming.focusY}
                         aspectRatio={1 / MAX_DIGITAL_ZOOM}
                         onChange={(y) => updateFramingValue({ focusY: y })}
                       />
                       <FramingSlider
                         orientation="horizontal"
-                        value={displayFocusX}
+                        value={sliderFraming.focusX}
                         aspectRatio={1 / MAX_DIGITAL_ZOOM}
                         onChange={(x) => updateFramingValue({ focusX: x })}
                       />
@@ -654,7 +683,7 @@ export default function Editor() {
                     globalFraming.aspectRatio === "1:1") && (
                     <FramingSlider
                       orientation="horizontal"
-                      value={displayFocusX}
+                      value={sliderFraming.focusX}
                       aspectRatio={
                         globalFraming.aspectRatio === "1:1"
                           ? 1.0 / (16 / 9)
@@ -727,7 +756,7 @@ export default function Editor() {
               </Tooltip>
               <div className="h-72 min-h-0 max-h-[calc(100%-2.5rem)] rounded-2xl border border-zinc-600/70 bg-zinc-900/80 px-1 py-2.5 shadow-md backdrop-blur-md">
                 <ZoomSlider
-                  value={displayZoom}
+                  value={sliderFraming.zoom}
                   canvasAspect={aspectRatioValue}
                   sourceAspect={sourceAspect}
                   disabled={squareTop}
@@ -744,6 +773,7 @@ export default function Editor() {
             videoRef={videoRef}
             previewMode={previewMode}
             onPreviewModeChange={setPreviewMode}
+            fps={sourceFps}
           />
         </div>
       </div>

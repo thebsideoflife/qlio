@@ -1,29 +1,45 @@
 import type { FramingKeyframe } from "./types";
 
+export function frameIndex(seconds: number, fps: number): number {
+  return Math.round(seconds * fps);
+}
+
 /**
- * Resolve the active framing values at a given time within a segment.
- * Uses hard-cut logic: finds the last keyframe with time <= timeInSegment.
+ * Hold-until-next: the last keyframe whose time is ≤ playhead.
+ * Compares on an integer frame grid when `fps` is known; otherwise seconds.
  */
-export function resolveFramingAtTime(
+export function resolveKeyframeAtTime(
   keyframes: FramingKeyframe[],
   timeInSegment: number,
-): { focusX: number; focusY: number; zoom: number } {
-  if (keyframes.length === 0) {
-    return { focusX: 0.5, focusY: 0.5, zoom: 0.0 };
-  }
+  fps: number | null,
+): FramingKeyframe | null {
+  if (keyframes.length === 0) return null;
 
-  // Sort by time ascending
   const sorted = [...keyframes].sort((a, b) => a.time - b.time);
+  const useFrames = fps != null && fps > 0;
+  const t = useFrames ? frameIndex(timeInSegment, fps) : timeInSegment;
 
-  // Find the last keyframe at or before the current time
   let active = sorted[0];
   for (const kf of sorted) {
-    if (kf.time <= timeInSegment) {
+    const kfT = useFrames ? frameIndex(kf.time, fps) : kf.time;
+    if (kfT <= t) {
       active = kf;
     } else {
       break;
     }
   }
 
+  return active;
+}
+
+export function resolveFramingAtTime(
+  keyframes: FramingKeyframe[],
+  timeInSegment: number,
+  fps: number | null,
+): { focusX: number; focusY: number; zoom: number } {
+  const active = resolveKeyframeAtTime(keyframes, timeInSegment, fps);
+  if (!active) {
+    return { focusX: 0.5, focusY: 0.5, zoom: 0.0 };
+  }
   return { focusX: active.focusX, focusY: active.focusY, zoom: active.zoom };
 }

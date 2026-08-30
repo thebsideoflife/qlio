@@ -124,6 +124,8 @@ export type CaptionedVideoProps = {
   globalFraming?: GlobalFramingSettings;
   /** Source video width/height. Defaults to 16:9 when omitted. */
   sourceAspect?: number;
+  /** Source video frame rate. When set, calculateMetadata uses it as composition fps. */
+  sourceFps?: number;
 };
 
 // Snap positions for caption placement

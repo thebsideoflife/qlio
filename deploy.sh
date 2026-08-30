@@ -70,27 +70,33 @@ else
   echo "[3/4] Building FFmpeg Lambda Docker image..."
   cd backend
   
-  # Check if image needs to be built (ECR is empty or we want to force rebuild)
   ACCOUNT_ID=$(aws sts get-caller-identity --profile "$AWS_PROFILE" --query Account --output text)
   ECR_URL="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/zeevee-ffmpeg-lambda"
   
   # Login to ECR
   aws ecr get-login-password --profile "$AWS_PROFILE" --region "$AWS_REGION" | \
     docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com" 2>/dev/null
-  
-  # Check if image exists
-  IMAGE_EXISTS=$(aws ecr describe-images --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-    --repository-name "zeevee-ffmpeg-lambda" --image-ids imageTag=latest 2>/dev/null && echo "yes" || echo "no")
-  
-  if [ "$IMAGE_EXISTS" = "no" ]; then
-    echo "  Building Docker image (this may take a few minutes on first run)..."
-    docker build --platform linux/amd64 -f Dockerfile.ffmpeg -t "zeevee-ffmpeg-lambda:latest" .
-    docker tag "zeevee-ffmpeg-lambda:latest" "${ECR_URL}:latest"
-    docker push "${ECR_URL}:latest"
-    echo "  ✓ Docker image pushed to ECR"
-  else
-    echo "  Docker image already exists in ECR (use --rebuild-docker to force)"
-  fi
+
+  echo "  Building Docker image..."
+  docker build --platform linux/amd64 --provenance=false -f Dockerfile.ffmpeg -t "zeevee-ffmpeg-lambda:latest" .
+  docker tag "zeevee-ffmpeg-lambda:latest" "${ECR_URL}:latest"
+  docker push "${ECR_URL}:latest"
+  echo "  ✓ Docker image pushed to ECR"
+
+  for FUNCTION_NAME in "zeevee-stitch-segments" "zeevee-split-video"; do
+    echo "  Updating ${FUNCTION_NAME}..."
+    aws lambda update-function-code \
+      --profile "$AWS_PROFILE" \
+      --region "$AWS_REGION" \
+      --function-name "$FUNCTION_NAME" \
+      --image-uri "${ECR_URL}:latest" \
+      --publish >/dev/null
+    aws lambda wait function-updated \
+      --profile "$AWS_PROFILE" \
+      --region "$AWS_REGION" \
+      --function-name "$FUNCTION_NAME"
+  done
+  echo "  ✓ FFmpeg Lambda functions updated"
   cd ..
 fi
 echo ""

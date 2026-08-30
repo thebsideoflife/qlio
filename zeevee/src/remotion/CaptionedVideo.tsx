@@ -15,6 +15,7 @@ import { DEFAULT_SEGMENT_FRAMING } from "./types";
 import { AutoFramedVideo } from "./AutoFramedVideo";
 import { SquareTopVideo } from "./SquareTopVideo";
 import { CaptionDisplay } from "./CaptionDisplay";
+import { frameIndex } from "./framingInterpolation";
 // Ensures Sanchez, Stardos Stencil (and other caption Google fonts) are ready for Lambda.
 import "./loadCaptionFonts";
 
@@ -93,8 +94,8 @@ function SegmentVideo({
       <AutoFramedVideo
         src={videoUrl}
         framing={framing}
-        startFrom={Math.round(startTime * fps)}
-        endAt={Math.round(endTime * fps)}
+        startFrom={frameIndex(startTime, fps)}
+        endAt={frameIndex(endTime, fps)}
         timeInSegment={timeInSegment}
         sourceAspect={sourceAspect}
       >
@@ -113,8 +114,8 @@ function SegmentVideo({
     <AbsoluteFill>
       <OffthreadVideo
         src={videoUrl}
-        startFrom={Math.round(startTime * fps)}
-        endAt={Math.round(endTime * fps)}
+        startFrom={frameIndex(startTime, fps)}
+        endAt={frameIndex(endTime, fps)}
       />
       <CaptionDisplay
         captions={captions}
@@ -239,7 +240,7 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
       acc.length > 0
         ? acc[acc.length - 1].startFrame + acc[acc.length - 1].duration
         : 0;
-    const duration = Math.round((segment.endTime - segment.startTime) * fps);
+    const duration = frameIndex(segment.endTime - segment.startTime, fps);
     acc.push({ segment, startFrame, duration });
     return acc;
   }, []);

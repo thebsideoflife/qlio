@@ -5,7 +5,6 @@ import { DEFAULT_SEGMENT_FRAMING, getEffectiveKeyframes } from "./types";
 import { resolveFramingAtTime } from "./framingInterpolation";
 import {
   DEFAULT_SOURCE_ASPECT,
-  framingGeometry,
   videoSizeAtZoom,
 } from "../lib/zoomMath";
 
@@ -57,61 +56,14 @@ export const AutoFramedVideo: React.FC<AutoFramedVideoProps> = ({
   timeInSegment = 0,
   sourceAspect = DEFAULT_SOURCE_ASPECT,
 }) => {
-  const { width: containerW, height: containerH } = useVideoConfig();
+  const { width: containerW, height: containerH, fps } = useVideoConfig();
 
   const keyframes = getEffectiveKeyframes(framing);
   const { focusX, focusY, zoom } = resolveFramingAtTime(
     keyframes,
     timeInSegment,
+    fps,
   );
-
-  const { matchesSource } = framingGeometry(
-    containerW,
-    containerH,
-    sourceAspect,
-  );
-
-  if (zoom === 0) {
-    const videoStyle: React.CSSProperties = {
-      width: "100%",
-      height: "100%",
-      objectFit: "contain",
-      objectPosition: "center center",
-    };
-
-    return (
-      <AbsoluteFill style={{ backgroundColor: "black" }}>
-        <OffthreadVideo
-          src={src}
-          startFrom={startFrom}
-          endAt={endAt}
-          style={videoStyle}
-        />
-        {children}
-      </AbsoluteFill>
-    );
-  }
-
-  if (zoom >= 1 && !matchesSource) {
-    const videoStyle: React.CSSProperties = {
-      width: "100%",
-      height: "100%",
-      objectFit: "cover",
-      objectPosition: `${focusX * 100}% ${focusY * 100}%`,
-    };
-
-    return (
-      <AbsoluteFill style={{ backgroundColor: "black" }}>
-        <OffthreadVideo
-          src={src}
-          startFrom={startFrom}
-          endAt={endAt}
-          style={videoStyle}
-        />
-        {children}
-      </AbsoluteFill>
-    );
-  }
 
   const { width: videoW, height: videoH } = videoSizeAtZoom(
     zoom,

@@ -88,7 +88,8 @@ data "aws_iam_policy_document" "stitch_lambda_policy" {
     ]
     resources = [
       "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:remotion-render-*",
-      "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-index-chunks"
+      "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-index-chunks",
+      "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-stitch-segments"
     ]
   }
 
@@ -128,7 +129,7 @@ resource "aws_lambda_function" "stitch_segments" {
   image_uri     = "${aws_ecr_repository.ffmpeg_lambda.repository_url}:latest"
 
   timeout     = 900  # 15 minutes - video processing can take time
-  memory_size = 3008 # 3GB - FFmpeg needs memory for processing
+  memory_size = 3008 # Account maximum; exact cuts are sharded across workers
 
   # Note: reserved_concurrent_executions removed - account doesn't have enough
   # unreserved capacity. Cost control is handled by:
