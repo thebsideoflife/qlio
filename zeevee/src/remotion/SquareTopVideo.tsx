@@ -2,6 +2,7 @@ import React from "react";
 import { AbsoluteFill, OffthreadVideo, useVideoConfig } from "remotion";
 import type { CaptionLine, CaptionSettings } from "./types";
 import { CaptionDisplay } from "./CaptionDisplay";
+import { frameIndex } from "./framingInterpolation";
 
 interface SquareTopVideoProps {
   src: string;
@@ -54,8 +55,8 @@ export const SquareTopVideo: React.FC<SquareTopVideoProps> = ({
       >
         <OffthreadVideo
           src={src}
-          startFrom={hasBounds ? Math.round(startTime * fps) : undefined}
-          endAt={hasBounds ? Math.round(endTime * fps) : undefined}
+          startFrom={hasBounds ? frameIndex(startTime, fps) : undefined}
+          endAt={hasBounds ? frameIndex(endTime, fps) : undefined}
           style={{
             width: "100%",
             height: "100%",

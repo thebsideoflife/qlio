@@ -1,9 +1,8 @@
 /**
  * cutSegments — FFmpeg Docker Lambda handler
  *
- * Downloads the source video once, cuts each segment into a small clip
- * using stream copy (no re-encoding), uploads clips to S3, then kicks
- * off a Remotion render per clip.
+ * Downloads the source video once, cuts each segment into a frame-accurate
+ * clip, uploads clips to S3, then kicks off a Remotion render per clip.
  *
  * Invoked internally by renderVideo via Lambda.InvokeCommand.
  */
@@ -19,6 +18,7 @@ import {
   GetObjectCommand,
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { renderMediaOnLambda } from "@remotion/lambda/client";
 import type { AwsRegion } from "@remotion/lambda";
@@ -33,18 +33,44 @@ import {
   parseTranscriptJson,
   shiftCaptionsBy,
 } from "../utils/transcript-format";
+import { extractClip, probeClipTiming } from "../utils/videoClip";
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client, {
   marshallOptions: { removeUndefinedValues: true },
 });
 const s3Client = new S3Client({});
+const lambdaClient = new LambdaClient({});
 
 const RENDER_JOBS_TABLE = process.env.RENDER_JOBS_TABLE!;
 const MEDIA_BUCKET = process.env.MEDIA_BUCKET!;
 const REMOTION_SERVE_URL = process.env.REMOTION_SERVE_URL!;
 const REMOTION_FUNCTION_NAME = process.env.REMOTION_FUNCTION_NAME!;
 const AWS_REGION_NAME = process.env.AWS_REGION_NAME!;
+const CUT_WORKER_COUNT = 5;
+
+interface CutSegmentsEvent {
+  jobId: string;
+  segmentIds?: string[];
+  worker?: boolean;
+}
+
+interface RenderSegment {
+  id: string;
+  startTime: number;
+  endTime: number;
+  title: string;
+  framing?: Record<string, unknown>;
+}
+
+interface SegmentRender {
+  segmentId: string;
+  title: string;
+  renderId: string;
+  bucketName: string;
+  outputKey: string;
+  status: "rendering";
+}
 
 // ---------------------------------------------------------------------------
 // FFmpeg helpers (pattern from splitVideo.ts)
@@ -84,51 +110,59 @@ async function uploadToS3(
   console.log(`Uploaded ${stats.size} bytes to s3://${bucket}/${key}`);
 }
 
-function extractClip(
-  inputPath: string,
-  outputPath: string,
-  startTime: number,
-  duration: number,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const args = [
-      "-ignore_editlist", "1",
-      "-ss", startTime.toString(),
-      "-i", inputPath,
-      "-t", duration.toString(),
-      "-c:v", "copy",
-      "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
-      "-avoid_negative_ts", "make_zero",
-      "-movflags", "+faststart",
-      "-y", outputPath,
-    ];
-
-    console.log(`Cutting clip: start=${startTime}s, duration=${duration}s`);
-    const ffmpeg = spawn("ffmpeg", args);
-
-    let stderr = "";
-    ffmpeg.stderr.on("data", (data: Buffer) => {
-      stderr += data.toString();
-    });
-    ffmpeg.on("close", (code) => {
-      if (code === 0) { resolve(); return; }
-      console.error("FFmpeg stderr:", stderr);
-      reject(new Error(`FFmpeg exited with code ${code}`));
-    });
-    ffmpeg.on("error", reject);
-  });
-}
-
 const DEFAULT_SOURCE_ASPECT = 16 / 9;
 
-/** Source width/height from the downloaded file so Remotion framing matches the editor. */
-function getVideoAspect(inputPath: string): Promise<number> {
+function parseFrameRate(raw: string | undefined): number | null {
+  if (!raw || raw === "0/0") return null;
+  const parts = raw.split("/");
+  if (parts.length === 2) {
+    const n = Number(parts[0]);
+    const d = Number(parts[1]);
+    if (n > 0 && d > 0) return n / d;
+  }
+  const v = Number(raw);
+  return v > 0 ? v : null;
+}
+
+/** Same snap as the editor so Remotion's frame grid matches preview. */
+const CANONICAL_FPS = [
+  24000 / 1001,
+  24,
+  25,
+  30000 / 1001,
+  30,
+  50,
+  60000 / 1001,
+  60,
+  120000 / 1001,
+  120,
+];
+const CANONICAL_FPS_MAX_DELTA = 0.012;
+
+function canonicalizeFps(fps: number): number {
+  let best = fps;
+  let bestDelta = CANONICAL_FPS_MAX_DELTA;
+  for (const candidate of CANONICAL_FPS) {
+    const delta = Math.abs(fps - candidate);
+    if (delta < bestDelta) {
+      best = candidate;
+      bestDelta = delta;
+    }
+  }
+  return best;
+}
+
+/** Source width/height and fps from the downloaded file so Remotion matches the editor. */
+function probeSourceVideo(inputPath: string): Promise<{
+  aspect: number;
+  fps: number;
+}> {
   return new Promise((resolve, reject) => {
     const ffprobe = spawn("ffprobe", [
       "-v", "error",
       "-select_streams", "v:0",
-      "-show_entries", "stream=width,height",
-      "-of", "csv=p=0",
+      "-show_entries", "stream=width,height,r_frame_rate,avg_frame_rate",
+      "-of", "json",
       inputPath,
     ]);
 
@@ -145,24 +179,109 @@ function getVideoAspect(inputPath: string): Promise<number> {
         reject(new Error(`ffprobe exited with code ${code}: ${stderr}`));
         return;
       }
-      const [widthStr, heightStr] = stdout.trim().split(",");
-      const width = parseFloat(widthStr);
-      const height = parseFloat(heightStr);
-      if (!(width > 0) || !(height > 0)) {
-        reject(new Error(`Could not parse dimensions from: ${stdout}`));
-        return;
+      try {
+        const parsed = JSON.parse(stdout) as {
+          streams?: Array<{
+            width?: number;
+            height?: number;
+            r_frame_rate?: string;
+            avg_frame_rate?: string;
+          }>;
+        };
+        const stream = parsed.streams?.[0];
+        const width = Number(stream?.width);
+        const height = Number(stream?.height);
+        if (!(width > 0) || !(height > 0)) {
+          reject(new Error(`Could not parse dimensions from: ${stdout}`));
+          return;
+        }
+        const fps =
+          parseFrameRate(stream?.avg_frame_rate) ??
+          parseFrameRate(stream?.r_frame_rate);
+        if (!(fps && fps > 0)) {
+          reject(new Error(`Could not parse frame rate from: ${stdout}`));
+          return;
+        }
+        resolve({ aspect: width / height, fps: canonicalizeFps(fps) });
+      } catch (error) {
+        reject(error);
       }
-      resolve(width / height);
     });
     ffprobe.on("error", reject);
   });
+}
+
+function partitionSegments(segments: RenderSegment[]): string[][] {
+  const bins = Array.from(
+    { length: Math.min(CUT_WORKER_COUNT, segments.length) },
+    () => ({ duration: 0, ids: [] as string[] }),
+  );
+
+  for (const segment of [...segments].sort(
+    (a, b) =>
+      b.endTime - b.startTime - (a.endTime - a.startTime),
+  )) {
+    const bin = bins.reduce((least, current) =>
+      current.duration < least.duration ? current : least,
+    );
+    bin.ids.push(segment.id);
+    bin.duration += segment.endTime - segment.startTime;
+  }
+
+  console.log(
+    "Exact-cut worker groups:",
+    bins.map(({ ids, duration }) => ({ ids, duration })),
+  );
+  return bins.map((bin) => bin.ids);
+}
+
+async function invokeCutWorkers(
+  jobId: string,
+  segments: RenderSegment[],
+): Promise<SegmentRender[]> {
+  const functionName = process.env.AWS_LAMBDA_FUNCTION_NAME;
+  if (!functionName) {
+    throw new Error("AWS_LAMBDA_FUNCTION_NAME is unavailable");
+  }
+
+  const workerResults = await Promise.all(
+    partitionSegments(segments).map(async (segmentIds) => {
+      const response = await lambdaClient.send(
+        new InvokeCommand({
+          FunctionName: functionName,
+          InvocationType: "RequestResponse",
+          Payload: Buffer.from(
+            JSON.stringify({ jobId, segmentIds, worker: true }),
+          ),
+        }),
+      );
+      const payload = response.Payload
+        ? Buffer.from(response.Payload).toString("utf8")
+        : "";
+      if (response.FunctionError) {
+        throw new Error(
+          `Exact-cut worker failed (${response.FunctionError}): ${payload}`,
+        );
+      }
+      const parsed = JSON.parse(payload) as unknown;
+      if (!Array.isArray(parsed)) {
+        throw new Error(`Exact-cut worker returned invalid payload: ${payload}`);
+      }
+      return parsed as SegmentRender[];
+    }),
+  );
+
+  return workerResults.flat();
 }
 
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
-export const handler: Handler<{ jobId: string }, void> = async (event) => {
+export const handler: Handler<
+  CutSegmentsEvent,
+  SegmentRender[] | void
+> = async (event) => {
   const { jobId } = event;
   console.log(`cutSegments: starting for job ${jobId}`);
 
@@ -178,14 +297,42 @@ export const handler: Handler<{ jobId: string }, void> = async (event) => {
     transcriptionS3Uri,
     transcriptionCandidates,
     originalTranscriptionS3Uri,
-    segments,
+    segments: jobSegments,
     captionSettings,
     globalFraming,
     outputFormat,
     compositionId,
   } = job;
 
-  if (!segments?.length) throw new Error("No segments in job");
+  if (!Array.isArray(jobSegments) || jobSegments.length === 0) {
+    throw new Error("No segments in job");
+  }
+  const requestedIds = event.segmentIds
+    ? new Set(event.segmentIds)
+    : null;
+  const segments = (jobSegments as RenderSegment[]).filter(
+    (segment) => !requestedIds || requestedIds.has(segment.id),
+  );
+  if (segments.length === 0) {
+    throw new Error("No requested segments in job");
+  }
+
+  // The account caps this function at 3008MB (~1.7 vCPUs). Fan large exact
+  // re-encodes across a few synchronous workers, then publish all render IDs
+  // atomically so status polling never observes a partial list.
+  if (!event.worker && segments.length > 1) {
+    try {
+      const segmentRenders = await invokeCutWorkers(jobId, segments);
+      await updateJobWithRenders(jobId, segmentRenders);
+      console.log(
+        `cutSegments: launched ${segmentRenders.length} Remotion renders for job ${jobId}`,
+      );
+    } catch (error) {
+      console.error("cutSegments coordinator failed:", error);
+      await markJobFailed(jobId, error);
+    }
+    return;
+  }
 
   // 2. Load captions from the current Whisper transcript (or its translation).
   // Same grouping + overlap rules as the editor — never a leftover TL file.
@@ -232,11 +379,14 @@ export const handler: Handler<{ jobId: string }, void> = async (event) => {
   await downloadFromS3(bucket, key, inputPath);
 
   let sourceAspect = DEFAULT_SOURCE_ASPECT;
+  let sourceFps: number | undefined;
   try {
-    sourceAspect = await getVideoAspect(inputPath);
-    console.log(`Source aspect: ${sourceAspect}`);
+    const probed = await probeSourceVideo(inputPath);
+    sourceAspect = probed.aspect;
+    sourceFps = probed.fps;
+    console.log(`Source aspect: ${sourceAspect}, fps: ${sourceFps}`);
   } catch (err) {
-    console.warn("Failed to probe source aspect, defaulting to 16:9:", err);
+    console.warn("Failed to probe source video:", err);
   }
 
   try {
@@ -246,7 +396,22 @@ export const handler: Handler<{ jobId: string }, void> = async (event) => {
     for (const segment of segments) {
       const duration = segment.endTime - segment.startTime;
       const clipPath = path.join(tmpDir, `${segment.id}.mp4`);
-      await extractClip(inputPath, clipPath, segment.startTime, duration);
+      await extractClip(inputPath, clipPath, segment.startTime, duration, "accurate");
+      try {
+        const { videoStartSec, audioStartSec, durationSec } =
+          await probeClipTiming(clipPath);
+        const avGap =
+          videoStartSec != null && audioStartSec != null
+            ? audioStartSec - videoStartSec
+            : null;
+        const durationError =
+          durationSec != null ? durationSec - duration : null;
+        console.log(
+          `Clip ${segment.id} timing: videoStart=${videoStartSec ?? "?"}s audioStart=${audioStartSec ?? "?"}s avGap=${avGap ?? "?"}s duration=${durationSec ?? "?"}s durationError=${durationError ?? "?"}s`,
+        );
+      } catch (probeErr) {
+        console.warn(`Clip ${segment.id} ffprobe failed:`, probeErr);
+      }
 
       const clipKey = `clips/${jobId}/${segment.id}.mp4`;
       await uploadToS3(clipPath, MEDIA_BUCKET, clipKey);
@@ -309,6 +474,7 @@ export const handler: Handler<{ jobId: string }, void> = async (event) => {
             captionSettings,
             globalFraming: { ...globalFraming, enabled: true },
             sourceAspect,
+            sourceFps,
           },
           codec: outputFormat === "webm" ? "vp8" : "h264",
           outName,
@@ -330,39 +496,19 @@ export const handler: Handler<{ jobId: string }, void> = async (event) => {
       }),
     );
 
-    // 5. Update job with render IDs
-    await docClient.send(
-      new UpdateCommand({
-        TableName: RENDER_JOBS_TABLE,
-        Key: { jobId },
-        UpdateExpression:
-          "SET segmentRenders = :segmentRenders, #status = :status, updatedAt = :updatedAt",
-        ExpressionAttributeNames: { "#status": "status" },
-        ExpressionAttributeValues: {
-          ":segmentRenders": segmentRenders,
-          ":status": "rendering",
-          ":updatedAt": new Date().toISOString(),
-        },
-      }),
-    );
+    if (event.worker) {
+      console.log(
+        `cutSegments worker: launched ${segmentRenders.length} Remotion renders for job ${jobId}`,
+      );
+      return segmentRenders;
+    }
 
+    await updateJobWithRenders(jobId, segmentRenders);
     console.log(`cutSegments: launched ${segmentRenders.length} Remotion renders for job ${jobId}`);
   } catch (error) {
     console.error("cutSegments failed:", error);
-    await docClient.send(
-      new UpdateCommand({
-        TableName: RENDER_JOBS_TABLE,
-        Key: { jobId },
-        UpdateExpression:
-          "SET #status = :status, #error = :error, updatedAt = :updatedAt",
-        ExpressionAttributeNames: { "#status": "status", "#error": "error" },
-        ExpressionAttributeValues: {
-          ":status": "failed",
-          ":error": `Cut/render failed: ${error instanceof Error ? error.message : String(error)}`,
-          ":updatedAt": new Date().toISOString(),
-        },
-      }),
-    );
+    if (event.worker) throw error;
+    await markJobFailed(jobId, error);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
@@ -371,6 +517,45 @@ export const handler: Handler<{ jobId: string }, void> = async (event) => {
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
+
+async function updateJobWithRenders(
+  jobId: string,
+  segmentRenders: SegmentRender[],
+): Promise<void> {
+  await docClient.send(
+    new UpdateCommand({
+      TableName: RENDER_JOBS_TABLE,
+      Key: { jobId },
+      UpdateExpression:
+        "SET segmentRenders = :segmentRenders, #status = :status, updatedAt = :updatedAt",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":segmentRenders": segmentRenders,
+        ":status": "rendering",
+        ":updatedAt": new Date().toISOString(),
+      },
+    }),
+  );
+}
+
+async function markJobFailed(jobId: string, error: unknown): Promise<void> {
+  await docClient.send(
+    new UpdateCommand({
+      TableName: RENDER_JOBS_TABLE,
+      Key: { jobId },
+      UpdateExpression:
+        "SET #status = :status, #error = :error, updatedAt = :updatedAt",
+      ExpressionAttributeNames: { "#status": "status", "#error": "error" },
+      ExpressionAttributeValues: {
+        ":status": "failed",
+        ":error": `Cut/render failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        ":updatedAt": new Date().toISOString(),
+      },
+    }),
+  );
+}
 
 function parseS3Uri(uri: string): { bucket: string; key: string } {
   const match = uri.match(/^s3:\/\/([^/]+)\/(.+)$/);

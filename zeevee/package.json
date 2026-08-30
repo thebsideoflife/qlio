@@ -13,7 +13,8 @@
     "test:export-package": "npx tsx src/lib/exportPackage.test.ts",
     "test:transcript": "npx tsx --tsconfig tsconfig.app.json src/lib/transcript.test.ts",
     "test:caption-content": "npx tsx --tsconfig tsconfig.app.json src/remotion/captionContent.test.ts",
-    "test": "npm run test:fingerprint && npm run test:agent-thread && npm run test:zoom-math && npm run test:export-package && npm run test:transcript && npm run test:caption-content",
+    "test:framing": "npx tsx --tsconfig tsconfig.app.json src/remotion/framingInterpolation.test.ts",
+    "test": "npm run test:fingerprint && npm run test:agent-thread && npm run test:zoom-math && npm run test:export-package && npm run test:transcript && npm run test:caption-content && npm run test:framing",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -42,6 +43,7 @@
     "clsx": "^2.1.1",
     "jszip": "^3.10.1",
     "lucide-react": "^0.554.0",
+    "mediabunny": "1.25.8",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-icons": "^5.3.0",

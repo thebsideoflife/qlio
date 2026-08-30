@@ -30,6 +30,7 @@ interface CaptionSettings {
   style: {
     fontSize: number;
     fontFamily: string;
+    fontWeight?: string;
     color: string;
     backgroundColor: string;
     position: { x: number; y: number };
@@ -70,6 +71,7 @@ const DEFAULT_CAPTION_SETTINGS: CaptionSettings = {
   style: {
     fontSize: 2,
     fontFamily: "Inter, system-ui, sans-serif",
+    fontWeight: "600",
     color: "#ffffff",
     backgroundColor: "rgba(0, 0, 0, 0.8)",
     position: { x: 50, y: 85 },

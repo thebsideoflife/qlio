@@ -18,9 +18,10 @@
     "iq-agent:coverage-cost": "tsx src/scripts/check-coverage-cost.ts",
     "test:transcription-sanitize": "tsx src/scripts/test-transcription-sanitize.ts",
     "test:transcript-format": "tsx src/scripts/test-transcript-format.ts",
+    "test:video-clip": "tsx src/utils/videoClip.test.ts",
     "test:render-downloads": "tsx src/utils/renderDownloads.test.ts",
     "test:export-cache": "tsx src/utils/exportCache.test.ts",
-    "test": "npm run test:export-metadata && npm run test:agent-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates && npm run test:iq-agent && npm run test:transcription-sanitize && npm run test:transcript-format && npm run test:render-downloads && npm run test:export-cache"
+    "test": "npm run test:export-metadata && npm run test:agent-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates && npm run test:iq-agent && npm run test:transcription-sanitize && npm run test:transcript-format && npm run test:video-clip && npm run test:render-downloads && npm run test:export-cache"
   },
   "keywords": [],
   "author": "",

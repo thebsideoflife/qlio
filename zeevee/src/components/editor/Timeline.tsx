@@ -22,6 +22,7 @@ import {
 } from "@/store/editorSlice";
 import type { FramingKeyframe } from "@/remotion/types";
 import { getEffectiveKeyframes } from "@/remotion/types";
+import { frameIndex } from "@/remotion/framingInterpolation";
 import { cn, formatSegmentLabel } from "@/lib/utils";
 import { EditableTitle } from "@/components/ui/editable-title";
 import { Button } from "@/components/ui/button";
@@ -55,6 +56,7 @@ interface TimelineProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   previewMode: boolean;
   onPreviewModeChange: (preview: boolean) => void;
+  fps: number | null;
 }
 
 type DragMode = "playhead" | "left" | "right" | "move" | "keyframe" | null;
@@ -63,8 +65,6 @@ type DragMode = "playhead" | "left" | "right" | "move" | "keyframe" | null;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 20;
 const DEFAULT_ZOOM = 1;
-// Frame step: 1/30th second ≈ 33.33ms (works well for 24/25/30fps content)
-const FRAME_STEP = 1 / 30;
 const FRAMING_POLL_MS = 10000;
 const FRAMING_MAX_MS = 600000;
 const MOVE_HOLD_MS = 175;
@@ -117,6 +117,7 @@ export function Timeline({
   videoRef,
   previewMode,
   onPreviewModeChange,
+  fps,
 }: TimelineProps) {
   const { projectId } = useParams<{ projectId: string }>();
   const dispatch = useDispatch();
@@ -383,8 +384,6 @@ export function Timeline({
     };
   }, [videoRef]);
 
-  // FRAME_STEP is defined as a module constant above
-
   // Keyboard shortcuts (Space for play/pause, Delete for delete segment, Arrow keys for frame stepping)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -431,18 +430,17 @@ export function Timeline({
           dispatch(deleteSegment(selectedId));
         }
       } else if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+        if (!(fps && fps > 0)) return;
         e.preventDefault();
         const video = videoRef.current;
         if (video) {
-          // Pause video when frame stepping
           if (!video.paused) {
             video.pause();
           }
 
           const direction = e.code === "ArrowLeft" ? -1 : 1;
-          // Shift + Arrow = 10 frames, just Arrow = 1 frame
           const multiplier = e.shiftKey ? 10 : 1;
-          const delta = direction * FRAME_STEP * multiplier;
+          const delta = direction * (1 / fps) * multiplier;
 
           const newTime = clampTime(currentTime + delta);
           video.currentTime = newTime;
@@ -453,7 +451,7 @@ export function Timeline({
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [videoRef, selectedId, dispatch, currentTime, clampTime]);
+  }, [videoRef, selectedId, dispatch, currentTime, clampTime, fps]);
 
   // Auto-scroll to keep playhead visible when playing (suppressed while user scrolls manually)
   useEffect(() => {
@@ -505,7 +503,12 @@ export function Timeline({
       const kfs = getEffectiveKeyframes(activeSeg.framing);
       const timeInSeg = currentTime - activeSeg.startTime;
       const sorted = [...kfs].sort((a, b) => a.time - b.time);
-      const active = sorted.filter((k) => k.time <= timeInSeg + 0.05);
+      const gridFps = fps && fps > 0 ? fps : null;
+      const active = sorted.filter((k) =>
+        gridFps != null
+          ? frameIndex(k.time, gridFps) <= frameIndex(timeInSeg, gridFps)
+          : k.time <= timeInSeg,
+      );
       if (active.length > 0) {
         const activeId = active[active.length - 1].id;
         if (activeId !== selectedKfRef.current) {
@@ -513,7 +516,7 @@ export function Timeline({
         }
       }
     }
-  }, [currentTime, segments, selectedId, dispatch]);
+  }, [currentTime, segments, selectedId, dispatch, fps]);
 
   // Handle playhead drag start
   const handlePlayheadMouseDown = (e: React.MouseEvent) => {
