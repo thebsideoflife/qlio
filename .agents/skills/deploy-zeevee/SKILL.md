@@ -27,7 +27,7 @@ metadata:
 |---|---|---|
 | `zeevee/` (Vite frontend) | **Merge PR to `main`** — Vercel deploys automatically (`zeevee/vercel.json`) | Vercel deployment status / open the production URL |
 | `zeevee/src/remotion/**` or `CaptionText.tsx` | **GitHub Actions** (`.github/workflows/deploy-remotion-site.yml`) on merge, or `./zeevee/deploy-remotion-site.sh`. Vercel does **not** update the burn-in bundle. | Re-export a Spanish-toggled project and confirm captions appear |
-| `backend/`, `infrastructure/` | **GitHub Actions** (`.github/workflows/deploy.yml`) on merge to `main`, or **`./deploy.sh`** from a sandbox. Add `--skip-docker` unless the FFmpeg image changed. | harness MCP `aws_error_summary` / `aws_get_log_events` with `product_id=zeevee`, `region=us-west-2` |
+| `backend/`, `infrastructure/` | **GitHub Actions** (`.github/workflows/deploy.yml`) on merge to `main`, or **`./deploy.sh`** from a sandbox. CI rebuilds the FFmpeg Docker image when `Dockerfile.ffmpeg`, backend lockfile, or the bundled `cutSegments`/`splitVideo` handlers change. | harness MCP `aws_error_summary` / `aws_get_log_events` with `product_id=zeevee`, `region=us-west-2` |
 | Both | PR review → merge (frontend goes out via Vercel, backend deploys via GHA) | Both of the above |
 
 - Region is always **`us-west-2`**. Profile is always **`zeevee`** (`deploy.sh` defaults both).
@@ -90,11 +90,11 @@ export AWS_CONFIG_FILE=/etc/agent-harness/zeevee/aws-config
 aws --profile zeevee sts get-caller-identity
 tofu -chdir=infrastructure init -input=false
 
-# Deploy (skip the FFmpeg Docker image unless Dockerfile.ffmpeg or stitch code changed)
+# Deploy (skip the FFmpeg Docker image only when Dockerfile.ffmpeg / cutSegments / splitVideo did not change)
 ./deploy.sh --skip-docker
 ```
 
-`--skip-docker` skips building/pushing the FFmpeg Lambda container image; everything else (backend build, Lambda zips, `tofu apply`) still runs. Only drop the flag when the FFmpeg image itself changed — that path needs Docker available.
+`--skip-docker` skips building/pushing the FFmpeg Lambda container image; everything else (backend build, Lambda zips, `tofu apply`) still runs. GitHub Actions does the same automatically when those image inputs are unchanged.
 
 ## Post-deploy verification
 
@@ -105,9 +105,8 @@ tofu -chdir=infrastructure init -input=false
 
 ## Order for mixed changes
 
-1. Open one PR with both frontend and backend changes; get it merged (frontend deploys via Vercel).
-2. Run `./deploy.sh --skip-docker` from `main` after the merge so the deployed backend matches what was reviewed.
-3. Verify per the section above.
+1. Open one PR with both frontend and backend changes; get it merged (frontend deploys via Vercel, backend via GitHub Actions). The FFmpeg image rebuilds only when its inputs changed.
+2. Verify per the section above.
 
 ## Related skills
 

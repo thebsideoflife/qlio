@@ -90,5 +90,25 @@ jobs:
         run: tofu init -input=false
         working-directory: infrastructure
 
+      # The FFmpeg Lambda image COPY's these files. Skip the Docker rebuild
+      # when they match a previous successful deploy.
+      - name: Check FFmpeg image inputs
+        id: ffmpeg-image
+        uses: actions/cache@v4
+        with:
+          path: .ffmpeg-image-stamp
+          key: ffmpeg-image-${{ hashFiles('backend/Dockerfile.ffmpeg', 'backend/package.json', 'backend/package-lock.json', 'backend/dist/cutSegments.js', 'backend/dist/splitVideo.js') }}
+
+      - name: Record FFmpeg image stamp
+        if: steps.ffmpeg-image.outputs.cache-hit != 'true'
+        run: date -u +%Y-%m-%dT%H:%M:%SZ > .ffmpeg-image-stamp
+
       - name: Deploy
-        run: bash ./deploy.sh --skip-docker
+        run: |
+          if [ "${{ steps.ffmpeg-image.outputs.cache-hit }}" = "true" ]; then
+            echo "FFmpeg image inputs unchanged; skipping Docker rebuild"
+            bash ./deploy.sh --skip-docker
+          else
+            echo "FFmpeg image inputs changed; rebuilding Docker image"
+            bash ./deploy.sh
+          fi
