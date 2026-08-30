@@ -41,7 +41,7 @@ export type FramingMode = "crop" | "fit";
 // A single framing keyframe within a segment
 export interface FramingKeyframe {
   id: string; // unique ID for UI operations
-  time: number; // seconds relative to segment START (0 = segment start)
+  time: number; // seconds relative to segment START (0 = segment start). Pinned to the source timeline: resizing the segment stretches the first/last setting, not interior times.
   focusX: number; // 0.0-1.0
   focusY: number; // 0.0-1.0
   zoom: number; // 0.0=fit (full frame visible), 1.0=max crop (tightest)

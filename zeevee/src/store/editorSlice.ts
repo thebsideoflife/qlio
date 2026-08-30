@@ -17,6 +17,7 @@ import {
 } from "@/remotion/types";
 import { groupWordsIntoCaptions } from "@/remotion/utils";
 import { isOriginalCaptionLanguage } from "@/lib/transcript";
+import { reanchorKeyframesToTimeline } from "@/lib/timelineKeyframes";
 
 export interface Segment {
   id: string;
@@ -214,15 +215,21 @@ function sliceFraming(
 }
 
 /**
- * After a segment resize is finalized, clean up its keyframes:
- * filter negatives/past-duration, ensure one at time=0, clear stale selection.
+ * Pin keyframes to the source timeline after a segment's start/end change.
+ * Interior times stay put; the first/last settings stretch to the new bounds.
  */
-function clampKeyframesToDuration(state: EditorState, segment: Segment) {
+function reanchorSegmentKeyframes(
+  state: EditorState,
+  segment: Segment,
+  oldStart: number,
+) {
   if (!segment.framing?.keyframes?.length) return;
-  const dur = segment.endTime - segment.startTime;
   const before = segment.framing.keyframes.length;
-  segment.framing.keyframes = segment.framing.keyframes.filter(
-    (kf) => kf.time >= 0 && kf.time < dur,
+  segment.framing.keyframes = reanchorKeyframesToTimeline(
+    segment.framing.keyframes,
+    oldStart,
+    segment.startTime,
+    segment.endTime,
   );
   if (segment.framing.keyframes.length === 0) {
     segment.framing.keyframes = [
@@ -236,13 +243,7 @@ function clampKeyframesToDuration(state: EditorState, segment: Segment) {
       },
     ];
   }
-  // Ensure first keyframe starts at 0
-  segment.framing.keyframes.sort((a, b) => a.time - b.time);
-  if (segment.framing.keyframes[0].time > 0) {
-    segment.framing.keyframes[0] = { ...segment.framing.keyframes[0], time: 0 };
-  }
   syncLegacyFromKeyframes(segment.framing);
-  // Clear stale keyframe selection if it was removed
   if (
     before !== segment.framing.keyframes.length &&
     state.selectedKeyframeId &&
@@ -369,7 +370,9 @@ export const editorSlice = createSlice({
                 newPrevEnd - prevSegInState.startTime >=
                 MIN_SEGMENT_DURATION
               ) {
+                const prevOldStart = prevSegInState.startTime;
                 prevSegInState.endTime = newPrevEnd;
+                reanchorSegmentKeyframes(state, prevSegInState, prevOldStart);
               } else {
                 // Limit our expansion to not squeeze the neighbor below min
                 newStart = prevSegInState.startTime + MIN_SEGMENT_DURATION;
@@ -396,7 +399,9 @@ export const editorSlice = createSlice({
                 nextSegInState.endTime - newNextStart >=
                 MIN_SEGMENT_DURATION
               ) {
+                const nextOldStart = nextSegInState.startTime;
                 nextSegInState.startTime = newNextStart;
+                reanchorSegmentKeyframes(state, nextSegInState, nextOldStart);
               } else {
                 // Limit our expansion to not squeeze the neighbor below min
                 newEnd = nextSegInState.endTime - MIN_SEGMENT_DURATION;
@@ -411,6 +416,7 @@ export const editorSlice = createSlice({
       // Apply the new times to the segment being edited
       segment.startTime = Math.max(0, newStart);
       segment.endTime = Math.min(state.duration, newEnd);
+      reanchorSegmentKeyframes(state, segment, oldStart);
 
       markEdited(state);
     },
@@ -420,10 +426,10 @@ export const editorSlice = createSlice({
       state.segments = state.segments.filter(
         (s) => s.endTime - s.startTime >= MIN_SEGMENT_DURATION,
       );
-      // Clamp keyframes for all segments (only the edited one will have issues,
-      // but it's cheap and safe to check all)
+      // Drop keyframes that fell outside during a live drag (idempotent
+      // if updateSegmentTime already reanchored).
       for (const seg of state.segments) {
-        clampKeyframesToDuration(state, seg);
+        reanchorSegmentKeyframes(state, seg, seg.startTime);
       }
     },
     splitSegment: (
@@ -498,13 +504,17 @@ export const editorSlice = createSlice({
             // New segment is to the right, push existing segment left
             const newEnd = startTime;
             if (newEnd - segInState.startTime >= MIN_SEGMENT_DURATION) {
+              const pushedOldStart = segInState.startTime;
               segInState.endTime = newEnd;
+              reanchorSegmentKeyframes(state, segInState, pushedOldStart);
             }
           } else {
             // New segment is to the left, push existing segment right
             const newStart = endTime;
             if (segInState.endTime - newStart >= MIN_SEGMENT_DURATION) {
+              const pushedOldStart = segInState.startTime;
               segInState.startTime = newStart;
+              reanchorSegmentKeyframes(state, segInState, pushedOldStart);
             }
           }
         }
