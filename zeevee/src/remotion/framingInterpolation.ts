@@ -5,6 +5,27 @@ export function frameIndex(seconds: number, fps: number): number {
 }
 
 /**
+ * Canonical placement time: the clip frame nearest `seconds`.
+ * t=0 is segment start — the same clock Remotion uses. Without fps, pass through.
+ */
+export function snapTimeToFrame(
+  seconds: number,
+  fps: number | null,
+): number {
+  if (fps == null || !(fps > 0) || !Number.isFinite(seconds)) return seconds;
+  return frameIndex(seconds, fps) / fps;
+}
+
+export function sameFrame(
+  a: number,
+  b: number,
+  fps: number | null,
+): boolean {
+  if (fps == null || !(fps > 0)) return Math.abs(a - b) < 1e-6;
+  return frameIndex(a, fps) === frameIndex(b, fps);
+}
+
+/**
  * Hold-until-next: the last keyframe whose time is ≤ playhead.
  * Compares on an integer frame grid when `fps` is known; otherwise seconds.
  */

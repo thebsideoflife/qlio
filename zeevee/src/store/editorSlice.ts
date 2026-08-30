@@ -18,6 +18,7 @@ import {
 import { groupWordsIntoCaptions } from "@/remotion/utils";
 import { isOriginalCaptionLanguage } from "@/lib/transcript";
 import { reanchorKeyframesToTimeline } from "@/lib/timelineKeyframes";
+import { sameFrame, snapTimeToFrame } from "@/remotion/framingInterpolation";
 
 export interface Segment {
   id: string;
@@ -58,6 +59,8 @@ interface EditorState {
   translations: Record<string, string>;
   // Framing state
   globalFraming: GlobalFramingSettings;
+  /** Probed source fps. Keyframe times snap to this clip-frame grid. */
+  sourceFps: number | null;
   // Keyframe toggle — shows keyframe lane + framing controls
   showKeyframes: boolean;
   // Last rendered segments - cached to avoid re-renders
@@ -134,6 +137,7 @@ const initialState: EditorState = {
   translations: {},
   // Framing state
   globalFraming: DEFAULT_GLOBAL_FRAMING,
+  sourceFps: null,
   showKeyframes: false,
   // Last rendered segments
   lastSegmentRenders: null,
@@ -160,6 +164,26 @@ function nextId(prefix: string) {
   return `${prefix}-${++reducerIdCounter}`;
 }
 
+/** Placement times live on the clip frame grid. Reanchor does not use this. */
+function snapPlacementTime(time: number, fps: number | null): number {
+  if (time <= 0) return 0;
+  return snapTimeToFrame(time, fps);
+}
+
+function snapFramingPlacement(
+  framing: SegmentFraming,
+  fps: number | null,
+): SegmentFraming {
+  if (!framing.keyframes?.length) return framing;
+  return {
+    ...framing,
+    keyframes: framing.keyframes.map((kf) => ({
+      ...kf,
+      time: snapPlacementTime(kf.time, fps),
+    })),
+  };
+}
+
 /**
  * Build a valid framing object for a sub-range of a segment.
  * Keyframes are filtered to the range [0, newDuration], times are offset,
@@ -169,6 +193,7 @@ function sliceFraming(
   source: SegmentFraming | undefined,
   rangeStartInSegment: number,
   newDuration: number,
+  fps: number | null,
 ): SegmentFraming | undefined {
   if (!source) return undefined;
   const kfs = getEffectiveKeyframes(source);
@@ -180,7 +205,7 @@ function sliceFraming(
     .map((kf) => ({
       ...kf,
       id: nextId("kf-sl"),
-      time: Math.round((kf.time - rangeStartInSegment) * 10) / 10,
+      time: snapPlacementTime(kf.time - rangeStartInSegment, fps),
     }));
 
   // Sort after offset adjustment
@@ -461,14 +486,14 @@ export const editorSlice = createSlice({
           endTime: splitPoint,
           id: `${segment.id}-a`,
           title: `${segment.title} (Part 1)`,
-          framing: sliceFraming(segment.framing, 0, dur1),
+          framing: sliceFraming(segment.framing, 0, dur1, state.sourceFps),
         };
         const newSegment2: Segment = {
           ...segment,
           startTime: splitPoint,
           id: `${segment.id}-b`,
           title: `${segment.title} (Part 2)`,
-          framing: sliceFraming(segment.framing, splitRel, dur2),
+          framing: sliceFraming(segment.framing, splitRel, dur2, state.sourceFps),
         };
 
         state.segments.splice(index, 1, newSegment1, newSegment2);
@@ -767,6 +792,9 @@ export const editorSlice = createSlice({
       state.globalFraming.squareTop = action.payload;
       markEdited(state);
     },
+    setSourceFps: (state, action: PayloadAction<number | null>) => {
+      state.sourceFps = action.payload;
+    },
     setSegmentFraming: (
       state,
       action: PayloadAction<{ segmentId: string; framing: SegmentFraming }>,
@@ -775,7 +803,10 @@ export const editorSlice = createSlice({
         (s) => s.id === action.payload.segmentId,
       );
       if (segment) {
-        segment.framing = action.payload.framing;
+        segment.framing = snapFramingPlacement(
+          action.payload.framing,
+          state.sourceFps,
+        );
         markEdited(state);
       }
     },
@@ -805,7 +836,7 @@ export const editorSlice = createSlice({
         ) {
           continue;
         }
-        segment.framing = framing;
+        segment.framing = snapFramingPlacement(framing, state.sourceFps);
         applied = true;
       }
       if (applied) markEdited(state);
@@ -881,9 +912,12 @@ export const editorSlice = createSlice({
       if (!segment.framing) {
         segment.framing = { ...DEFAULT_SEGMENT_FRAMING };
       }
-      segment.framing.keyframes = action.payload.keyframes.sort(
-        (a, b) => a.time - b.time,
-      );
+      segment.framing.keyframes = action.payload.keyframes
+        .map((kf) => ({
+          ...kf,
+          time: snapPlacementTime(kf.time, state.sourceFps),
+        }))
+        .sort((a, b) => a.time - b.time);
       syncLegacyFromKeyframes(segment.framing);
       // Select first keyframe
       if (segment.framing.keyframes.length > 0) {
@@ -903,7 +937,16 @@ export const editorSlice = createSlice({
       const segDuration = segment.endTime - segment.startTime;
       if (segDuration < SHORT_SEGMENT_THRESHOLD) return;
       const kfs = ensureMaterializedKeyframes(segment.framing);
-      kfs.push(action.payload.keyframe);
+      const time = snapPlacementTime(
+        action.payload.keyframe.time,
+        state.sourceFps,
+      );
+      if (time <= 0 || time >= segDuration) return;
+      if (kfs.some((k) => sameFrame(k.time, time, state.sourceFps))) return;
+      kfs.push({
+        ...action.payload.keyframe,
+        time,
+      });
       kfs.sort((a, b) => a.time - b.time);
       syncLegacyFromKeyframes(segment.framing);
       state.selectedKeyframeId = action.payload.keyframe.id;
@@ -930,7 +973,11 @@ export const editorSlice = createSlice({
       }
       const kf = materialized.find((k) => k.id === targetId);
       if (!kf) return;
-      Object.assign(kf, action.payload.changes);
+      const changes = { ...action.payload.changes };
+      if (changes.time != null) {
+        changes.time = snapPlacementTime(changes.time, state.sourceFps);
+      }
+      Object.assign(kf, changes);
       kf.isAiGenerated = false; // User is overriding
       materialized.sort((a, b) => a.time - b.time);
       syncLegacyFromKeyframes(segment.framing);
@@ -1060,6 +1107,7 @@ export const {
   setGlobalAspectRatio,
   setFramingEnabled,
   setSquareTopEnabled,
+  setSourceFps,
   setSegmentFraming,
   applyFramingUpdates,
   updateSegmentFraming,
