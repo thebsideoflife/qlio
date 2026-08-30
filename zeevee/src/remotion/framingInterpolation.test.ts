@@ -8,6 +8,7 @@ import {
   frameIndex,
   resolveFramingAtTime,
   resolveKeyframeAtTime,
+  snapTimeToFrame,
 } from "./framingInterpolation";
 import { canonicalizeFps } from "../lib/sourceFps";
 
@@ -89,6 +90,28 @@ const keyframes = [kf("a", 0, 0), kf("b", 1, 1)];
   assert(
     frameIndex(62.55, preview) === frameIndex(62.55, exportFps),
     "long-segment cut frames agree after snap",
+  );
+}
+
+{
+  const fps = 24000 / 1001;
+  const snapped = snapTimeToFrame(10.3, fps);
+  assert(
+    frameIndex(snapped, fps) === frameIndex(10.3, fps),
+    "snapTimeToFrame preserves nearest clip frame",
+  );
+  assert(
+    snapTimeToFrame(snapped, fps) === snapped,
+    "snapTimeToFrame is idempotent",
+  );
+  assert(
+    frameIndex(9.1, fps) !== frameIndex(10.3, fps),
+    "1.2s apart stays distinct frames at 23.976",
+  );
+  assert(snapTimeToFrame(0, fps) === 0, "frame 0 stays at t=0");
+  assert(
+    snapTimeToFrame(1.01, 30) === snapTimeToFrame(1.0, 30),
+    "times within half a frame collapse to the same stored time",
   );
 }
 

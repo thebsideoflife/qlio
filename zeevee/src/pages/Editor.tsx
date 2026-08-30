@@ -30,6 +30,7 @@ import {
   setGlobalAspectRatio,
   setSquareTopEnabled,
   setAgentRunActive,
+  setSourceFps,
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
 import { useRef, useEffect, useState } from "react";
@@ -83,6 +84,7 @@ export default function Editor() {
   const transcriptionStatus = useSelector(
     (state: RootState) => state.editor.transcriptionStatus,
   );
+  const sourceFps = useSelector((state: RootState) => state.editor.sourceFps);
 
   // Local State
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -93,7 +95,6 @@ export default function Editor() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState(false);
   const [sourceAspect, setSourceAspect] = useState(DEFAULT_SOURCE_ASPECT);
-  const [sourceFps, setSourceFps] = useState<number | null>(null);
   // Sidebar width/open state persisted in localStorage (UI chrome, not Redux),
   // matching existing conventions (api_password, zeevee:recentAssets).
   const SIDEBAR_STORAGE_KEY = "zeevee:editorSidebar";
@@ -406,22 +407,22 @@ export default function Editor() {
 
   useEffect(() => {
     if (!videoUrl) {
-      setSourceFps(null);
+      dispatch(setSourceFps(null));
       return;
     }
     let cancelled = false;
-    setSourceFps(null);
+    dispatch(setSourceFps(null));
     probeSourceFps(videoUrl)
       .then((fps) => {
-        if (!cancelled) setSourceFps(fps);
+        if (!cancelled) dispatch(setSourceFps(fps));
       })
       .catch(() => {
-        if (!cancelled) setSourceFps(null);
+        if (!cancelled) dispatch(setSourceFps(null));
       });
     return () => {
       cancelled = true;
     };
-  }, [videoUrl]);
+  }, [videoUrl, dispatch]);
 
   // Set projectId in Redux for sync middleware
   // Also reset local state when switching projects (prevents stale state from previous project)

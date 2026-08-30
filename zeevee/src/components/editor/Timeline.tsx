@@ -22,7 +22,7 @@ import {
 } from "@/store/editorSlice";
 import type { FramingKeyframe } from "@/remotion/types";
 import { getEffectiveKeyframes } from "@/remotion/types";
-import { frameIndex } from "@/remotion/framingInterpolation";
+import { frameIndex, sameFrame, snapTimeToFrame } from "@/remotion/framingInterpolation";
 import { cn, formatSegmentLabel } from "@/lib/utils";
 import { EditableTitle } from "@/components/ui/editable-title";
 import { Button } from "@/components/ui/button";
@@ -711,11 +711,12 @@ export function Timeline({
         const kfs = seg?.framing ? getEffectiveKeyframes(seg.framing) : [];
         const sorted = [...kfs].sort((a, b) => a.time - b.time);
         const idx = sorted.findIndex((k) => k.id === drag.keyframeId);
-        const minTime = idx > 0 ? sorted[idx - 1].time + 0.1 : 0.1;
+        const frameStep = fps && fps > 0 ? 1 / fps : 0;
+        const minTime = idx > 0 ? sorted[idx - 1].time + frameStep : frameStep;
         const maxTime =
           idx < sorted.length - 1
-            ? sorted[idx + 1].time - 0.1
-            : segDuration - 0.1;
+            ? sorted[idx + 1].time - frameStep
+            : segDuration - frameStep;
         const newTime = Math.max(
           minTime,
           Math.min(maxTime, drag.keyframeInitialTime! + deltaTime),
@@ -725,7 +726,7 @@ export function Timeline({
             updateFramingKeyframe({
               segmentId: drag.segmentId!,
               keyframeId: drag.keyframeId!,
-              changes: { time: Math.round(newTime * 10) / 10 },
+              changes: { time: newTime },
             }),
           );
         });
@@ -856,6 +857,7 @@ export function Timeline({
     dispatch,
     snapToSegmentEdge,
     segments,
+    fps,
   ]);
 
   // Toolbar handlers
@@ -1627,22 +1629,17 @@ export function Timeline({
                                 const pct = clickX / rect.width;
                                 const blockDuration = nextTime - kf.time;
                                 const timeInSeg = kf.time + pct * blockDuration;
-                                const rounded =
-                                  Math.round(
-                                    Math.max(
-                                      0.1,
-                                      Math.min(segDuration - 0.1, timeInSeg),
-                                    ) * 10,
-                                  ) / 10;
+                                const time = snapTimeToFrame(timeInSeg, fps);
+                                if (time <= 0 || time >= segDuration) return;
                                 if (
-                                  sortedKfs.some(
-                                    (k) => Math.abs(k.time - rounded) < 0.5,
+                                  sortedKfs.some((k) =>
+                                    sameFrame(k.time, time, fps),
                                   )
                                 )
                                   return;
                                 const newKf: FramingKeyframe = {
                                   id: crypto.randomUUID(),
-                                  time: rounded,
+                                  time,
                                   focusX: kf.focusX,
                                   focusY: kf.focusY,
                                   zoom: kf.zoom,
@@ -1751,13 +1748,11 @@ export function Timeline({
                         (() => {
                           if (isShort) return null;
                           const timeInSeg = currentTime - seg.startTime;
-                          const rounded = Math.round(timeInSeg * 10) / 10;
-                          if (rounded <= 0 || rounded >= segDuration)
+                          const time = snapTimeToFrame(timeInSeg, fps);
+                          if (time <= 0 || time >= segDuration)
                             return null;
                           if (
-                            sortedKfs.some(
-                              (k) => Math.abs(k.time - rounded) < 0.5,
-                            )
+                            sortedKfs.some((k) => sameFrame(k.time, time, fps))
                           )
                             return null;
                           const pxPos =
@@ -1785,7 +1780,7 @@ export function Timeline({
                                         segmentId: seg.id,
                                         keyframe: {
                                           id: crypto.randomUUID(),
-                                          time: rounded,
+                                          time,
                                           focusX: sourceKf.focusX,
                                           focusY: sourceKf.focusY,
                                           zoom: sourceKf.zoom,

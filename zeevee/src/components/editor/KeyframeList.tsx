@@ -7,6 +7,7 @@ import {
 } from "@/store/editorSlice";
 import { getEffectiveKeyframes } from "@/remotion/types";
 import type { FramingKeyframe } from "@/remotion/types";
+import { sameFrame } from "@/remotion/framingInterpolation";
 import { X, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -25,6 +26,7 @@ export function KeyframeList() {
   const selectedKeyframeId = useSelector(
     (state: RootState) => state.editor.selectedKeyframeId,
   );
+  const sourceFps = useSelector((state: RootState) => state.editor.sourceFps);
   const segment = useSelector((state: RootState) =>
     state.editor.segments.find((s) => s.id === selectedSegmentId),
   );
@@ -41,19 +43,16 @@ export function KeyframeList() {
     if (isShortSegment) return;
 
     const lastKf = sorted[sorted.length - 1];
+    const frameStep = sourceFps && sourceFps > 0 ? 1 / sourceFps : 0.001;
     let time = segmentDuration / 2;
-    const existingTimes = sorted.map((kf) => kf.time);
-    while (existingTimes.some((t) => Math.abs(t - time) < 0.5)) {
-      time += 0.5;
-      if (time >= segmentDuration) {
-        time = segmentDuration - 0.5;
-        break;
-      }
+    while (sorted.some((kf) => sameFrame(kf.time, time, sourceFps))) {
+      time += frameStep;
+      if (time >= segmentDuration) return;
     }
 
     const newKeyframe: FramingKeyframe = {
       id: crypto.randomUUID(),
-      time: Math.max(0.1, Math.min(time, segmentDuration - 0.1)),
+      time,
       focusX: lastKf.focusX,
       focusY: lastKf.focusY,
       zoom: lastKf.zoom,
