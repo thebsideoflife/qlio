@@ -78,8 +78,9 @@ export function KeyframeList() {
     cutFrame <= bounds.durationInFrames - 1 &&
     !sorted.some(
       (kf) =>
+        sourceFps != null &&
         storedTimeToClipFrame(kf.time, segment.startTime, sourceFps) ===
-        cutFrame,
+          cutFrame,
     );
 
   const selectedKeyframe = sorted.find((kf) => kf.id === selectedKeyframeId);

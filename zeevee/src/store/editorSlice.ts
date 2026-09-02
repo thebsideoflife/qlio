@@ -1009,20 +1009,21 @@ export const editorSlice = createSlice({
         state.sourceFps,
       );
       if (time == null) return;
+      const fps = state.sourceFps;
       if (
-        state.sourceFps != null &&
-        state.sourceFps > 0 &&
+        fps != null &&
+        fps > 0 &&
         kfs.some(
           (k) =>
-            storedTimeToClipFrame(k.time, segment.startTime, state.sourceFps) ===
-            storedTimeToClipFrame(time, segment.startTime, state.sourceFps),
+            storedTimeToClipFrame(k.time, segment.startTime, fps) ===
+            storedTimeToClipFrame(time, segment.startTime, fps),
         )
       ) {
         return;
       }
       if (
-        !(state.sourceFps != null && state.sourceFps > 0) &&
-        kfs.some((k) => sameFrame(k.time, time, state.sourceFps))
+        !(fps != null && fps > 0) &&
+        kfs.some((k) => sameFrame(k.time, time, fps))
       ) {
         return;
       }
@@ -1071,26 +1072,27 @@ export const editorSlice = createSlice({
             state.sourceFps,
           );
           if (snapped == null) return;
+          const fps = state.sourceFps;
           const dup =
-            state.sourceFps != null && state.sourceFps > 0
+            fps != null && fps > 0
               ? materialized.some(
                   (k) =>
                     k.id !== kf.id &&
                     storedTimeToClipFrame(
                       k.time,
                       segment.startTime,
-                      state.sourceFps,
+                      fps,
                     ) ===
                       storedTimeToClipFrame(
                         snapped,
                         segment.startTime,
-                        state.sourceFps,
+                        fps,
                       ),
                 )
               : materialized.some(
                   (k) =>
                     k.id !== kf.id &&
-                    sameFrame(k.time, snapped, state.sourceFps),
+                    sameFrame(k.time, snapped, fps),
                 );
           if (dup) return;
           changes.time = snapped;
