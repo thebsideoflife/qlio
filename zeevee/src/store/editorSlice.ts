@@ -18,7 +18,13 @@ import {
 import { groupWordsIntoCaptions } from "@/remotion/utils";
 import { isOriginalCaptionLanguage } from "@/lib/transcript";
 import { reanchorKeyframesToTimeline } from "@/lib/timelineKeyframes";
-import { sameFrame, snapTimeToFrame } from "@/remotion/framingInterpolation";
+import {
+  frameIndex,
+  frameToTime,
+  sameFrame,
+  snapTimeToFrame,
+} from "@/remotion/framingInterpolation";
+import { segmentFrameBounds } from "@/remotion/segmentFrameBounds";
 
 export interface Segment {
   id: string;
@@ -155,9 +161,6 @@ const markEdited = (state: EditorState) => {
 // Minimum segment duration (100ms)
 const MIN_SEGMENT_DURATION = 0.1;
 
-// Short segment threshold — segments under 5s only get 1 keyframe
-const SHORT_SEGMENT_THRESHOLD = 5;
-
 // Deterministic ID counter for reducers (no Math.random in reducers)
 let reducerIdCounter = 0;
 function nextId(prefix: string) {
@@ -168,6 +171,37 @@ function nextId(prefix: string) {
 function snapPlacementTime(time: number, fps: number | null): number {
   if (time <= 0) return 0;
   return snapTimeToFrame(time, fps);
+}
+
+/**
+ * Convert a chosen playhead offset into a valid interior cut frame.
+ * Frame 0 is reserved for the opening hold; the last frame of the segment
+ * is exclusive so every cut has at least one frame of hold after it.
+ * Duration comes from segmentFrameBounds so off-grid bounds match Remotion.
+ */
+function clampInteriorCutFrame(
+  timeInSegment: number,
+  segmentStart: number,
+  segmentEnd: number,
+  fps: number | null,
+): number | null {
+  const segmentDuration = segmentEnd - segmentStart;
+  if (!(segmentDuration > 0) || !Number.isFinite(timeInSegment)) return null;
+  if (fps == null || !(fps > 0)) {
+    if (timeInSegment <= 0 || timeInSegment >= segmentDuration) return null;
+    return timeInSegment;
+  }
+  const { durationInFrames } = segmentFrameBounds(
+    segmentStart,
+    segmentEnd,
+    fps,
+  );
+  if (durationInFrames < 2) return null;
+  const frame = Math.min(
+    durationInFrames - 1,
+    Math.max(1, frameIndex(timeInSegment, fps)),
+  );
+  return frameToTime(frame, fps);
 }
 
 function snapFramingPlacement(
@@ -933,15 +967,14 @@ export const editorSlice = createSlice({
         (s) => s.id === action.payload.segmentId,
       );
       if (!segment || !segment.framing) return;
-      // Enforce single keyframe for short segments
-      const segDuration = segment.endTime - segment.startTime;
-      if (segDuration < SHORT_SEGMENT_THRESHOLD) return;
       const kfs = ensureMaterializedKeyframes(segment.framing);
-      const time = snapPlacementTime(
+      const time = clampInteriorCutFrame(
         action.payload.keyframe.time,
+        segment.startTime,
+        segment.endTime,
         state.sourceFps,
       );
-      if (time <= 0 || time >= segDuration) return;
+      if (time == null) return;
       if (kfs.some((k) => sameFrame(k.time, time, state.sourceFps))) return;
       kfs.push({
         ...action.payload.keyframe,
@@ -975,7 +1008,30 @@ export const editorSlice = createSlice({
       if (!kf) return;
       const changes = { ...action.payload.changes };
       if (changes.time != null) {
-        changes.time = snapPlacementTime(changes.time, state.sourceFps);
+        const sorted = [...materialized].sort((a, b) => a.time - b.time);
+        const isFirst = sorted[0]?.id === kf.id;
+        if (isFirst) {
+          // Opening hold is pinned to frame 0.
+          changes.time = 0;
+        } else {
+          const snapped = clampInteriorCutFrame(
+            changes.time,
+            segment.startTime,
+            segment.endTime,
+            state.sourceFps,
+          );
+          if (snapped == null) return;
+          if (
+            materialized.some(
+              (k) =>
+                k.id !== kf.id &&
+                sameFrame(k.time, snapped, state.sourceFps),
+            )
+          ) {
+            return;
+          }
+          changes.time = snapped;
+        }
       }
       Object.assign(kf, changes);
       kf.isAiGenerated = false; // User is overriding

@@ -440,9 +440,9 @@ export function Timeline({
 
           const direction = e.code === "ArrowLeft" ? -1 : 1;
           const multiplier = e.shiftKey ? 10 : 1;
-          const delta = direction * (1 / fps) * multiplier;
-
-          const newTime = clampTime(currentTime + delta);
+          const currentFrame = frameIndex(currentTime, fps);
+          const newFrame = Math.max(0, currentFrame + direction * multiplier);
+          const newTime = clampTime(snapTimeToFrame(newFrame / fps, fps));
           video.currentTime = newTime;
           dispatch(setCurrentTime(newTime));
         }

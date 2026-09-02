@@ -2,7 +2,7 @@ import React from "react";
 import { AbsoluteFill, OffthreadVideo, useVideoConfig } from "remotion";
 import type { CaptionLine, CaptionSettings } from "./types";
 import { CaptionDisplay } from "./CaptionDisplay";
-import { frameIndex } from "./framingInterpolation";
+import { segmentFrameBounds } from "./segmentFrameBounds";
 
 interface SquareTopVideoProps {
   src: string;
@@ -42,6 +42,9 @@ export const SquareTopVideo: React.FC<SquareTopVideoProps> = ({
   // them renders the full video (matches the no-segments full-video path).
   const hasBounds =
     startTime !== undefined && endTime !== undefined && endTime > startTime;
+  const bounds = hasBounds
+    ? segmentFrameBounds(startTime, endTime, fps)
+    : null;
 
   return (
     <AbsoluteFill style={{ backgroundColor: "black" }}>
@@ -55,8 +58,8 @@ export const SquareTopVideo: React.FC<SquareTopVideoProps> = ({
       >
         <OffthreadVideo
           src={src}
-          startFrom={hasBounds ? frameIndex(startTime, fps) : undefined}
-          endAt={hasBounds ? frameIndex(endTime, fps) : undefined}
+          startFrom={bounds?.startFrame}
+          endAt={bounds?.endFrame}
           style={{
             width: "100%",
             height: "100%",

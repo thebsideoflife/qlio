@@ -64,6 +64,7 @@ async function testArgumentConstruction(): Promise<void> {
     startTime,
     duration,
     "accurate",
+    30,
   );
   const inputIndex = accurateArgs.indexOf("-i");
   const outputSeekIndex = accurateArgs.lastIndexOf("-ss");
@@ -79,6 +80,11 @@ async function testArgumentConstruction(): Promise<void> {
     accurateArgs[outputSeekIndex + 1] ===
       formatFfmpegSeconds(PRE_SEEK_WINDOW_SEC),
     "accurate mode fine-seeks the remaining window",
+  );
+  assert(accurateArgs.includes("-r"), "accurate mode pins output fps");
+  assert(
+    accurateArgs[accurateArgs.indexOf("-r") + 1] === "30",
+    "accurate mode uses the provided fps",
   );
 }
 
@@ -134,7 +140,7 @@ async function testNonKeyframeRegression(): Promise<void> {
       "fixture must reproduce the non-keyframe fast-cut sync bug",
     );
 
-    await extractClip(sourcePath, accuratePath, 5.2, 2, "accurate");
+    await extractClip(sourcePath, accuratePath, 5.2, 2, "accurate", 30);
     const accurateTiming = await probeClipTiming(accuratePath);
     assertSynchronized(accurateTiming, "accurate mode");
     assert(
@@ -146,6 +152,14 @@ async function testNonKeyframeRegression(): Promise<void> {
       `accurate mode: duration error ${(
         accurateTiming.durationSec - 2
       ).toFixed(3)}s exceeds 100ms`,
+    );
+    assert(
+      accurateTiming.nbFrames != null,
+      "accurate mode: missing frame count",
+    );
+    assert(
+      Math.abs(accurateTiming.nbFrames - 60) <= 1,
+      `accurate mode: expected ~60 frames, got ${accurateTiming.nbFrames}`,
     );
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });

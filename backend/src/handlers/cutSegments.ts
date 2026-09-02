@@ -34,6 +34,10 @@ import {
   shiftCaptionsBy,
 } from "../utils/transcript-format";
 import { extractClip, probeClipTiming } from "../utils/videoClip";
+import {
+  rebaseFramingKeyframesToClip,
+  segmentFrameBounds,
+} from "../utils/segmentFrameBounds";
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client, {
@@ -393,12 +397,39 @@ export const handler: Handler<
     // 3. Cut each segment and upload clip
     const clipUrls: Map<string, string> = new Map();
 
+    // Clip start times and Remotion durations share one half-open frame range
+    // so off-grid legacy bounds cannot produce a one-frame trim mismatch.
+    // Captions + framing must use the same snapped clip clock as FFmpeg.
+    const clipDurations = new Map<string, number>();
+    const clipStarts = new Map<string, number>();
+    const clipStartFrames = new Map<string, number>();
+
     for (const segment of segments) {
-      const duration = segment.endTime - segment.startTime;
       const clipPath = path.join(tmpDir, `${segment.id}.mp4`);
-      await extractClip(inputPath, clipPath, segment.startTime, duration, "accurate");
+      const bounds =
+        sourceFps != null && sourceFps > 0
+          ? segmentFrameBounds(segment.startTime, segment.endTime, sourceFps)
+          : null;
+      const duration =
+        bounds?.durationSec ?? segment.endTime - segment.startTime;
+      const startTime =
+        bounds != null
+          ? bounds.startFrame / (sourceFps as number)
+          : segment.startTime;
+      clipDurations.set(segment.id, duration);
+      clipStarts.set(segment.id, startTime);
+      if (bounds) clipStartFrames.set(segment.id, bounds.startFrame);
+
+      await extractClip(
+        inputPath,
+        clipPath,
+        startTime,
+        duration,
+        "accurate",
+        sourceFps,
+      );
       try {
-        const { videoStartSec, audioStartSec, durationSec } =
+        const { videoStartSec, audioStartSec, durationSec, nbFrames } =
           await probeClipTiming(clipPath);
         const avGap =
           videoStartSec != null && audioStartSec != null
@@ -407,7 +438,7 @@ export const handler: Handler<
         const durationError =
           durationSec != null ? durationSec - duration : null;
         console.log(
-          `Clip ${segment.id} timing: videoStart=${videoStartSec ?? "?"}s audioStart=${audioStartSec ?? "?"}s avGap=${avGap ?? "?"}s duration=${durationSec ?? "?"}s durationError=${durationError ?? "?"}s`,
+          `Clip ${segment.id} timing: videoStart=${videoStartSec ?? "?"}s audioStart=${audioStartSec ?? "?"}s avGap=${avGap ?? "?"}s duration=${durationSec ?? "?"}s durationError=${durationError ?? "?"}s nbFrames=${nbFrames ?? "?"} expectedFrames=${bounds?.durationInFrames ?? "?"}`,
         );
       } catch (probeErr) {
         console.warn(`Clip ${segment.id} ffprobe failed:`, probeErr);
@@ -432,26 +463,40 @@ export const handler: Handler<
     const segmentRenders = await Promise.all(
       segments.map(async (segment: any) => {
         const clipUrl = clipUrls.get(segment.id)!;
-        const duration = segment.endTime - segment.startTime;
+        const duration =
+          clipDurations.get(segment.id) ??
+          segment.endTime - segment.startTime;
+        const clipStart =
+          clipStarts.get(segment.id) ?? segment.startTime;
+        const clipEnd = clipStart + duration;
 
-        // Include every line the editor would show in this range, then shift
-        // onto the clip clock (clip starts at 0).
+        // Shift onto the snapped clip clock (same origin FFmpeg used), not the
+        // raw stored segment.startTime — otherwise captions drift by up to ½ frame.
         const segmentCaptions = shiftCaptionsBy(
-          captionsOverlappingRange(
-            captions,
-            segment.startTime,
-            segment.endTime,
-          ),
-          -segment.startTime,
+          captionsOverlappingRange(captions, clipStart, clipEnd),
+          -clipStart,
         );
 
-        const segmentFraming = segment.framing || {
+        const rawFraming = segment.framing || {
           aspectRatio: globalFraming.aspectRatio,
           mode: "crop",
           focusX: 0.5,
           focusY: 0.5,
           isAiGenerated: false,
         };
+        const clipStartFrame = clipStartFrames.get(segment.id);
+        const segmentFraming =
+          clipStartFrame != null && sourceFps != null && sourceFps > 0
+            ? {
+                ...rawFraming,
+                keyframes: rebaseFramingKeyframesToClip(
+                  rawFraming.keyframes,
+                  segment.startTime,
+                  clipStartFrame,
+                  sourceFps,
+                ),
+              }
+            : rawFraming;
 
         const sanitizedTitle = sanitizeFilename(segment.title);
         const outName = `${jobId}/${sanitizedTitle}.${outputFormat}`;

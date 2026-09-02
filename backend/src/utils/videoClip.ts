@@ -12,6 +12,13 @@ export function formatFfmpegSeconds(seconds: number): string {
   return seconds.toFixed(6).replace(/\.?0+$/, "") || "0";
 }
 
+export function formatFfmpegFps(fps: number): string {
+  if (!(fps > 0) || !Number.isFinite(fps)) {
+    throw new Error(`Invalid FFmpeg fps: ${fps}`);
+  }
+  return fps.toFixed(6).replace(/\.?0+$/, "");
+}
+
 /**
  * Build FFmpeg args for segment extraction.
  *
@@ -20,6 +27,7 @@ export function formatFfmpegSeconds(seconds: number): string {
  *
  * `accurate` uses a coarse input seek plus output-side seek and re-encodes
  * so clip boundaries match segment.startTime exactly — required for caption sync.
+ * Pass `fps` to pin the output timebase to the source/composition frame grid.
  */
 export function buildExtractClipArgs(
   inputPath: string,
@@ -27,6 +35,7 @@ export function buildExtractClipArgs(
   startTime: number,
   duration: number,
   mode: ExtractClipMode = "accurate",
+  fps?: number,
 ): string[] {
   if (!(duration > 0)) {
     throw new Error(`Invalid clip duration: ${duration}`);
@@ -61,6 +70,10 @@ export function buildExtractClipArgs(
 
   const preSeek = Math.max(0, startTime - PRE_SEEK_WINDOW_SEC);
   const fineSeek = startTime - preSeek;
+  const rateArgs =
+    fps != null && fps > 0
+      ? ["-r", formatFfmpegFps(fps), "-vsync", "cfr"]
+      : [];
 
   return [
     "-ignore_editlist",
@@ -87,6 +100,7 @@ export function buildExtractClipArgs(
     "18",
     "-pix_fmt",
     "yuv420p",
+    ...rateArgs,
     "-c:a",
     "aac",
     "-b:a",
@@ -106,6 +120,7 @@ export function extractClip(
   startTime: number,
   duration: number,
   mode: ExtractClipMode = "accurate",
+  fps?: number,
 ): Promise<void> {
   const args = buildExtractClipArgs(
     inputPath,
@@ -113,11 +128,13 @@ export function extractClip(
     startTime,
     duration,
     mode,
+    fps,
   );
 
   return new Promise((resolve, reject) => {
     console.log(
-      `Cutting clip (${mode}): start=${startTime}s, duration=${duration}s`,
+      `Cutting clip (${mode}): start=${startTime}s, duration=${duration}s` +
+        (fps != null ? `, fps=${fps}` : ""),
     );
     console.log("FFmpeg args:", args.join(" "));
 
@@ -144,13 +161,14 @@ export function probeClipTiming(localPath: string): Promise<{
   videoStartSec: number | null;
   audioStartSec: number | null;
   durationSec: number | null;
+  nbFrames: number | null;
 }> {
   return new Promise((resolve, reject) => {
     const ffprobe = spawn("ffprobe", [
       "-v",
       "error",
       "-show_entries",
-      "stream=index,codec_type,start_time:format=duration",
+      "stream=index,codec_type,start_time,nb_frames:format=duration",
       "-of",
       "json",
       localPath,
@@ -171,15 +189,24 @@ export function probeClipTiming(localPath: string): Promise<{
       }
       try {
         const parsed = JSON.parse(stdout) as {
-          streams?: Array<{ codec_type?: string; start_time?: string }>;
+          streams?: Array<{
+            codec_type?: string;
+            start_time?: string;
+            nb_frames?: string;
+          }>;
           format?: { duration?: string };
         };
         let videoStartSec: number | null = null;
         let audioStartSec: number | null = null;
+        let nbFrames: number | null = null;
         for (const stream of parsed.streams ?? []) {
           const start = Number(stream.start_time);
           if (!Number.isFinite(start)) continue;
-          if (stream.codec_type === "video") videoStartSec = start;
+          if (stream.codec_type === "video") {
+            videoStartSec = start;
+            const frames = Number(stream.nb_frames);
+            if (Number.isFinite(frames) && frames > 0) nbFrames = frames;
+          }
           if (stream.codec_type === "audio") audioStartSec = start;
         }
         const duration = Number(parsed.format?.duration);
@@ -187,6 +214,7 @@ export function probeClipTiming(localPath: string): Promise<{
           videoStartSec,
           audioStartSec,
           durationSec: Number.isFinite(duration) ? duration : null,
+          nbFrames,
         });
       } catch (error) {
         reject(error);
