@@ -38,6 +38,7 @@ export const ZOOM_SNAP_RATIOS = [
   { label: "4:3", width: 4, height: 3 },
   { label: "1:1", width: 1, height: 1 },
   { label: "4:5", width: 4, height: 5 },
+  { label: "3:4", width: 3, height: 4 },
   { label: "9:16", width: 9, height: 16 },
 ] as const;
 
@@ -50,6 +51,7 @@ const KNOWN_RATIOS: { label: string; aspect: number }[] = [
   { label: "4:3", aspect: 4 / 3 },
   { label: "1:1", aspect: 1 },
   { label: "4:5", aspect: 4 / 5 },
+  { label: "3:4", aspect: 3 / 4 },
   { label: "9:16", aspect: 9 / 16 },
 ];
 
@@ -211,6 +213,29 @@ export function snapsForCanvas(
   return snaps.filter(
     (s, i) => i === 0 || Math.abs(s.zoom - snaps[i - 1].zoom) >= 0.01,
   );
+}
+
+/**
+ * Nudge sorted positions so neighbors are at least `minGap` apart, staying in
+ * [0, 1]. Ticks stay on the true zoom; this is only for label placement.
+ * If n points cannot fit, the gap shrinks to 1/(n−1).
+ */
+export function spreadPositions(sorted: number[], minGap: number): number[] {
+  const n = sorted.length;
+  if (n === 0) return [];
+  if (n === 1) return [Math.max(0, Math.min(1, sorted[0]))];
+
+  const gap = Math.min(Math.max(minGap, 0), 1 / (n - 1));
+  const out = sorted.map((v) => Math.max(0, Math.min(1, v)));
+  out[0] = Math.max(0, out[0]);
+  for (let i = 1; i < n; i++) {
+    out[i] = Math.max(out[i], out[i - 1] + gap);
+  }
+  out[n - 1] = Math.min(1, out[n - 1]);
+  for (let i = n - 2; i >= 0; i--) {
+    out[i] = Math.min(out[i], out[i + 1] - gap);
+  }
+  return out;
 }
 
 export function formatWindowAspect(

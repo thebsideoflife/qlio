@@ -755,7 +755,7 @@ export default function Editor() {
                     : "Square Top portrait mode"}
                 </TooltipContent>
               </Tooltip>
-              <div className="h-72 min-h-0 max-h-[calc(100%-2.5rem)] rounded-2xl border border-zinc-600/70 bg-zinc-900/80 px-1 py-2.5 shadow-md backdrop-blur-md">
+              <div className="h-80 min-h-0 max-h-[calc(100%-2.5rem)] rounded-2xl border border-zinc-600/70 bg-zinc-900/80 px-1 py-2.5 shadow-md backdrop-blur-md">
                 <ZoomSlider
                   value={sliderFraming.zoom}
                   canvasAspect={aspectRatioValue}

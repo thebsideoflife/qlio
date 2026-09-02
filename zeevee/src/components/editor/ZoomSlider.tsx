@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Tooltip,
   TooltipContent,
@@ -8,11 +8,14 @@ import { cn } from "@/lib/utils";
 import {
   formatWindowAspect,
   snapsForCanvas,
+  spreadPositions,
   type ZoomSnap,
 } from "@/lib/zoomMath";
 
 /** Half the thumb height — keeps the handle inside the bar at both ends. */
 const THUMB_INSET_PX = 7;
+/** Min pixels between label centers so 3:4 sits next to 4:5 without colliding. */
+const LABEL_MIN_GAP_PX = 16;
 
 function snapZoom(raw: number, snaps: ZoomSnap[]): number {
   if (snaps.length === 0) return raw;
@@ -53,12 +56,30 @@ export function ZoomSlider({
   disabled = false,
 }: ZoomSliderProps) {
   const trackRef = useRef<HTMLDivElement>(null);
+  const labelColRef = useRef<HTMLDivElement>(null);
+  const [labelTrackH, setLabelTrackH] = useState(0);
   const snaps = useMemo(
     () => snapsForCanvas(canvasAspect, sourceAspect),
     [canvasAspect, sourceAspect],
   );
+  const labelTops = useMemo(() => {
+    const zooms = snaps.map((s) => s.zoom);
+    if (labelTrackH <= 0) return zooms;
+    return spreadPositions(zooms, LABEL_MIN_GAP_PX / labelTrackH);
+  }, [snaps, labelTrackH]);
   const activeIndex = snaps.findIndex((s) => Math.abs(s.zoom - value) < 0.01);
   const liveAspect = formatWindowAspect(value, canvasAspect, sourceAspect);
+
+  useEffect(() => {
+    const el = labelColRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect.height ?? 0;
+      setLabelTrackH(h);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const valueFromClientY = useCallback(
     (clientY: number) => {
@@ -99,7 +120,7 @@ export function ZoomSlider({
           )}
           style={{ paddingTop: THUMB_INSET_PX, paddingBottom: THUMB_INSET_PX }}
         >
-          <div className="relative min-w-0 flex-1">
+          <div ref={labelColRef} className="relative min-w-0 flex-1">
             {snaps.map((snap, i) => (
               <button
                 key={snap.label}
@@ -110,13 +131,16 @@ export function ZoomSlider({
                   onChange(snap.zoom);
                 }}
                 className={cn(
-                  "absolute right-1.5 text-sm font-semibold leading-none tabular-nums tracking-wide whitespace-nowrap",
+                  "absolute right-1.5 text-[11px] font-semibold leading-none tabular-nums tracking-wide whitespace-nowrap",
                   "transition-colors hover:text-foreground",
                   i === activeIndex
                     ? "text-foreground font-medium"
                     : "text-zinc-500",
                 )}
-                style={{ top: `${snap.zoom * 100}%`, transform: "translateY(-50%)" }}
+                style={{
+                  top: `${(labelTops[i] ?? snap.zoom) * 100}%`,
+                  transform: "translateY(-50%)",
+                }}
               >
                 {snap.label}
               </button>
