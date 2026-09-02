@@ -37,6 +37,35 @@ export function segmentFrameBounds(
   };
 }
 
+/**
+ * Clip-local frame for a source clock time.
+ * Never use `frameIndex(sourceTime - startSec)` — that can be one frame off
+ * when `startSec` sits between source frames.
+ */
+export function sourceTimeToClipFrame(
+  sourceTime: number,
+  startSec: number,
+  fps: number,
+): number {
+  return Math.max(0, frameIndex(sourceTime, fps) - frameIndex(startSec, fps));
+}
+
+export function clipFrameToSourceTime(
+  clipFrame: number,
+  startSec: number,
+  fps: number,
+): number {
+  return frameToTime(frameIndex(startSec, fps) + clipFrame, fps);
+}
+
+export function storedTimeToClipFrame(
+  relativeSec: number,
+  startSec: number,
+  fps: number,
+): number {
+  return sourceTimeToClipFrame(startSec + relativeSec, startSec, fps);
+}
+
 interface FramingKeyframeLike {
   id?: string;
   time: number;
@@ -61,8 +90,10 @@ export function rebaseFramingKeyframesToClip(
 
   const rebased = keyframes
     .map((kf) => {
-      const absoluteFrame = frameIndex(segmentStartSec + kf.time, fps);
-      const clipFrame = Math.max(0, absoluteFrame - clipStartFrame);
+      const clipFrame = Math.max(
+        0,
+        frameIndex(segmentStartSec + kf.time, fps) - clipStartFrame,
+      );
       return { ...kf, time: frameToTime(clipFrame, fps) };
     })
     .sort((a, b) => a.time - b.time);

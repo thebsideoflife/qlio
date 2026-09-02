@@ -9,10 +9,13 @@ import {
 import { getEffectiveKeyframes } from "@/remotion/types";
 import type { FramingKeyframe } from "@/remotion/types";
 import {
-  frameIndex,
   frameToTime,
-  sameFrame,
 } from "@/remotion/framingInterpolation";
+import {
+  segmentFrameBounds,
+  sourceTimeToClipFrame,
+  storedTimeToClipFrame,
+} from "@/remotion/segmentFrameBounds";
 import { X, Plus, MoveHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -23,9 +26,13 @@ function getZoomLabel(zoom: number): string {
   return "Fit";
 }
 
-function formatFrameLabel(time: number, fps: number | null): string {
+function formatFrameLabel(
+  time: number,
+  startSec: number,
+  fps: number | null,
+): string {
   if (fps != null && fps > 0) {
-    return `f${frameIndex(time, fps)}`;
+    return `f${storedTimeToClipFrame(time, startSec, fps)}`;
   }
   return `${time.toFixed(1)}s`;
 }
@@ -47,27 +54,33 @@ export function KeyframeList() {
   if (!segment || !segment.framing) return null;
 
   const keyframes = getEffectiveKeyframes(segment.framing);
-  const segmentDuration = segment.endTime - segment.startTime;
   const sorted = [...keyframes].sort((a, b) => a.time - b.time);
+  const bounds =
+    sourceFps != null && sourceFps > 0
+      ? segmentFrameBounds(segment.startTime, segment.endTime, sourceFps)
+      : null;
 
   const playheadInSegment =
     currentTime >= segment.startTime && currentTime < segment.endTime;
-  const timeInSegment = currentTime - segment.startTime;
   const cutFrame =
     sourceFps != null && sourceFps > 0
-      ? frameIndex(timeInSegment, sourceFps)
+      ? sourceTimeToClipFrame(currentTime, segment.startTime, sourceFps)
       : null;
   const cutTime =
     cutFrame != null && sourceFps != null
       ? frameToTime(cutFrame, sourceFps)
-      : timeInSegment;
+      : currentTime - segment.startTime;
   const canPlaceAtPlayhead =
     playheadInSegment &&
-    sourceFps != null &&
-    sourceFps > 0 &&
-    cutTime > 0 &&
-    cutTime < segmentDuration &&
-    !sorted.some((kf) => sameFrame(kf.time, cutTime, sourceFps));
+    bounds != null &&
+    cutFrame != null &&
+    cutFrame >= 1 &&
+    cutFrame <= bounds.durationInFrames - 1 &&
+    !sorted.some(
+      (kf) =>
+        storedTimeToClipFrame(kf.time, segment.startTime, sourceFps) ===
+        cutFrame,
+    );
 
   const selectedKeyframe = sorted.find((kf) => kf.id === selectedKeyframeId);
   const selectedIsInterior =
@@ -75,20 +88,29 @@ export function KeyframeList() {
   const canMoveSelected =
     selectedIsInterior &&
     playheadInSegment &&
+    bounds != null &&
+    cutFrame != null &&
     sourceFps != null &&
-    sourceFps > 0 &&
-    cutTime > 0 &&
-    cutTime < segmentDuration &&
+    cutFrame >= 1 &&
+    cutFrame <= bounds.durationInFrames - 1 &&
     !sorted.some(
       (kf) =>
         kf.id !== selectedKeyframe!.id &&
-        sameFrame(kf.time, cutTime, sourceFps),
+        storedTimeToClipFrame(kf.time, segment.startTime, sourceFps) ===
+          cutFrame,
     );
 
   const handleAddAtPlayhead = () => {
     if (!canPlaceAtPlayhead) return;
     const sourceKf =
-      [...sorted].reverse().find((k) => k.time <= cutTime) || sorted[0];
+      [...sorted]
+        .reverse()
+        .find(
+          (k) =>
+            sourceFps != null &&
+            storedTimeToClipFrame(k.time, segment.startTime, sourceFps) <=
+              (cutFrame ?? 0),
+        ) || sorted[0];
     const newKeyframe: FramingKeyframe = {
       id: crypto.randomUUID(),
       time: cutTime,
@@ -142,7 +164,7 @@ export function KeyframeList() {
                 kf.isAiGenerated ? "bg-purple-400" : "bg-blue-400",
               )}
             />
-            <span>{formatFrameLabel(kf.time, sourceFps)}</span>
+            <span>{formatFrameLabel(kf.time, segment.startTime, sourceFps)}</span>
             <span className="text-muted-foreground font-normal">
               {getZoomLabel(kf.zoom)}
             </span>

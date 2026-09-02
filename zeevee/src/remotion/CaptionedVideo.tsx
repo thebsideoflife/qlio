@@ -15,7 +15,7 @@ import { DEFAULT_SEGMENT_FRAMING } from "./types";
 import { AutoFramedVideo } from "./AutoFramedVideo";
 import { SquareTopVideo } from "./SquareTopVideo";
 import { CaptionDisplay } from "./CaptionDisplay";
-import { segmentFrameBounds } from "./segmentFrameBounds";
+import { segmentFrameBounds, clipFrameToSourceTime, rebaseFramingKeyframesToClip } from "./segmentFrameBounds";
 // Ensures Sanchez, Stardos Stencil (and other caption Google fonts) are ready for Lambda.
 import "./loadCaptionFonts";
 
@@ -46,8 +46,20 @@ function SegmentVideo({
   const { fps, height } = useVideoConfig();
   const { startFrame, endFrame } = segmentFrameBounds(startTime, endTime, fps);
 
-  // Current time within the original video
-  const currentTime = startTime + frame / fps;
+  // Displayed source frame time — not startTime + frame/fps, which is ½-frame
+  // off when startTime sits between source frames.
+  const currentTime = clipFrameToSourceTime(frame, startTime, fps);
+  const clipFraming = framing
+    ? {
+        ...framing,
+        keyframes: rebaseFramingKeyframesToClip(
+          framing.keyframes,
+          startTime,
+          startFrame,
+          fps,
+        ),
+      }
+    : framing;
 
   // Validate videoUrl
   if (!videoUrl || videoUrl.trim() === "") {
@@ -88,11 +100,11 @@ function SegmentVideo({
   }
 
   // Use AutoFramedVideo when framing is enabled
-  if (framingEnabled && framing) {
+  if (framingEnabled && clipFraming) {
     return (
       <AutoFramedVideo
         src={videoUrl}
-        framing={framing}
+        framing={clipFraming}
         startFrom={startFrame}
         endAt={endFrame}
         clipFrame={frame}

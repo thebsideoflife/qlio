@@ -219,6 +219,62 @@ for (const fps of [24, 30, 24000 / 1001] as const) {
 }
 
 {
+  // Relative 0.017s on an off-grid start is still source frame 0 of the clip.
+  // Must not invent a cut on clip frame 1 (that is the jumpiness gap).
+  const fps = 30;
+  const store = makeStore(fps);
+  store.dispatch(
+    setSegments([
+      {
+        id: "seg-offgrid",
+        startTime: 5.017,
+        endTime: 10.034,
+        title: "Off grid",
+        description: "",
+        characters: [],
+        sceneTags: [],
+        keyDialogue: "",
+        confidence: 1,
+        framing: {
+          aspectRatio: "9:16",
+          mode: "crop",
+          focusX: 0.5,
+          focusY: 0.5,
+          isAiGenerated: false,
+          keyframes: [
+            {
+              id: "kf-0",
+              time: 0,
+              focusX: 0.5,
+              focusY: 0.5,
+              zoom: 1,
+              isAiGenerated: false,
+            },
+          ],
+        },
+      },
+    ]),
+  );
+  store.dispatch(
+    addFramingKeyframe({
+      segmentId: "seg-offgrid",
+      keyframe: {
+        id: "kf-ghost",
+        time: 0.017,
+        focusX: 0.2,
+        focusY: 0.5,
+        zoom: 0.4,
+        isAiGenerated: false,
+      },
+    }),
+  );
+  assert(
+    keyframes(store).length === 1,
+    "relative 0.017s on off-grid start is clip frame 0 and is rejected",
+  );
+}
+
+{
   // Short segment still accepts an interior manual cut when a frame exists.
   const store = makeStore(30);
   store.dispatch(

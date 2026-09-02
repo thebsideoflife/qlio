@@ -13,7 +13,14 @@ import {
   snapTimeToFrame,
 } from "./framingInterpolation";
 import { canonicalizeFps } from "../lib/sourceFps";
-import { segmentFrameBounds } from "./segmentFrameBounds";
+import {
+  clipFrameToSourceTime,
+  rebaseFramingKeyframesToClip,
+  resolveFramingAtSourceTime,
+  segmentFrameBounds,
+  sourceTimeToClipFrame,
+  storedTimeToClipFrame,
+} from "./segmentFrameBounds";
 
 let checks = 0;
 let failures = 0;
@@ -197,6 +204,55 @@ const keyframes = [kf("a", 0, 0), kf("b", 1, 1)];
     nash.durationInFrames === nash.endFrame - nash.startFrame,
     "nashville duration is always end-start",
   );
+}
+
+{
+  // The remaining 1-frame bug: round((t-start)*fps) vs round(t*fps)-round(start*fps).
+  const fps = 30;
+  const start = 5.017;
+  assert(frameIndex(0.017, fps) === 1, "relative round is the wrong clip frame");
+  assert(
+    storedTimeToClipFrame(0.017, start, fps) === 0,
+    "absolute mapping keeps 0.017s on clip frame 0",
+  );
+  assert(
+    sourceTimeToClipFrame(start + 0.017, start, fps) === 0,
+    "playhead at start+0.017 is still the first displayed frame",
+  );
+  assert(
+    sourceTimeToClipFrame(clipFrameToSourceTime(1, start, fps), start, fps) ===
+      1,
+    "clip frame 1 round-trips on the source clock",
+  );
+
+  const cutRelative = frameToTime(12, fps);
+  const walk = [kf("a", 0, 0.2), kf("b", cutRelative, 0.8)];
+  const bounds = segmentFrameBounds(start, start + 1, fps);
+  const rebased = rebaseFramingKeyframesToClip(
+    walk,
+    start,
+    bounds.startFrame,
+    fps,
+  )!;
+  assert(rebased[0].time === 0, "opening hold stays clip frame 0");
+  assert(
+    frameIndex(rebased[1].time, fps) === 12,
+    "on-grid relative cut keeps clip frame 12 after rebase",
+  );
+
+  for (let clipFrame = 0; clipFrame < 24; clipFrame++) {
+    const sourceTime = clipFrameToSourceTime(clipFrame, start, fps);
+    const framing = resolveFramingAtSourceTime(walk, sourceTime, start, fps);
+    const expected = clipFrame < 12 ? 0.2 : 0.8;
+    assert(
+      framing.zoom === expected,
+      `off-grid clip ${clipFrame} holds zoom ${expected}, got ${framing.zoom}`,
+    );
+    assert(
+      framing.zoom !== 0 || expected === 0,
+      `off-grid clip ${clipFrame} must not flash default/fit`,
+    );
+  }
 }
 
 {

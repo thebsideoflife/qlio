@@ -9,6 +9,8 @@ import {
   frameToTime,
   rebaseFramingKeyframesToClip,
   segmentFrameBounds,
+  sourceTimeToClipFrame,
+  storedTimeToClipFrame,
 } from "./segmentFrameBounds";
 
 let checks = 0;
@@ -56,6 +58,20 @@ function assert(condition: boolean, message: string): void {
   assert(
     frameIndex(rebased[1].time, fps) === 200 - bounds.startFrame,
     "interior cut keeps its absolute source frame on the clip clock",
+  );
+}
+
+{
+  const fps = 30;
+  const start = 5.017;
+  assert(frameIndex(0.017, fps) === 1, "relative round is the wrong clip frame");
+  assert(
+    storedTimeToClipFrame(0.017, start, fps) === 0,
+    "absolute mapping keeps 0.017s on clip frame 0",
+  );
+  assert(
+    sourceTimeToClipFrame(start + 0.017, start, fps) === 0,
+    "playhead at start+0.017 is still the first displayed frame",
   );
 }
 

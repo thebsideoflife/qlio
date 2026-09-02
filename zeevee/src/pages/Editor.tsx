@@ -51,9 +51,9 @@ import { getEffectiveKeyframes } from "@/remotion/types";
 import {
   frameIndex,
   frameToTime,
-  resolveFramingAtFrame,
   resolveFramingAtTime,
 } from "@/remotion/framingInterpolation";
+import { resolveFramingAtSourceTime } from "@/remotion/segmentFrameBounds";
 import { probeSourceFps } from "@/lib/sourceFps";
 import type { AspectRatio } from "@/remotion/types";
 import {
@@ -262,12 +262,10 @@ export default function Editor() {
     selectedSegment;
   const playheadFraming = playheadSeg?.framing
     ? sourceFps != null && sourceFps > 0
-      ? resolveFramingAtFrame(
+      ? resolveFramingAtSourceTime(
           getEffectiveKeyframes(playheadSeg.framing),
-          frameIndex(
-            Math.max(0, currentTime - playheadSeg.startTime),
-            sourceFps,
-          ),
+          currentTime,
+          playheadSeg.startTime,
           sourceFps,
         )
       : resolveFramingAtTime(

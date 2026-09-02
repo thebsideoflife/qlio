@@ -22,7 +22,13 @@ import {
 } from "@/store/editorSlice";
 import type { FramingKeyframe } from "@/remotion/types";
 import { getEffectiveKeyframes } from "@/remotion/types";
-import { frameIndex, sameFrame, snapTimeToFrame } from "@/remotion/framingInterpolation";
+import { frameIndex, frameToTime, sameFrame, snapTimeToFrame } from "@/remotion/framingInterpolation";
+import {
+  clipFrameToSourceTime,
+  segmentFrameBounds,
+  sourceTimeToClipFrame,
+  storedTimeToClipFrame,
+} from "@/remotion/segmentFrameBounds";
 import { cn, formatSegmentLabel } from "@/lib/utils";
 import { EditableTitle } from "@/components/ui/editable-title";
 import { Button } from "@/components/ui/button";
@@ -501,13 +507,17 @@ export function Timeline({
       currentTime < activeSeg.endTime
     ) {
       const kfs = getEffectiveKeyframes(activeSeg.framing);
-      const timeInSeg = currentTime - activeSeg.startTime;
       const sorted = [...kfs].sort((a, b) => a.time - b.time);
       const gridFps = fps && fps > 0 ? fps : null;
-      const active = sorted.filter((k) =>
+      const clipFrame =
         gridFps != null
-          ? frameIndex(k.time, gridFps) <= frameIndex(timeInSeg, gridFps)
-          : k.time <= timeInSeg,
+          ? sourceTimeToClipFrame(currentTime, activeSeg.startTime, gridFps)
+          : null;
+      const active = sorted.filter((k) =>
+        gridFps != null && clipFrame != null
+          ? storedTimeToClipFrame(k.time, activeSeg.startTime, gridFps) <=
+            clipFrame
+          : k.time <= currentTime - activeSeg.startTime,
       );
       if (active.length > 0) {
         const activeId = active[active.length - 1].id;
@@ -1614,7 +1624,18 @@ export function Timeline({
                                   (e.clientX - rect.left) / rect.width;
                                 const blockDuration = nextTime - kf.time;
                                 const timeInSeg = kf.time + pct * blockDuration;
-                                const seekTo = seg.startTime + timeInSeg;
+                                const seekTo =
+                                  fps && fps > 0
+                                    ? clipFrameToSourceTime(
+                                        storedTimeToClipFrame(
+                                          timeInSeg,
+                                          seg.startTime,
+                                          fps,
+                                        ),
+                                        seg.startTime,
+                                        fps,
+                                      )
+                                    : seg.startTime + timeInSeg;
                                 if (videoRef.current) {
                                   videoRef.current.currentTime = seekTo;
                                 }
@@ -1629,12 +1650,36 @@ export function Timeline({
                                 const pct = clickX / rect.width;
                                 const blockDuration = nextTime - kf.time;
                                 const timeInSeg = kf.time + pct * blockDuration;
-                                const time = snapTimeToFrame(timeInSeg, fps);
+                                const time =
+                                  fps && fps > 0
+                                    ? frameToTime(
+                                        storedTimeToClipFrame(
+                                          timeInSeg,
+                                          seg.startTime,
+                                          fps,
+                                        ),
+                                        fps,
+                                      )
+                                    : snapTimeToFrame(timeInSeg, fps);
                                 if (time <= 0 || time >= segDuration) return;
                                 if (
-                                  sortedKfs.some((k) =>
-                                    sameFrame(k.time, time, fps),
-                                  )
+                                  fps && fps > 0
+                                    ? sortedKfs.some(
+                                        (k) =>
+                                          storedTimeToClipFrame(
+                                            k.time,
+                                            seg.startTime,
+                                            fps,
+                                          ) ===
+                                          storedTimeToClipFrame(
+                                            time,
+                                            seg.startTime,
+                                            fps,
+                                          ),
+                                      )
+                                    : sortedKfs.some((k) =>
+                                        sameFrame(k.time, time, fps),
+                                      )
                                 )
                                   return;
                                 const newKf: FramingKeyframe = {
@@ -1747,16 +1792,35 @@ export function Timeline({
                       {isSelected &&
                         (() => {
                           if (isShort) return null;
-                          const timeInSeg = currentTime - seg.startTime;
-                          const time = snapTimeToFrame(timeInSeg, fps);
-                          if (time <= 0 || time >= segDuration)
+                          if (!(fps && fps > 0)) return null;
+                          const cutFrame = sourceTimeToClipFrame(
+                            currentTime,
+                            seg.startTime,
+                            fps,
+                          );
+                          const { durationInFrames } = segmentFrameBounds(
+                            seg.startTime,
+                            seg.endTime,
+                            fps,
+                          );
+                          if (cutFrame < 1 || cutFrame > durationInFrames - 1)
                             return null;
                           if (
-                            sortedKfs.some((k) => sameFrame(k.time, time, fps))
+                            sortedKfs.some(
+                              (k) =>
+                                storedTimeToClipFrame(
+                                  k.time,
+                                  seg.startTime,
+                                  fps,
+                                ) === cutFrame,
+                            )
                           )
                             return null;
+                          const time = frameToTime(cutFrame, fps);
                           const pxPos =
-                            (timeInSeg / segDuration) * laneWidth + 1;
+                            ((currentTime - seg.startTime) / segDuration) *
+                              laneWidth +
+                            1;
 
                           return (
                             <Tooltip>
@@ -1771,10 +1835,14 @@ export function Timeline({
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     const sourceKf =
-                                      [...sortedKfs]
-                                        .reverse()
-                                        .find((k) => k.time <= timeInSeg) ||
-                                      sortedKfs[0];
+                                      [...sortedKfs].reverse().find(
+                                        (k) =>
+                                          storedTimeToClipFrame(
+                                            k.time,
+                                            seg.startTime,
+                                            fps,
+                                          ) <= cutFrame,
+                                      ) || sortedKfs[0];
                                     dispatch(
                                       addFramingKeyframe({
                                         segmentId: seg.id,

@@ -19,12 +19,13 @@ import { groupWordsIntoCaptions } from "@/remotion/utils";
 import { isOriginalCaptionLanguage } from "@/lib/transcript";
 import { reanchorKeyframesToTimeline } from "@/lib/timelineKeyframes";
 import {
-  frameIndex,
   frameToTime,
   sameFrame,
-  snapTimeToFrame,
 } from "@/remotion/framingInterpolation";
-import { segmentFrameBounds } from "@/remotion/segmentFrameBounds";
+import {
+  segmentFrameBounds,
+  storedTimeToClipFrame,
+} from "@/remotion/segmentFrameBounds";
 
 export interface Segment {
   id: string;
@@ -168,9 +169,14 @@ function nextId(prefix: string) {
 }
 
 /** Placement times live on the clip frame grid. Reanchor does not use this. */
-function snapPlacementTime(time: number, fps: number | null): number {
+function snapPlacementTime(
+  time: number,
+  startSec: number,
+  fps: number | null,
+): number {
   if (time <= 0) return 0;
-  return snapTimeToFrame(time, fps);
+  if (fps == null || !(fps > 0)) return time;
+  return frameToTime(storedTimeToClipFrame(time, startSec, fps), fps);
 }
 
 /**
@@ -197,15 +203,17 @@ function clampInteriorCutFrame(
     fps,
   );
   if (durationInFrames < 2) return null;
-  const frame = Math.min(
-    durationInFrames - 1,
-    Math.max(1, frameIndex(timeInSegment, fps)),
-  );
+  const clipFrame = storedTimeToClipFrame(timeInSegment, segmentStart, fps);
+  // Frame 0 is the opening hold. Do not promote it to frame 1 — that invents
+  // a cut and leaves a default/fit frame in between.
+  if (clipFrame < 1) return null;
+  const frame = Math.min(durationInFrames - 1, clipFrame);
   return frameToTime(frame, fps);
 }
 
 function snapFramingPlacement(
   framing: SegmentFraming,
+  startSec: number,
   fps: number | null,
 ): SegmentFraming {
   if (!framing.keyframes?.length) return framing;
@@ -213,7 +221,7 @@ function snapFramingPlacement(
     ...framing,
     keyframes: framing.keyframes.map((kf) => ({
       ...kf,
-      time: snapPlacementTime(kf.time, fps),
+      time: snapPlacementTime(kf.time, startSec, fps),
     })),
   };
 }
@@ -227,6 +235,7 @@ function sliceFraming(
   source: SegmentFraming | undefined,
   rangeStartInSegment: number,
   newDuration: number,
+  newStartSec: number,
   fps: number | null,
 ): SegmentFraming | undefined {
   if (!source) return undefined;
@@ -239,7 +248,11 @@ function sliceFraming(
     .map((kf) => ({
       ...kf,
       id: nextId("kf-sl"),
-      time: snapPlacementTime(kf.time - rangeStartInSegment, fps),
+      time: snapPlacementTime(
+        kf.time - rangeStartInSegment,
+        newStartSec,
+        fps,
+      ),
     }));
 
   // Sort after offset adjustment
@@ -520,14 +533,26 @@ export const editorSlice = createSlice({
           endTime: splitPoint,
           id: `${segment.id}-a`,
           title: `${segment.title} (Part 1)`,
-          framing: sliceFraming(segment.framing, 0, dur1, state.sourceFps),
+          framing: sliceFraming(
+            segment.framing,
+            0,
+            dur1,
+            segment.startTime,
+            state.sourceFps,
+          ),
         };
         const newSegment2: Segment = {
           ...segment,
           startTime: splitPoint,
           id: `${segment.id}-b`,
           title: `${segment.title} (Part 2)`,
-          framing: sliceFraming(segment.framing, splitRel, dur2, state.sourceFps),
+          framing: sliceFraming(
+            segment.framing,
+            splitRel,
+            dur2,
+            splitPoint,
+            state.sourceFps,
+          ),
         };
 
         state.segments.splice(index, 1, newSegment1, newSegment2);
@@ -839,6 +864,7 @@ export const editorSlice = createSlice({
       if (segment) {
         segment.framing = snapFramingPlacement(
           action.payload.framing,
+          segment.startTime,
           state.sourceFps,
         );
         markEdited(state);
@@ -870,7 +896,11 @@ export const editorSlice = createSlice({
         ) {
           continue;
         }
-        segment.framing = snapFramingPlacement(framing, state.sourceFps);
+        segment.framing = snapFramingPlacement(
+          framing,
+          segment.startTime,
+          state.sourceFps,
+        );
         applied = true;
       }
       if (applied) markEdited(state);
@@ -949,7 +979,11 @@ export const editorSlice = createSlice({
       segment.framing.keyframes = action.payload.keyframes
         .map((kf) => ({
           ...kf,
-          time: snapPlacementTime(kf.time, state.sourceFps),
+          time: snapPlacementTime(
+            kf.time,
+            segment.startTime,
+            state.sourceFps,
+          ),
         }))
         .sort((a, b) => a.time - b.time);
       syncLegacyFromKeyframes(segment.framing);
@@ -975,7 +1009,23 @@ export const editorSlice = createSlice({
         state.sourceFps,
       );
       if (time == null) return;
-      if (kfs.some((k) => sameFrame(k.time, time, state.sourceFps))) return;
+      if (
+        state.sourceFps != null &&
+        state.sourceFps > 0 &&
+        kfs.some(
+          (k) =>
+            storedTimeToClipFrame(k.time, segment.startTime, state.sourceFps) ===
+            storedTimeToClipFrame(time, segment.startTime, state.sourceFps),
+        )
+      ) {
+        return;
+      }
+      if (
+        !(state.sourceFps != null && state.sourceFps > 0) &&
+        kfs.some((k) => sameFrame(k.time, time, state.sourceFps))
+      ) {
+        return;
+      }
       kfs.push({
         ...action.payload.keyframe,
         time,
@@ -1021,15 +1071,28 @@ export const editorSlice = createSlice({
             state.sourceFps,
           );
           if (snapped == null) return;
-          if (
-            materialized.some(
-              (k) =>
-                k.id !== kf.id &&
-                sameFrame(k.time, snapped, state.sourceFps),
-            )
-          ) {
-            return;
-          }
+          const dup =
+            state.sourceFps != null && state.sourceFps > 0
+              ? materialized.some(
+                  (k) =>
+                    k.id !== kf.id &&
+                    storedTimeToClipFrame(
+                      k.time,
+                      segment.startTime,
+                      state.sourceFps,
+                    ) ===
+                      storedTimeToClipFrame(
+                        snapped,
+                        segment.startTime,
+                        state.sourceFps,
+                      ),
+                )
+              : materialized.some(
+                  (k) =>
+                    k.id !== kf.id &&
+                    sameFrame(k.time, snapped, state.sourceFps),
+                );
+          if (dup) return;
           changes.time = snapped;
         }
       }
