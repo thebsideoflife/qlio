@@ -215,29 +215,6 @@ export function snapsForCanvas(
   );
 }
 
-/**
- * Nudge sorted positions so neighbors are at least `minGap` apart, staying in
- * [0, 1]. Ticks stay on the true zoom; this is only for label placement.
- * If n points cannot fit, the gap shrinks to 1/(n−1).
- */
-export function spreadPositions(sorted: number[], minGap: number): number[] {
-  const n = sorted.length;
-  if (n === 0) return [];
-  if (n === 1) return [Math.max(0, Math.min(1, sorted[0]))];
-
-  const gap = Math.min(Math.max(minGap, 0), 1 / (n - 1));
-  const out = sorted.map((v) => Math.max(0, Math.min(1, v)));
-  out[0] = Math.max(0, out[0]);
-  for (let i = 1; i < n; i++) {
-    out[i] = Math.max(out[i], out[i - 1] + gap);
-  }
-  out[n - 1] = Math.min(1, out[n - 1]);
-  for (let i = n - 2; i >= 0; i--) {
-    out[i] = Math.min(out[i], out[i + 1] - gap);
-  }
-  return out;
-}
-
 export function formatWindowAspect(
   zoom: number,
   canvasAspect: number,
