@@ -48,7 +48,12 @@ import {
   PanelTop,
 } from "lucide-react";
 import { getEffectiveKeyframes } from "@/remotion/types";
-import { resolveFramingAtTime } from "@/remotion/framingInterpolation";
+import {
+  frameIndex,
+  frameToTime,
+  resolveFramingAtTime,
+} from "@/remotion/framingInterpolation";
+import { resolveFramingAtSourceTime } from "@/remotion/segmentFrameBounds";
 import { probeSourceFps } from "@/lib/sourceFps";
 import type { AspectRatio } from "@/remotion/types";
 import {
@@ -256,11 +261,18 @@ export default function Editor() {
     segments.find((s) => currentTime >= s.startTime && currentTime < s.endTime) ??
     selectedSegment;
   const playheadFraming = playheadSeg?.framing
-    ? resolveFramingAtTime(
-        getEffectiveKeyframes(playheadSeg.framing),
-        Math.max(0, currentTime - playheadSeg.startTime),
-        sourceFps,
-      )
+    ? sourceFps != null && sourceFps > 0
+      ? resolveFramingAtSourceTime(
+          getEffectiveKeyframes(playheadSeg.framing),
+          currentTime,
+          playheadSeg.startTime,
+          sourceFps,
+        )
+      : resolveFramingAtTime(
+          getEffectiveKeyframes(playheadSeg.framing),
+          Math.max(0, currentTime - playheadSeg.startTime),
+          null,
+        )
     : { zoom: previewZoom, focusX: previewFocus.x, focusY: previewFocus.y };
   const displayZoom = playheadFraming.zoom;
   const displayFocusX = playheadFraming.focusX;
@@ -527,23 +539,54 @@ export default function Editor() {
     }
   };
 
-  // RAF for accurate time sync (captions, timeline, transcript)
+  // Sync playhead to the displayed video frame when possible; RAF is the fallback.
   useEffect(() => {
-    if (!videoUrl) return; // Don't start RAF until video is available
+    if (!videoUrl) return;
 
-    let rafId: number;
+    const video = videoRef.current;
+    if (!video) return;
 
-    const tick = () => {
-      const video = videoRef.current;
-      if (video && !isNaN(video.currentTime)) {
-        dispatch(setCurrentTime(video.currentTime));
+    let cancelled = false;
+    let rafId = 0;
+    let rvfcId = 0;
+
+    const publishTime = (seconds: number) => {
+      if (cancelled || !Number.isFinite(seconds)) return;
+      if (sourceFps != null && sourceFps > 0) {
+        dispatch(setCurrentTime(frameToTime(frameIndex(seconds, sourceFps), sourceFps)));
+        return;
       }
-      rafId = requestAnimationFrame(tick);
+      dispatch(setCurrentTime(seconds));
     };
 
+    const hasRvfc =
+      typeof video.requestVideoFrameCallback === "function" &&
+      typeof video.cancelVideoFrameCallback === "function";
+
+    if (hasRvfc) {
+      const onFrame: VideoFrameRequestCallback = (_now, metadata) => {
+        if (cancelled) return;
+        publishTime(metadata.mediaTime);
+        rvfcId = video.requestVideoFrameCallback(onFrame);
+      };
+      rvfcId = video.requestVideoFrameCallback(onFrame);
+      return () => {
+        cancelled = true;
+        video.cancelVideoFrameCallback(rvfcId);
+      };
+    }
+
+    const tick = () => {
+      if (cancelled) return;
+      if (!isNaN(video.currentTime)) publishTime(video.currentTime);
+      rafId = requestAnimationFrame(tick);
+    };
     rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
-  }, [dispatch, videoUrl]);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+    };
+  }, [dispatch, videoUrl, sourceFps]);
 
   const handleWordClick = (startTime: number) => {
     const video = videoRef.current;

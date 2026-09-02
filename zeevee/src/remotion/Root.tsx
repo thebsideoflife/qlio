@@ -8,16 +8,13 @@ import type { CaptionedVideoProps } from "./types";
 import { DEFAULT_CAPTION_SETTINGS, DEFAULT_GLOBAL_FRAMING } from "./types";
 import { DEFAULT_SOURCE_ASPECT } from "../lib/zoomMath";
 import { canonicalizeFps, probeSourceFps } from "../lib/sourceFps";
+import { segmentFrameBounds } from "./segmentFrameBounds";
 
 const PLACEHOLDER_FPS = 30;
 
 const calculateMetadata: CalculateMetadataFunction<
   CaptionedVideoProps
 > = async ({ props }) => {
-  const durationInSeconds =
-    props.segments?.reduce((sum, seg) => sum + (seg.endTime - seg.startTime), 0) ||
-    0;
-
   const rawFps =
     props.sourceFps && props.sourceFps > 0
       ? props.sourceFps
@@ -33,9 +30,19 @@ const calculateMetadata: CalculateMetadataFunction<
     return { durationInFrames: PLACEHOLDER_FPS };
   }
 
+  const durationInFrames = Math.max(
+    1,
+    (props.segments ?? []).reduce(
+      (sum, seg) =>
+        sum +
+        segmentFrameBounds(seg.startTime, seg.endTime, fps).durationInFrames,
+      0,
+    ),
+  );
+
   return {
     fps,
-    durationInFrames: Math.max(1, Math.round(durationInSeconds * fps)),
+    durationInFrames,
   };
 };
 

@@ -2,7 +2,7 @@ import React from "react";
 import { AbsoluteFill, OffthreadVideo, useVideoConfig } from "remotion";
 import type { SegmentFraming, AspectRatio } from "./types";
 import { DEFAULT_SEGMENT_FRAMING, getEffectiveKeyframes } from "./types";
-import { resolveFramingAtTime } from "./framingInterpolation";
+import { resolveFramingAtFrame } from "./framingInterpolation";
 import {
   DEFAULT_SOURCE_ASPECT,
   videoSizeAtZoom,
@@ -14,8 +14,8 @@ interface AutoFramedVideoProps {
   startFrom?: number;
   endAt?: number;
   children?: React.ReactNode;
-  /** Time in seconds relative to segment start, for keyframe resolution */
-  timeInSegment?: number;
+  /** Integer composition/clip frame for hard-cut keyframe resolution */
+  clipFrame?: number;
   /** Source video width/height. Defaults to 16:9 when unknown. */
   sourceAspect?: number;
 }
@@ -45,7 +45,7 @@ function getAspectRatioValue(aspectRatio: AspectRatio): number {
  * - 0 < zoom < 1: intermediate size between contain and cover, positioned by focusX/focusY
  *
  * Supports multiple keyframes per segment — resolves the active keyframe
- * based on timeInSegment using hard-cut logic.
+ * from the integer clip frame using hard-cut logic.
  */
 export const AutoFramedVideo: React.FC<AutoFramedVideoProps> = ({
   src,
@@ -53,15 +53,15 @@ export const AutoFramedVideo: React.FC<AutoFramedVideoProps> = ({
   startFrom,
   endAt,
   children,
-  timeInSegment = 0,
+  clipFrame = 0,
   sourceAspect = DEFAULT_SOURCE_ASPECT,
 }) => {
   const { width: containerW, height: containerH, fps } = useVideoConfig();
 
   const keyframes = getEffectiveKeyframes(framing);
-  const { focusX, focusY, zoom } = resolveFramingAtTime(
+  const { focusX, focusY, zoom } = resolveFramingAtFrame(
     keyframes,
-    timeInSegment,
+    clipFrame,
     fps,
   );
 

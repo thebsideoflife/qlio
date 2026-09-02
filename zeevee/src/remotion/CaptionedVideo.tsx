@@ -15,7 +15,7 @@ import { DEFAULT_SEGMENT_FRAMING } from "./types";
 import { AutoFramedVideo } from "./AutoFramedVideo";
 import { SquareTopVideo } from "./SquareTopVideo";
 import { CaptionDisplay } from "./CaptionDisplay";
-import { frameIndex } from "./framingInterpolation";
+import { segmentFrameBounds, clipFrameToSourceTime, rebaseFramingKeyframesToClip } from "./segmentFrameBounds";
 // Ensures Sanchez, Stardos Stencil (and other caption Google fonts) are ready for Lambda.
 import "./loadCaptionFonts";
 
@@ -44,11 +44,22 @@ function SegmentVideo({
 }: SegmentVideoProps) {
   const frame = useCurrentFrame();
   const { fps, height } = useVideoConfig();
+  const { startFrame, endFrame } = segmentFrameBounds(startTime, endTime, fps);
 
-  // Current time within the original video
-  const currentTime = startTime + frame / fps;
-  // Time relative to segment start (for keyframe resolution)
-  const timeInSegment = frame / fps;
+  // Displayed source frame time — not startTime + frame/fps, which is ½-frame
+  // off when startTime sits between source frames.
+  const currentTime = clipFrameToSourceTime(frame, startTime, fps);
+  const clipFraming = framing
+    ? {
+        ...framing,
+        keyframes: rebaseFramingKeyframesToClip(
+          framing.keyframes,
+          startTime,
+          startFrame,
+          fps,
+        ),
+      }
+    : framing;
 
   // Validate videoUrl
   if (!videoUrl || videoUrl.trim() === "") {
@@ -89,14 +100,14 @@ function SegmentVideo({
   }
 
   // Use AutoFramedVideo when framing is enabled
-  if (framingEnabled && framing) {
+  if (framingEnabled && clipFraming) {
     return (
       <AutoFramedVideo
         src={videoUrl}
-        framing={framing}
-        startFrom={frameIndex(startTime, fps)}
-        endAt={frameIndex(endTime, fps)}
-        timeInSegment={timeInSegment}
+        framing={clipFraming}
+        startFrom={startFrame}
+        endAt={endFrame}
+        clipFrame={frame}
         sourceAspect={sourceAspect}
       >
         <CaptionDisplay
@@ -114,8 +125,8 @@ function SegmentVideo({
     <AbsoluteFill>
       <OffthreadVideo
         src={videoUrl}
-        startFrom={frameIndex(startTime, fps)}
-        endAt={frameIndex(endTime, fps)}
+        startFrom={startFrame}
+        endAt={endFrame}
       />
       <CaptionDisplay
         captions={captions}
@@ -203,6 +214,7 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
         <AutoFramedVideo
           src={videoUrl}
           framing={defaultFraming}
+          clipFrame={frame}
           sourceAspect={sourceAspect}
         >
           <CaptionDisplay
@@ -228,7 +240,7 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
     );
   }
 
-  // Build sequences for each segment
+  // Build sequences for each segment — duration is always endFrame - startFrame.
   const sequences = segments.reduce<
     Array<{
       segment: (typeof segments)[0];
@@ -240,8 +252,12 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
       acc.length > 0
         ? acc[acc.length - 1].startFrame + acc[acc.length - 1].duration
         : 0;
-    const duration = frameIndex(segment.endTime - segment.startTime, fps);
-    acc.push({ segment, startFrame, duration });
+    const { durationInFrames } = segmentFrameBounds(
+      segment.startTime,
+      segment.endTime,
+      fps,
+    );
+    acc.push({ segment, startFrame, duration: durationInFrames });
     return acc;
   }, []);
 

@@ -1,7 +1,13 @@
 import type { FramingKeyframe } from "./types";
 
+/** Integer source/clip frame nearest to `seconds`. */
 export function frameIndex(seconds: number, fps: number): number {
   return Math.round(seconds * fps);
+}
+
+/** Seconds for an exact integer frame on the clip grid. */
+export function frameToTime(frame: number, fps: number): number {
+  return frame / fps;
 }
 
 /**
@@ -13,7 +19,7 @@ export function snapTimeToFrame(
   fps: number | null,
 ): number {
   if (fps == null || !(fps > 0) || !Number.isFinite(seconds)) return seconds;
-  return frameIndex(seconds, fps) / fps;
+  return frameToTime(frameIndex(seconds, fps), fps);
 }
 
 export function sameFrame(
@@ -23,6 +29,31 @@ export function sameFrame(
 ): boolean {
   if (fps == null || !(fps > 0)) return Math.abs(a - b) < 1e-6;
   return frameIndex(a, fps) === frameIndex(b, fps);
+}
+
+/**
+ * Hold-until-next on an integer clip frame.
+ * Cut frame N keeps the previous keyframe through N-1 and starts the new
+ * keyframe on N — nothing in between, no blending.
+ */
+export function resolveKeyframeAtFrame(
+  keyframes: FramingKeyframe[],
+  frame: number,
+  fps: number,
+): FramingKeyframe | null {
+  if (keyframes.length === 0) return null;
+
+  const sorted = [...keyframes].sort((a, b) => a.time - b.time);
+  let active = sorted[0];
+  for (const kf of sorted) {
+    const kfFrame = frameIndex(kf.time, fps);
+    if (kfFrame <= frame) {
+      active = kf;
+    } else {
+      break;
+    }
+  }
+  return active;
 }
 
 /**
@@ -36,21 +67,36 @@ export function resolveKeyframeAtTime(
 ): FramingKeyframe | null {
   if (keyframes.length === 0) return null;
 
-  const sorted = [...keyframes].sort((a, b) => a.time - b.time);
-  const useFrames = fps != null && fps > 0;
-  const t = useFrames ? frameIndex(timeInSegment, fps) : timeInSegment;
+  if (fps != null && fps > 0) {
+    return resolveKeyframeAtFrame(
+      keyframes,
+      frameIndex(timeInSegment, fps),
+      fps,
+    );
+  }
 
+  const sorted = [...keyframes].sort((a, b) => a.time - b.time);
   let active = sorted[0];
   for (const kf of sorted) {
-    const kfT = useFrames ? frameIndex(kf.time, fps) : kf.time;
-    if (kfT <= t) {
+    if (kf.time <= timeInSegment) {
       active = kf;
     } else {
       break;
     }
   }
-
   return active;
+}
+
+export function resolveFramingAtFrame(
+  keyframes: FramingKeyframe[],
+  frame: number,
+  fps: number,
+): { focusX: number; focusY: number; zoom: number } {
+  const active = resolveKeyframeAtFrame(keyframes, frame, fps);
+  if (!active) {
+    return { focusX: 0.5, focusY: 0.5, zoom: 0.0 };
+  }
+  return { focusX: active.focusX, focusY: active.focusY, zoom: active.zoom };
 }
 
 export function resolveFramingAtTime(
@@ -58,6 +104,13 @@ export function resolveFramingAtTime(
   timeInSegment: number,
   fps: number | null,
 ): { focusX: number; focusY: number; zoom: number } {
+  if (fps != null && fps > 0) {
+    return resolveFramingAtFrame(
+      keyframes,
+      frameIndex(timeInSegment, fps),
+      fps,
+    );
+  }
   const active = resolveKeyframeAtTime(keyframes, timeInSegment, fps);
   if (!active) {
     return { focusX: 0.5, focusY: 0.5, zoom: 0.0 };

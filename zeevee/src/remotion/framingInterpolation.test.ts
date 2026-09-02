@@ -6,11 +6,21 @@
 import type { FramingKeyframe } from "./types";
 import {
   frameIndex,
+  frameToTime,
+  resolveFramingAtFrame,
   resolveFramingAtTime,
   resolveKeyframeAtTime,
   snapTimeToFrame,
 } from "./framingInterpolation";
 import { canonicalizeFps } from "../lib/sourceFps";
+import {
+  clipFrameToSourceTime,
+  rebaseFramingKeyframesToClip,
+  resolveFramingAtSourceTime,
+  segmentFrameBounds,
+  sourceTimeToClipFrame,
+  storedTimeToClipFrame,
+} from "./segmentFrameBounds";
 
 let checks = 0;
 let failures = 0;
@@ -44,6 +54,7 @@ const keyframes = [kf("a", 0, 0), kf("b", 1, 1)];
   assert(frameIndex(1, 30) === 30, "1s at 30fps is frame 30");
   assert(frameIndex(0.983, 30) === 29, "0.983s at 30fps is nearest frame 29");
   assert(frameIndex(1, 24000 / 1001) === 24, "1s at 23.976 is frame 24");
+  assert(frameToTime(30, 30) === 1, "frame 30 at 30fps is 1s");
 }
 
 {
@@ -63,6 +74,32 @@ const keyframes = [kf("a", 0, 0), kf("b", 1, 1)];
     resolveFramingAtTime(keyframes, 1.5, 30).zoom === 1,
     "after the cut holds b",
   );
+  assert(
+    resolveFramingAtFrame(keyframes, 29, 30).zoom === 0,
+    "integer frame N-1 keeps a",
+  );
+  assert(
+    resolveFramingAtFrame(keyframes, 30, 30).zoom === 1,
+    "integer frame N starts b",
+  );
+}
+
+{
+  // Exhaustive adjacent-frame walk: every composition frame maps, no default/fit flash.
+  const fps = 30;
+  const walk = [kf("a", 0, 0.2), kf("b", frameToTime(12, fps), 0.8)];
+  for (let frame = 0; frame < 24; frame++) {
+    const framing = resolveFramingAtFrame(walk, frame, fps);
+    const expected = frame < 12 ? 0.2 : 0.8;
+    assert(
+      framing.zoom === expected,
+      `frame ${frame} holds zoom ${expected}, got ${framing.zoom}`,
+    );
+    assert(
+      framing.focusX === 0.5 && framing.focusY === 0.5,
+      `frame ${frame} keeps focus`,
+    );
+  }
 }
 
 {
@@ -113,6 +150,121 @@ const keyframes = [kf("a", 0, 0), kf("b", 1, 1)];
     snapTimeToFrame(1.01, 30) === snapTimeToFrame(1.0, 30),
     "times within half a frame collapse to the same stored time",
   );
+}
+
+{
+  // Old 0.1s keyframe still resolves to the same nearest frame.
+  const fps = 24000 / 1001;
+  const oldTime = 10.3;
+  const snapped = snapTimeToFrame(oldTime, fps);
+  assert(
+    resolveFramingAtTime([kf("a", 0, 0), kf("b", oldTime, 1)], oldTime, fps)
+      .zoom === 1,
+    "legacy 0.1s cut still activates on its nearest frame",
+  );
+  assert(
+    resolveFramingAtTime([kf("a", 0, 0), kf("b", snapped, 1)], snapped, fps)
+      .zoom === 1,
+    "canonical n/fps cut activates on the same frame",
+  );
+  assert(
+    frameIndex(oldTime, fps) === frameIndex(snapped, fps),
+    "legacy and snapped times share a frame index",
+  );
+}
+
+{
+  const fps = 30;
+  // Counterexample: frameIndex(end-start) disagrees with endFrame-startFrame.
+  assert(frameIndex(10.034 - 5.017, fps) === 151, "old duration formula is 151");
+  const bounds = segmentFrameBounds(5.017, 10.034, fps);
+  assert(bounds.startFrame === 151, "startFrame is round(5.017*30)");
+  assert(bounds.endFrame === 301, "endFrame is round(10.034*30)");
+  assert(bounds.durationInFrames === 150, "canonical duration is end-start");
+  assert(
+    bounds.durationInFrames !== frameIndex(10.034 - 5.017, fps),
+    "canonical duration differs from frameIndex(end-start)",
+  );
+
+  const a = segmentFrameBounds(0, 5, fps);
+  const b = segmentFrameBounds(5, 10, fps);
+  assert(a.endFrame === b.startFrame, "adjacent segments share the boundary frame");
+  assert(a.durationInFrames === 150, "0→5s is 150 frames at 30fps");
+  assert(b.durationInFrames === 150, "5→10s is 150 frames at 30fps");
+
+  const clip = segmentFrameBounds(0, 3, fps);
+  assert(clip.startFrame === 0, "export clip starts at frame 0");
+  assert(clip.endFrame === 90, "export clip ends at frame 90");
+  assert(clip.durationInFrames === 90, "export clip duration matches endFrame");
+
+  const film = 24000 / 1001;
+  const nash = segmentFrameBounds(1142.6712427132334, 1248.4037757443318, film);
+  assert(nash.durationInFrames > 0, "nashville-style off-grid bounds stay positive");
+  assert(
+    nash.durationInFrames === nash.endFrame - nash.startFrame,
+    "nashville duration is always end-start",
+  );
+}
+
+{
+  // The remaining 1-frame bug: round((t-start)*fps) vs round(t*fps)-round(start*fps).
+  const fps = 30;
+  const start = 5.017;
+  assert(frameIndex(0.017, fps) === 1, "relative round is the wrong clip frame");
+  assert(
+    storedTimeToClipFrame(0.017, start, fps) === 0,
+    "absolute mapping keeps 0.017s on clip frame 0",
+  );
+  assert(
+    sourceTimeToClipFrame(start + 0.017, start, fps) === 0,
+    "playhead at start+0.017 is still the first displayed frame",
+  );
+  assert(
+    sourceTimeToClipFrame(clipFrameToSourceTime(1, start, fps), start, fps) ===
+      1,
+    "clip frame 1 round-trips on the source clock",
+  );
+
+  const cutRelative = frameToTime(12, fps);
+  const walk = [kf("a", 0, 0.2), kf("b", cutRelative, 0.8)];
+  const bounds = segmentFrameBounds(start, start + 1, fps);
+  const rebased = rebaseFramingKeyframesToClip(
+    walk,
+    start,
+    bounds.startFrame,
+    fps,
+  )!;
+  assert(rebased[0].time === 0, "opening hold stays clip frame 0");
+  assert(
+    frameIndex(rebased[1].time, fps) === 12,
+    "on-grid relative cut keeps clip frame 12 after rebase",
+  );
+
+  for (let clipFrame = 0; clipFrame < 24; clipFrame++) {
+    const sourceTime = clipFrameToSourceTime(clipFrame, start, fps);
+    const framing = resolveFramingAtSourceTime(walk, sourceTime, start, fps);
+    const expected = clipFrame < 12 ? 0.2 : 0.8;
+    assert(
+      framing.zoom === expected,
+      `off-grid clip ${clipFrame} holds zoom ${expected}, got ${framing.zoom}`,
+    );
+    assert(
+      framing.zoom !== 0 || expected === 0,
+      `off-grid clip ${clipFrame} must not flash default/fit`,
+    );
+  }
+}
+
+{
+  // Integer arrow stepping does not drift across many presses.
+  for (const fps of [24, 30, 24000 / 1001]) {
+    let frame = 100;
+    for (let i = 0; i < 50; i++) frame += 1;
+    for (let i = 0; i < 50; i++) frame -= 1;
+    assert(frame === 100, `arrow stepping returns to origin at ${fps}fps`);
+    const t = frameToTime(frame, fps);
+    assert(frameIndex(t, fps) === 100, `time round-trip stays on frame 100 at ${fps}`);
+  }
 }
 
 console.log(
