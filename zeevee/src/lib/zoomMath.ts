@@ -38,6 +38,7 @@ export const ZOOM_SNAP_RATIOS = [
   { label: "4:3", width: 4, height: 3 },
   { label: "1:1", width: 1, height: 1 },
   { label: "4:5", width: 4, height: 5 },
+  { label: "3:4", width: 3, height: 4 },
   { label: "9:16", width: 9, height: 16 },
 ] as const;
 
@@ -50,6 +51,7 @@ const KNOWN_RATIOS: { label: string; aspect: number }[] = [
   { label: "4:3", aspect: 4 / 3 },
   { label: "1:1", aspect: 1 },
   { label: "4:5", aspect: 4 / 5 },
+  { label: "3:4", aspect: 3 / 4 },
   { label: "9:16", aspect: 9 / 16 },
 ];
 

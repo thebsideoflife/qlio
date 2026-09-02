@@ -8,6 +8,7 @@ import {
   cssContainScaleWindow,
   cssContainTransform,
   framingGeometry,
+  labelForAspect,
   scaleCoverForCanvas,
   snapsForCanvas,
   sourceMatchesCanvas,
@@ -132,6 +133,67 @@ console.log("snaps ordered by zoom");
     portraitSnaps[0].label === "9:16" &&
       portraitSnaps[portraitSnaps.length - 1].label === "16:9",
     `expected 9:16…16:9, got ${portraitSnaps.map((s) => s.label).join(",")}`,
+  );
+}
+
+console.log("3:4 is a first-class snap, not a guessed zoom");
+{
+  assert(
+    ZOOM_SNAP_RATIOS.some((r) => r.label === "3:4" && r.width === 3 && r.height === 4),
+    "ZOOM_SNAP_RATIOS must include 3:4",
+  );
+  assert(labelForAspect(3 / 4) === "3:4", `labelForAspect(3/4) is ${labelForAspect(3 / 4)}`);
+  assert(labelForAspect(4 / 5) === "4:5", "4:5 must still win over nearby 3:4");
+
+  // Independent closed form (S ≥ C): zoom = (S/R − 1) / (S/C − 1)
+  const src = 16 / 9;
+  const C = 9 / 16;
+  const R = 3 / 4;
+  const expectedZoom = (src / R - 1) / (src / C - 1);
+  assert(
+    nearly(expectedZoom, 111 / 175),
+    `3:4 closed zoom should be 111/175, got ${expectedZoom}`,
+  );
+
+  const z = zoomForWindowAspect(R, C, src);
+  assert(z !== null, "3:4 must be reachable on a 9:16 canvas with 16:9 source");
+  assert(
+    nearly(z!, expectedZoom, 1e-12),
+    `zoomForWindowAspect(3:4) = ${z} want ${expectedZoom}`,
+  );
+  assert(
+    nearly(windowAspectForZoom(z!, C, src), R, 1e-12),
+    `round-trip window for 3:4: ${windowAspectForZoom(z!, C, src)}`,
+  );
+
+  const portraitSnaps = snapsForCanvas(C, src);
+  const threeFour = portraitSnaps.find((s) => s.label === "3:4");
+  const fourFive = portraitSnaps.find((s) => s.label === "4:5");
+  assert(!!threeFour, `9:16 snaps missing 3:4: ${portraitSnaps.map((s) => s.label).join(",")}`);
+  assert(
+    nearly(threeFour!.zoom, expectedZoom, 1e-12),
+    `snap zoom ${threeFour!.zoom} ≠ closed form ${expectedZoom}`,
+  );
+  assert(!!fourFive, "4:5 must remain a snap next to 3:4");
+  assert(
+    Math.abs(threeFour!.zoom - fourFive!.zoom) >= 0.01,
+    "3:4 must not be collapsed into 4:5 by the 0.01 duplicate filter",
+  );
+
+  const squareSnaps = snapsForCanvas(1, src);
+  assert(
+    squareSnaps.every((s) => s.label !== "3:4"),
+    "3:4 is outside [1, 16:9] on a square canvas and must not appear",
+  );
+
+  const landscapeFromPortrait = snapsForCanvas(src, C);
+  const threeFourOnLandscape = landscapeFromPortrait.find((s) => s.label === "3:4");
+  // S < C: zoom = (R/S − 1) / (C/S − 1)
+  const expectedLandscapeZoom = (R / C - 1) / (src / C - 1);
+  assert(!!threeFourOnLandscape, "3:4 must be reachable from 9:16 source on 16:9 canvas");
+  assert(
+    nearly(threeFourOnLandscape!.zoom, expectedLandscapeZoom, 1e-12),
+    `portrait-src 3:4 zoom ${threeFourOnLandscape!.zoom} want ${expectedLandscapeZoom}`,
   );
 }
 
