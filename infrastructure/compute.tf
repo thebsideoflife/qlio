@@ -73,6 +73,7 @@ data "aws_iam_policy_document" "lambda_policy" {
     actions = [
       "dynamodb:PutItem",
       "dynamodb:GetItem",
+      "dynamodb:BatchGetItem", # showcase catalogue reads its two demo projects + assets in one call
       "dynamodb:UpdateItem",
       "dynamodb:DeleteItem",
       "dynamodb:Scan",
@@ -126,7 +127,8 @@ data "aws_iam_policy_document" "lambda_policy" {
       aws_secretsmanager_secret.gemini_api_key.arn,
       data.aws_secretsmanager_secret.openrouter_api_key.arn,
       aws_secretsmanager_secret.cloudfront_private_key.arn,
-      aws_secretsmanager_secret.coleman_jockey_twelve_labs_key.arn
+      aws_secretsmanager_secret.coleman_jockey_twelve_labs_key.arn,
+      aws_secretsmanager_secret.showcase_read_key.arn
     ]
   }
   statement {
