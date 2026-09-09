@@ -90,14 +90,15 @@ jobs:
         run: tofu init -input=false
         working-directory: infrastructure
 
-      # The FFmpeg Lambda image COPY's these files. Skip the Docker rebuild
-      # when they match a previous successful deploy.
+      # Skip the FFmpeg image rebuild when its runtime inputs are unchanged.
+      # Hash the lockfile (what `npm ci` installs), not package.json — a new
+      # test script must not rebuild the stitch/split container.
       - name: Check FFmpeg image inputs
         id: ffmpeg-image
         uses: actions/cache@v4
         with:
           path: .ffmpeg-image-stamp
-          key: ffmpeg-image-${{ hashFiles('backend/Dockerfile.ffmpeg', 'backend/package.json', 'backend/package-lock.json', 'backend/dist/cutSegments.js', 'backend/dist/splitVideo.js') }}
+          key: ffmpeg-image-${{ hashFiles('backend/Dockerfile.ffmpeg', 'backend/package-lock.json', 'backend/dist/cutSegments.js', 'backend/dist/splitVideo.js') }}
 
       - name: Record FFmpeg image stamp
         if: steps.ffmpeg-image.outputs.cache-hit != 'true'
