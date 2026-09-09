@@ -22,7 +22,8 @@
     "test:segment-frame-bounds": "tsx src/utils/segmentFrameBounds.test.ts",
     "test:render-downloads": "tsx src/utils/renderDownloads.test.ts",
     "test:export-cache": "tsx src/utils/exportCache.test.ts",
-    "test": "npm run test:export-metadata && npm run test:agent-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates && npm run test:iq-agent && npm run test:transcription-sanitize && npm run test:transcript-format && npm run test:video-clip && npm run test:segment-frame-bounds && npm run test:render-downloads && npm run test:export-cache"
+    "test:showcase-catalogue": "tsx src/utils/showcaseCatalogue.test.ts",
+    "test": "npm run test:export-metadata && npm run test:agent-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates && npm run test:iq-agent && npm run test:transcription-sanitize && npm run test:transcript-format && npm run test:video-clip && npm run test:segment-frame-bounds && npm run test:render-downloads && npm run test:export-cache && npm run test:showcase-catalogue"
   },
   "keywords": [],
   "author": "",

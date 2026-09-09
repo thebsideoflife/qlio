@@ -25,6 +25,17 @@ resource "aws_secretsmanager_secret" "api_password" {
   description = "Simple password for API protection"
 }
 
+# Bearer read key for the public showcase endpoints (qlio-showcase Expo app,
+# EXPO_PUBLIC_QLIO_API_KEY). Deliberately separate from api-password so the
+# demo app never holds a dashboard credential.
+# Value is set out of band so it never lands in git:
+#   aws --profile zeevee --region us-west-2 secretsmanager put-secret-value \
+#     --secret-id ${var.project_name}/showcase-read-key --secret-string '<random key>'
+resource "aws_secretsmanager_secret" "showcase_read_key" {
+  name        = "${var.project_name}/showcase-read-key"
+  description = "Bearer read key for GET /showcase/catalogue (qlio-showcase app)"
+}
+
 resource "aws_secretsmanager_secret" "twelve_labs_signing_secret" {
   name        = "${var.project_name}/12labs-signing-secret"
   description = "Webhook Signing Secret for Twelve Labs"
