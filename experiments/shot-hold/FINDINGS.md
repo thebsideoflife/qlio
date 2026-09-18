@@ -153,3 +153,37 @@ correction, notes, method and version. Stills are regenerable from the pointers.
 - Audio. Active-speaker needs the audio track; pixel-only mouth motion does not work.
 - Intra-shot subject exit (spec open question 3) is handled only by widening at shot open.
 - Second asset: see the generalisation note below if present.
+
+## Generalisation: second asset (does NOT transfer cleanly)
+
+`3240330b-…` "OPREPO8_3" (Operation Repo): handheld reality show, 21.9 min, 29.97 fps, 720x480 at
+roughly 4:3. Same code, no parameter changes, cache in `/tmp/shothold-b`.
+
+| | Nashville (drama) | Operation Repo (reality) |
+|---|---:|---:|
+| Our cuts | 882 | 611 (27.9 shots per minute) |
+| PySceneDetect-adaptive cuts we also find | 813 of 837 (97%) | 438 of 456 (96%) |
+| Our cuts PySceneDetect-adaptive also finds | 92% | 72% |
+| Cuts only we find, spot check | mostly stage-light changes | 0 of 6 real: CG titles, whip pans, glitch effects, lower thirds |
+| Cuts both PySceneDetect methods find and we lack | 8, mostly flashes | 5, and 5 of 5 were real (next to glitch or blur transitions) |
+| I-frames that are cuts | 77% | 30% (fixed 29-frame GOP) |
+| Sampled frames with no face | 10.5% | 36.8% |
+| Shots with no face track | 92 of 883 | 294 of 612 |
+
+What this says:
+
+- The I-frame result generalises and gets stronger: on a fixed-GOP encode 70% of I-frames are not cuts.
+- Recall against an independent detector holds (96%), but our extra cuts on graphics-heavy,
+  effects-heavy footage are false, and the flash-rejection rule eats real cuts that sit next to
+  glitch transitions. Because false cuts are nearly free in this design and missed cuts are not,
+  the safer clock for unknown content is the UNION of ours and PySceneDetect-adaptive, with the
+  job layer absorbing the extras. That is untested.
+- The crop layer is face-driven and half the shots in this show have no face. The no-face fallback
+  (centred, inherited zoom) would carry half the episode. That needs a non-face subject signal
+  (saliency or a person/body detector) before it is useful on reality or documentary footage.
+- `shothold/geometry.py` hardcodes a 16:9 source. The policy mix on this 4:3 asset is not meaningful
+  until source aspect is a parameter.
+
+The second-asset agent also parameterised `clock/*.py` and `crop/face_cache.py` on `SHOTHOLD_CACHE`
+and probed fps and frame count instead of hardcoding Nashville's. Nashville outputs were not re-generated
+after that change.
