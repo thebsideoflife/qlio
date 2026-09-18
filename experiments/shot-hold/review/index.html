@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shot-hold review</title>
+<style>
+  :root { --bg:#111417; --panel:#1a1f24; --ink:#e8ecef; --dim:#8b96a1; --line:#2b333b;
+          --ok:#3ecf8e; --no:#ff6b6b; --skip:#f2c94c; --gold:#f2c94c; --prop:#3ecf8e; --fix:#5ab0ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 -apple-system,system-ui,sans-serif; }
+  header { display:flex; gap:12px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); }
+  select, input, button { font:inherit; color:var(--ink); background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:6px 10px; }
+  button { cursor:pointer; } button:hover { border-color:var(--dim); }
+  #progress { color:var(--dim); margin-left:auto; font-variant-numeric:tabular-nums; }
+  main { padding:16px; max-width:1500px; margin:0 auto; }
+  .meta { display:flex; flex-wrap:wrap; gap:6px 18px; color:var(--dim); margin-bottom:10px; font-variant-numeric:tabular-nums; }
+  .meta b { color:var(--ink); font-weight:600; }
+  .pill { padding:1px 8px; border-radius:99px; border:1px solid var(--line); font-size:12px; }
+  .stills { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start; }
+  figure { margin:0; } figcaption { color:var(--dim); font-size:12px; margin-top:3px; font-variant-numeric:tabular-nums; }
+  canvas { display:block; border-radius:4px; background:#000; }
+  canvas.src { cursor:crosshair; }
+  .actions { display:flex; gap:8px; align-items:center; margin:14px 0 8px; flex-wrap:wrap; }
+  .actions button.ok { border-color:var(--ok); } .actions button.no { border-color:var(--no); } .actions button.sk { border-color:var(--skip); }
+  .reasons { display:flex; gap:6px; flex-wrap:wrap; }
+  .reasons button.on { background:#3a2326; border-color:var(--no); }
+  #notes { flex:1; min-width:260px; }
+  kbd { background:#0b0d0f; border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:12px; color:var(--dim); }
+  .verdict { font-weight:600; } .verdict.approve{color:var(--ok)} .verdict.deny{color:var(--no)} .verdict.skip{color:var(--skip)}
+  .legend span { margin-right:14px; } .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; }
+  .help { color:var(--dim); font-size:12px; margin-top:14px; }
+</style>
+</head>
+<body>
+<header>
+  <strong>Shot-hold review</strong>
+  <select id="batch"></select>
+  <label><input type="checkbox" id="unlabeled" checked> unlabeled only</label>
+  <label><input type="checkbox" id="showgold"> show stored Nashville crop <kbd>g</kbd></label>
+  <span id="progress"></span>
+</header>
+<main>
+  <div class="meta" id="meta"></div>
+  <div class="stills" id="stills"></div>
+  <div class="actions">
+    <button class="ok" onclick="judge('approve')">Approve <kbd>a</kbd></button>
+    <button class="no" onclick="judge('deny')">Deny <kbd>d</kbd></button>
+    <button class="sk" onclick="judge('skip')">Skip <kbd>s</kbd></button>
+    <span class="reasons" id="reasons"></span>
+    <input id="notes" placeholder="optional feedback  (f to focus, Enter to return)">
+    <button onclick="step(-1)">&larr;</button><button onclick="step(1)">&rarr;</button>
+  </div>
+  <div class="legend meta">
+    <span><i class="sw" style="background:var(--prop)"></i>proposal</span>
+    <span><i class="sw" style="background:var(--gold)"></i>stored Nashville crop (reference, not truth)</span>
+    <span><i class="sw" style="background:var(--fix)"></i>your correction</span>
+    <span id="last"></span>
+  </div>
+  <div class="help">
+    Crop cards: click a still to say where the crop centre should be; <kbd>[</kbd> wider, <kbd>]</kbd> tighter, <kbd>x</kbd> clears. A correction is saved with a deny (or an approve, if you just nudged).
+    Number keys toggle deny reasons. One judgment = one appended line in <code>labels/labels.jsonl</code>.
+  </div>
+</main>
+<script>
+const SC = (16/9)/(9/16);                       // cover scale, 16:9 source in 9:16 canvas
+const winW = z => 1/(1+z*(SC-1));
+const winL = (z,fx) => fx*(1-winW(z));
+const focusForCenter = (cx,z) => { const w=winW(z); return w>=1?0.5:Math.min(1,Math.max(0,(cx-w/2)/(1-w))); };
+const ZSTOPS = [0,0.25,0.36,0.5,0.635,0.8,1];
+const REASONS = {
+  crop:['wrong subject','too tight','too wide','pan off','should keep previous hold','clips a second person who matters'],
+  cut:['not a cut (same setup)','dissolve / fade','off by a frame or more','flash / motion'],
+  clip:['proposed is choppier','proposed clips the speaker','zoom changes distract','pans feel wrong','too wide overall','too tight overall'],
+};
+let batch=null, cards=[], idx=0, reasons=new Set(), fix=null, imgs=[];
+const $=id=>document.getElementById(id);
+
+async function loadBatches(){
+  const bs=await (await fetch('/api/batches')).json();
+  $('batch').innerHTML=bs.map(b=>`<option value="${b.batch_id}">${b.title} (${b.done}/${b.n})</option>`).join('');
+  const want=decodeURIComponent(location.hash.slice(1)); if(want) $('batch').value=want;
+  if(bs.length) loadBatch($('batch').value);
+}
+async function loadBatch(id){
+  location.hash=id;
+  batch=await (await fetch('/api/batch/'+id)).json();
+  cards=batch.cards; idx=0;
+  if($('unlabeled').checked){ const i=cards.findIndex(c=>!c.label); idx=i<0?0:i; }
+  show();
+}
+function step(d){
+  let i=idx+d;
+  if($('unlabeled').checked && d>0){ while(i<cards.length && cards[i].label) i++; }
+  if(i<0||i>=cards.length){ $('last').textContent = i>=cards.length?'end of batch':''; return; }
+  idx=i; show();
+}
+function fmtT(t){ const m=Math.floor(t/60), s=(t-m*60).toFixed(2).padStart(5,'0'); return `${m}:${s}`; }
+
+function show(){
+  const c=cards[idx]; if(!c) return;
+  reasons=new Set(c.label?.reasons||[]); fix=c.label?.correction||null;
+  $('notes').value=c.label?.notes||'';
+  $('progress').textContent=`${idx+1} / ${cards.length}   ·   ${cards.filter(x=>x.label).length} judged`;
+  const p=c.proposal, ctx=c.context||{};
+  let meta=`<span class="pill">${c.kind}</span><span>method <b>${c.method}</b> ${c.method_version}</span>`;
+  if(c.kind==='crop') meta+=`<span>shot <b>${ctx.shot_index}</b></span><span>${fmtT(ctx.start_sec)} &rarr; ${fmtT(ctx.end_sec)} (<b>${(ctx.end_sec-ctx.start_sec).toFixed(1)}s</b>)</span>
+     <span>zoom <b>${p.zoom.toFixed(2)}</b> focusX <b>${p.focusX.toFixed(2)}</b></span><span>${p.reason||''}</span>`;
+  else if(c.kind==='clip') meta+=`<span>${p.reason}</span><span>Approve = proposed (right) is at least as smooth and watchable as stored (left)</span>`;
+  else meta+=`<span>cut on frame <b>${p.cut_frame}</b> @ ${fmtT(ctx.cut_sec)}</span><span>${ctx.category||''}</span><span>${p.reason||''}</span>`;
+  if(ctx.segment_title) meta+=`<span>segment “${ctx.segment_title}”</span>`;
+  if(ctx.flags?.length) meta+=`<span style="color:var(--skip)">flags: ${ctx.flags.join(', ')}</span>`;
+  if(c.label) meta+=`<span class="verdict ${c.label.verdict}">${c.label.verdict}</span>`;
+  $('meta').innerHTML=meta;
+  $('reasons').innerHTML=REASONS[c.kind].map((r,i)=>`<button data-r="${r}" class="${reasons.has(r)?'on':''}" onclick="toggleReason('${r}')">${i+1} ${r}</button>`).join('');
+  const box=$('stills'); box.innerHTML=''; imgs=[];
+  if(c.kind==='clip'){ box.innerHTML=`<video src="/clips/${c.input.clip}" controls loop autoplay muted style="height:70vh;border-radius:4px"></video>`; return; }
+  c.input.images.forEach((src,i)=>{
+    const fig=document.createElement('figure'); const cv=document.createElement('canvas'); cv.className='src';
+    const W=c.kind==='cut'?480:400; cv.width=W; cv.height=W*9/16; fig.appendChild(cv);
+    let out=null;
+    if(c.kind==='crop'){ out=document.createElement('canvas'); out.width=126; out.height=224; out.style.marginTop='6px'; fig.appendChild(out); }
+    const cap=document.createElement('figcaption');
+    cap.textContent=`frame ${c.input.source_frames[i]} · ${fmtT(c.input.source_frames[i]/c.input.fps)}`+(c.input.image_notes?.[i]?` · ${c.input.image_notes[i]}`:'');
+    fig.appendChild(cap); box.appendChild(fig);
+    const im=new Image(); im.onload=()=>draw(); im.src='/img/'+src; imgs.push({im,cv,out});
+    if(c.kind==='crop') cv.onclick=e=>{ const r=cv.getBoundingClientRect(); const cx=(e.clientX-r.left)/r.width;
+      const z=fix?.zoom??p.zoom; fix={zoom:z,focusX:focusForCenter(cx,z),center_x:cx}; draw(); };
+  });
+  draw();
+}
+function rect(g,W,H,z,fx,color,dash){
+  const w=winW(z)*W, l=winL(z,fx)*W; g.save(); g.strokeStyle=color; g.lineWidth=2; g.setLineDash(dash||[]);
+  g.strokeRect(l+1,1,w-2,H-2); g.restore();
+}
+function draw(){
+  const c=cards[idx]; if(!c) return; const p=c.proposal, gold=c.context?.stored_crop;
+  for(const {im,cv,out} of imgs){
+    if(!im.complete||!im.naturalWidth) continue;
+    const g=cv.getContext('2d'), W=cv.width, H=cv.height; g.drawImage(im,0,0,W,H);
+    if(c.kind!=='crop') continue;
+    const show=fix||p; const w=winW(show.zoom)*W, l=winL(show.zoom,show.focusX)*W;
+    g.fillStyle='rgba(0,0,0,.55)'; g.fillRect(0,0,l,H); g.fillRect(l+w,0,W-l-w,H);
+    if($('showgold').checked && gold) rect(g,W,H,gold.zoom,gold.focusX,getComputedStyle(document.body).getPropertyValue('--gold'),[6,4]);
+    rect(g,W,H,p.zoom,p.focusX,'#3ecf8e'); if(fix) rect(g,W,H,fix.zoom,fix.focusX,'#5ab0ff');
+    // 9:16 output preview: window scaled to canvas width, letterboxed vertically when zoom < 1
+    const o=out.getContext('2d'); o.fillStyle='#000'; o.fillRect(0,0,out.width,out.height);
+    const sw=winW(show.zoom)*im.naturalWidth, sl=winL(show.zoom,show.focusX)*im.naturalWidth;
+    const dh=out.width*(im.naturalHeight/sw); o.drawImage(im,sl,0,sw,im.naturalHeight,0,(out.height-dh)/2,out.width,dh);
+  }
+}
+function toggleReason(r){ reasons.has(r)?reasons.delete(r):reasons.add(r);
+  document.querySelectorAll('#reasons button').forEach(b=>b.classList.toggle('on',reasons.has(b.dataset.r))); }
+function nudgeZoom(d){ const c=cards[idx]; if(c.kind!=='crop') return; const cur=fix?.zoom??c.proposal.zoom;
+  let i=ZSTOPS.reduce((b,z,k)=>Math.abs(z-cur)<Math.abs(ZSTOPS[b]-cur)?k:b,0); i=Math.min(ZSTOPS.length-1,Math.max(0,i+d));
+  const z=ZSTOPS[i]; const base=fix||c.proposal; const cx=fix?.center_x ?? (winL(base.zoom,base.focusX)+winW(base.zoom)/2);
+  fix={zoom:z,focusX:focusForCenter(cx,z),center_x:cx}; draw(); }
+
+async function judge(verdict){
+  const c=cards[idx]; if(!c) return;
+  const row={schema:'shothold.label.v1', card_id:c.card_id, batch_id:batch.batch_id, kind:c.kind, asset_id:c.asset_id,
+    method:c.method, method_version:c.method_version, input:c.input, proposal:c.proposal, context:c.context,
+    verdict, reasons:[...reasons], correction:fix, notes:$('notes').value.trim()};
+  await fetch('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(row)});
+  c.label=row; $('last').textContent=`saved: ${verdict} · ${c.card_id}`; step(1); if(cards[idx]===c) show();
+}
+document.addEventListener('keydown',e=>{
+  if(document.activeElement===$('notes')){ if(e.key==='Enter'||e.key==='Escape') $('notes').blur(); return; }
+  const k=e.key;
+  if(k==='a') judge('approve'); else if(k==='d') judge('deny'); else if(k==='s') judge('skip');
+  else if(k==='ArrowRight') step(1); else if(k==='ArrowLeft') step(-1);
+  else if(k==='f'){ e.preventDefault(); $('notes').focus(); }
+  else if(k==='g'){ $('showgold').checked=!$('showgold').checked; draw(); }
+  else if(k==='['||k===']') nudgeZoom(k==='['?-1:1);
+  else if(k==='x'){ fix=null; draw(); }
+  else if(/^[1-9]$/.test(k)){ const r=REASONS[cards[idx].kind][+k-1]; if(r) toggleReason(r); }
+});
+$('batch').onchange=e=>loadBatch(e.target.value);
+$('unlabeled').onchange=()=>loadBatch($('batch').value);
+$('showgold').onchange=draw;
+window.onhashchange=()=>{ const id=decodeURIComponent(location.hash.slice(1)); if(id && id!==batch?.batch_id){ $('batch').value=id; loadBatch(id); } };
+loadBatches();
+</script>
+</body>
+</html>
