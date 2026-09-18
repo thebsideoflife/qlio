@@ -77,10 +77,16 @@ def crop_batch(a) -> None:
     rng = random.Random(a.seed)
     base_shots = json.loads((CACHE / "crops" / f"{a.crops_name}.json").read_text())["shots"]
     other = json.loads((CACHE / "crops" / f"{a.disagree_with}.json").read_text()) if a.disagree_with else None
+    risky = json.loads(Path(a.shots_file).read_text()) if a.shots_file else None
+    if risky:
+        for i, n in risky.items():
+            c["shots"][i]["flags"] = [f"{n} samples with a subject-sized untracked face outside the window"]
     strata: dict[str, list[int]] = {}
     for i, (s, e) in enumerate(c["bounds"]):
         seg, _ = stored_crop(segs, (s + e) / 2 / fps)
         if seg is None or (e - s) < 18:
+            continue
+        if risky is not None and str(i) not in risky:
             continue
         if other is not None:  # only shots where two crop methods disagree: highest-value labels
             o = other["shots"][str(i)]
@@ -135,17 +141,20 @@ def cut_batch(a) -> None:
             cats.setdefault(m.group(1), []).append(int(m.group(2)))
     picks: list[tuple[str, int]] = []
     keys = sorted(cats)
+    cats_all = {k: list(v) for k, v in cats.items()}
     for k in keys:
         rng.shuffle(cats[k])
     while len(picks) < a.n and any(cats.values()):
         for k in keys:
             if cats[k] and len(picks) < a.n:
                 picks.append((k, cats[k].pop()))
-    imgs = grab([f for _, n in picks for f in (n - 2, n - 1, n, n + 1)])
+    offs = lambda cat: (-30, -10, 10, 30) if cat == "dissolve" else (-2, -1, 0, 1)
+    picks = [(c, n) for c in keys for n in cats_all[c] if c == "dissolve"] + [p for p in picks if p[0] != "dissolve"]
+    imgs = grab([n + d for c, n in picks for d in offs(c)])
     cuts = shots["cuts"]
     cards = []
     for cat, n in sorted(picks, key=lambda x: x[1]):
-        fr = [f for f in (n - 2, n - 1, n, n + 1) if f in imgs]
+        fr = [n + d for d in offs(cat) if n + d in imgs]
         rels = [save(imgs[f], f"{ASSET[:8]}/f{f:06d}.jpg") for f in fr]
         j = bisect.bisect_left(cuts, n)
         in_clock = j < len(cuts) and cuts[j] == n
@@ -154,9 +163,9 @@ def cut_batch(a) -> None:
             "card_id": f"cut:{ASSET[:8]}:{n}:{shots['method']}:{shots['version']}",
             "kind": "cut", "asset_id": ASSET, "method": shots["method"], "method_version": shots["version"],
             "input": {"fps": fps, "source_frames": fr, "images": rels,
-                      "image_notes": ["N-2", "N-1 (old shot)", "N (new shot)", "N+1"][: len(fr)]},
+                      "image_notes": (["N-30", "N-10", "N+10", "N+30"] if cat == "dissolve" else ["N-2", "N-1 (old shot)", "N (new shot)", "N+1"])[: len(fr)]},
             "proposal": {"cut_frame": n, "is_cut": in_clock,
-                         "reason": "clock says CUT here" if in_clock else "clock says NO cut here (candidate miss). Approve = the clock is right"},
+                         "reason": "long-dissolve detector proposes a soft cut at the midpoint. Approve = two different setups" if cat == "dissolve" else "clock says CUT here" if in_clock else "clock says NO cut here (candidate miss). Approve = the clock is right"},
             "context": {"cut_sec": n / fps, "category": cat, "segment_title": seg["title"] if seg else None},
         })
     write(f"cut-{shots['method']}-{a.tag}", f"Cut · {shots['method']} · {a.tag}", cards)
@@ -194,6 +203,7 @@ if __name__ == "__main__":
     ap.add_argument("--n", type=int, default=36)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="r1")
+    ap.add_argument("--shots-file", default=None, help="json {shotIndex: n}; restrict the batch to these shots and show the flag")
     ap.add_argument("--disagree-with", default=None, help="crop method; keep only shots where it disagrees with --method")
     ap.add_argument("--job", default=None, help="job id from shothold.run_job; overrides per-shot crops")
     a = ap.parse_args()

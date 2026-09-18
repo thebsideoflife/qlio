@@ -1,5 +1,9 @@
 # Shot-hold framing R&D — findings, 18 Sep 2026
 
+> **Read the "Second pass" and "Where this stands" sections first.** The first-pass sections below are
+> kept as the record of what was believed at the time; several numbers and one claim ("no missed
+> cuts") were superseded the same day.
+
 Local research only. Nothing here touches DynamoDB, S3, or a deployed path. Asset
 `64b4881a-…` (Nashville, Lionsgate Cut 081926), 60,991 frames at 23.976 fps, 26 stored segments.
 
@@ -69,7 +73,7 @@ against the median of ±12 frames, flash rejection). One decode, 92 s for featur
 | Agreement with PySceneDetect content | 830 of 875 |
 | Fixed-threshold `ffmpeg scene>0.3` | 542 cuts; finds 0, 1 and 2 cuts in three dark segments where adaptive methods find 31–38. A fixed threshold fails in dark scenes. |
 | Self-flagged suspicious (same picture both sides) | 21 of 881, mostly stage-light changes in concert scenes |
-| Miss candidates in the 33 shots over 8 s | 0 pass the miss test |
+| Miss candidates in the 33 shots over 8 s | 0 pass the miss test (SUPERSEDED: a 40-frame dissolve inside one of these shots was missed by every detector; see second pass) |
 | Face-layout "teleports" inside a shot (independent miss probe) | 19 found, all 19 visually confirmed as motion, 0 missed cuts |
 
 **I-frames are not camera cuts.** 886 I-frames; 684 (77%) coincide with a consensus cut, 202 do
@@ -133,7 +137,7 @@ What I cannot certify: whether 3:4 is the right "slightly wider", whether no-fac
 centred, whether `lambda` 2 feels smooth, and whether the central-face rule holds outside drama.
 That is what the review batches are for.
 
-## Review batches waiting (73 cards, about 15 minutes)
+## Review batches waiting (first pass; superseded by the list in "Where this stands")
 
 | batch | cards | question |
 |---|---:|---|
@@ -187,3 +191,136 @@ What this says:
 The second-asset agent also parameterised `clock/*.py` and `crop/face_cache.py` on `SHOTHOLD_CACHE`
 and probed fps and frame count instead of hardcoding Nashville's. Nashville outputs were not re-generated
 after that change.
+
+## Second pass (same day): self-evaluation before human review
+
+Caution from Coleman: some of the stored Nashville framing is bad. Everything below that leans on the
+stored track is marked as a weak reference, and each decision has a justification that does not
+depend on it.
+
+### The first containment metric was circular. The honest one is worse.
+
+`subject_inside_pct` (98.7%) followed the policy's own face track, and the tracker silently dropped
+fast movers, so it graded its own homework. Two independent checks replaced it:
+
+- **Subagent visual pre-screen** of 40 face shots and 24 no-face shots not in the human batches
+  (`/tmp/shothold/eval/prescreen/`): 25 of 40 OK; 6 clipped, 4 empty, 4 too wide, 1 wrong person.
+  8 of the 11 clipped/empty failures were motion inside the shot, 7 of them on the closing still.
+  3 of the 4 too-wide shots were widened by job smoothing, not by their own proposal. One shot
+  contained an undetected cut.
+- **`eval/frame_containment.py`**: subject defined per frame, no tracker. 11.4% of frames had the
+  subject more than a quarter outside the window, 15% in the last third of shots.
+
+| branch | share of frames | subject >25% outside |
+|---|---:|---:|
+| two or more comparable faces that do not fit: kept one | 33% | 20% |
+| subject travel | 27% | 3% |
+| single subject | 34% | 2% |
+| faces fit together | 4% | 3% |
+
+Where it fails is the two-person shot that cannot hold both people. That is a third of the footage
+and it is a product decision (who do we keep, or do we go wide), not a tuning problem.
+
+### Widening buys almost nothing here
+
+| widen tolerance | 9:16 share of time | zoom changes | frames with subject outside |
+|---|---:|---:|---:|
+| 1.0 (widen whenever the extent overhangs) | 68% | 83 | 10.5% |
+| **1.25 (new default)** | 85% | 64 | 11.4% |
+| 1.5 | 96% | 26 | 12.5% |
+| never widen | 100% | 0 | 13.5% |
+
+Going from "widen freely" to "never widen" costs 3 points of containment and removes every zoom
+change. The failures are about which person, not how wide. This stands on its own. As a weak
+reference only: the human editors held 9:16 on 81% of shots, including 88% of the shots my first
+policy widened for travel; my widening decisions barely correlated with theirs (caught 7 of their
+52 wide shots). Both variants are rendered as A/B clips so a person decides.
+
+### Changes made (crop-v4.2, job-v1)
+
+- Tracker tolerates motion (centre may move 0.15 of width per 0.25 s if face size is consistent).
+- Travel extent uses the 10th to 90th percentile of box edges, not min and max.
+- `widen_tolerance` 1.25; the extent handed to the job layer is what the shot committed to keeping,
+  so smoothing cannot re-widen it.
+- Smoothing may loosen a shot by one zoom stop at most (a close-up can never become 1:1).
+- Source aspect is a parameter (`SHOTHOLD_SOURCE_ASPECT`); zoom stops derive from it.
+- New 12-card batch of **risky holds**: shots where subject-sized faces the tracker dropped fall
+  outside the window (87 of 832 shots, 10.5%).
+
+### Tried and rejected
+
+- **No-face fallback from motion or detail centroids** on the 18x32 thumbnails. Against the 24
+  pre-screened no-face shots it moved the window off correct centred shots and did not fix the
+  wrong ones. No-face stays centred. It needs a person or saliency model.
+- **Framing as a missed-cut detector** (face "teleports"): 19 candidates, all motion.
+
+### Stability
+
+Crops from two disjoint 2 fps face samplings agree (IoU >= 0.8) on 78% of shots; zoom differed on
+about 100 of 883. Decisions near a zoom-stop boundary flip with sampling. Output is deterministic
+for a fixed sampling, but this is sensitivity worth knowing: fewer widenings (tolerance 1.25) also
+means fewer knife-edge zoom decisions. Re-measured below.
+
+### The subject rule, re-checked for fragility
+
+Most-central beats largest-face in 12 of 17 segments, and on the 51 shots where the two cues
+disagree the stored human crop sided with central 38 times and largest 9. It is not driven by one
+segment. It is still learned from a track that contains bad framing, so the 16-card dispute batch is
+the arbiter, not this table.
+
+### Clock, second pass
+
+- **A missed cut that no detector found.** The pre-screen agent saw two setups inside one 9 s
+  "shot" (frames 59,135 to 59,355). It is a 40-frame cross-dissolve. Ours, both PySceneDetect
+  detectors and ffmpeg all miss it, and my earlier "0 missed cuts" claim was wrong: the miss probes
+  only looked for hard cuts. `clock/dissolve.py` (stable A, smooth change, stable B, A unrelated to
+  B, no persistent face across it) finds 4 on Nashville: 2 real dissolves, 1 fade-in from black,
+  1 false (an occluder crossing frame). A face-continuity test removed a fifth false one. This is
+  the one place where framing data usefully corrects the clock. A false soft cut is NOT free (it
+  splits a moving shot and causes a mid-shot reframe), so dissolves are proposed for review, not
+  merged into the clock. 0 found on the reality-show asset.
+- **Detector v2** (`python clock/detect.py ours2`): additive margin when the background is busy,
+  reject weak candidates that change under 35% of the picture (lower thirds, titles), land on the
+  end of a transition effect. Reality show: both-PySceneDetect misses 5 to 2, ours-only 85 to 74;
+  visual check 8 of 8 removals correct, 6 of 8 additions correct. Nashville: neutral (10 of 16
+  checked changes correct, 2 wrong). Not clearly better, so Nashville review material stays on v1.1.
+- **Union clock** (v2 plus PySceneDetect-adaptive): Nashville 897 cuts vs 882. Through the job
+  layer that is 670 holds vs 670. Measured confirmation that extra hard cuts are nearly free, so
+  the union is the recommended default for unknown content.
+- Cut-frame exactness: 813 of 814 cuts shared with PySceneDetect-adaptive are on the identical
+  frame; 12 of 12 eyeballed cuts had N as the first new frame. On the reality show 119 of 605 cuts
+  are multi-frame blends, where "the" cut frame is ambiguous by a frame or two.
+
+## Where this stands
+
+Default job `subject-v3.l2.0c4.0h` (crop-v4.2): 670 holds, 644 interior reframes, all on cut
+frames, 64 zoom changes, 85% of time at 9:16. Variant `...always916`: 0 zoom changes.
+
+| claim | status | evidence that does not depend on the stored track |
+|---|---|---|
+| Hard-cut clock is exact and deterministic on drama | reliable | two independent detectors agree on 97%, same frame on 813 of 814, identical re-runs |
+| I-frames are not a clock | reliable | 23% (drama) and 70% (reality) of I-frames are not cuts |
+| Extra cuts are nearly free, missed cuts are not | reliable | +15 cuts changes 0 holds; one missed dissolve put a wide crop on a close-up for 5 s |
+| Fixed thresholds fail in dark scenes | reliable | ffmpeg scene 0.3 finds 0 to 2 cuts where adaptive methods find 31 to 38 |
+| Reframe only on cut frames; zoom is the expensive change | sound by construction | asserted in the job layer and tests |
+| Widening rarely helps on this show | supported | never widening costs 3 points of containment and removes all zoom changes |
+| Most-central face is the subject | weakly supported | learned from stored crops (some bad); consistent in 12 of 17 segments; pre-screen saw 1 wrong-person in 40 |
+| Two people who do not fit: keep one | unresolved | 33% of frames, 20% of them lose the per-frame subject; product decision |
+| A static hold keeps a moving subject | not reliable | 7 of 40 pre-screened shots lose the subject by the closing still |
+| No-face shots centred | not reliable | wrong in about 5 of 24; cheap pixel fallbacks made it worse |
+| Long dissolves | partly | 3 of 4 proposals real on one asset; tiny sample |
+| Transfers beyond single-camera drama | no | reality show: 48% of shots have no face, clock needed new rules, source was 4:3 |
+
+Review material now queued (90 cards, about 20 minutes; start at the top):
+
+| batch | cards | question |
+|---|---:|---|
+| Clip A/B, default | 2 | stored (left) vs proposed (right), segments s3 and s12 |
+| Clip A/B, always 9:16 | 2 | same segments, never widening. Is any widening worth it? |
+| Crop: subject disputes | 16 | largest face vs most central face |
+| Crop: risky holds | 12 | shots where a subject-sized face leaves the window |
+| Crop: stratified | 24 | even sample over policy branches |
+| Cut | 32 | includes the 4 dissolve proposals |
+
+If a stored Nashville crop on a card is itself bad, say so in the note ("stored is wrong"): that
+tells me which segments to stop using as a reference.

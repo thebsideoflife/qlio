@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import bisect
 
-from .geometry import crop_iou, focus_for_center, window, window_width
+from .geometry import crop_iou, focus_for_center, window, window_width, zoom_stops
 
 
 def frame_index(sec: float, fps: float) -> int:
@@ -46,6 +46,9 @@ def smooth_zoom(
             return 0.0
         need = needs[i][1] - needs[i][0]
         w = window_width(z)
+        own = next((q for q, zz in enumerate(stops) if need <= window_width(zz) + 1e-9), len(stops) - 1)
+        if stops.index(z) > own + 1:  # smoothing may loosen a shot by ONE stop, never turn a close-up into 1:1
+            return 1e9
         if need > w:
             return durs[i] * clip_cost * (need - w) / need
         return durs[i] * loose_cost * (w - max(need, tight_w))
@@ -79,7 +82,7 @@ def keyframes_for_segment(
     needs: dict[int, tuple[float, float]] | None = None,
     hold_through: bool = False,
     zoom_lambda: float | None = None,
-    zoom_stops: tuple[float, ...] = (1.0, 0.635, 0.36),
+    stops: tuple[float, ...] | None = None,
     loose_cost: float = 1.0,
 ) -> list[dict]:
     """One keyframe at segment open, then one per interior camera cut whose crop
@@ -103,7 +106,7 @@ def keyframes_for_segment(
     if zoom_lambda is not None and needs is not None:
         idx = [shot_at(a) for a in bounds[:-1]]
         zs = smooth_zoom([(b - a) / fps for a, b in zip(bounds, bounds[1:])],
-                         [needs.get(i) for i in idx], list(zoom_stops), zoom_lambda, loose_cost=loose_cost)
+                         [needs.get(i) for i in idx], list(stops or zoom_stops()), zoom_lambda, loose_cost=loose_cost)
         crops = dict(crops)
         for i, z in zip(idx, zs):
             nd = needs.get(i)

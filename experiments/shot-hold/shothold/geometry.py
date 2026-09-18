@@ -10,9 +10,12 @@ All x coordinates are normalised to the source width, [0, 1].
 
 from __future__ import annotations
 
-SOURCE_ASPECT = 16 / 9
+import os
+
+# Source aspect is per asset (the second test asset is ~4:3). SHOTHOLD_SOURCE_ASPECT=1.3625 overrides.
+SOURCE_ASPECT = float(os.environ.get("SHOTHOLD_SOURCE_ASPECT", 16 / 9))
 CANVAS_ASPECT = 9 / 16
-SCALE_COVER = SOURCE_ASPECT / CANVAS_ASPECT  # 3.1605
+SCALE_COVER = max(SOURCE_ASPECT / CANVAS_ASPECT, 1.0001)  # 3.1605 for 16:9
 
 # Named zoom stops. TIGHT is the 9:16 fill. Values match ZOOM_LEVEL_MAP and the
 # editor's aspect snaps (3:4 -> 0.635, 1:1 -> 0.36).
@@ -41,6 +44,12 @@ def focus_for_center(center_x: float, zoom: float) -> float:
     if w >= 1.0:
         return 0.5
     return min(1.0, max(0.0, (center_x - w / 2.0) / (1.0 - w)))
+
+
+def zoom_stops() -> list[float]:
+    """The only zoom values the policy may emit: 9:16, 3:4 and 1:1 windows for this source aspect
+    (the editor's own aspect snaps), so the letterbox bars have three positions, not a continuum."""
+    return [TIGHT] + [round(zoom_for_width(a / SOURCE_ASPECT), 4) for a in (3 / 4, 1.0) if a / SOURCE_ASPECT < 1.0]
 
 
 def crop_iou(a: tuple[float, float], b: tuple[float, float]) -> float:

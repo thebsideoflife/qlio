@@ -111,10 +111,79 @@ def ours(features=os.path.join(OUT, "features.npz"), outdir=OUT):
     allc, grad, hard = hist_adaptive(F)
     write("hist-adaptive-v1", HP, allc, outdir, {"gradual": grad, "hard_cuts": [int(c) for c in hard]}, version="1.1")
 
+# v2: three extra rules on top of v1.1 (v1.1 above is untouched)
+#  abs_s/abs_margin: the score saturates at 1, so inside a busy stretch (glitch/static, bg>=0.4) a K-times ratio is unreachable -> accept an additive margin instead
+#  weak_s/min_frac: a cut replaces the whole picture; a weak-score event that changes <35% of the 18x32 thumb pixels (threshold relative to
+#    picture brightness so dark scenes still count) is a lower-third / title graphic / local motion, not a cut
+#  cluster pick: in a run of candidates (transition effect, glitch) the cut is the score PEAK, stepped back over at most blend_back contiguous strong frames (blended cut);
+#    v1 took the earliest frame within first_frac of the peak, which lands on the start of the effect
+HP2 = dict(HP, abs_s=0.75, abs_margin=0.40, weak_s=0.5, min_frac=0.35, frac_rel=0.25, frac_lo=5.0, frac_hi=20.0, blend_back=2)
+
+def hist_adaptive2(F, p=HP2):
+    s = score_of(F, p); n = len(s); r = p["radius"]; e = p["excl"]
+    TH = F["thumbs"].astype(np.float32); T = TH.reshape(n, -1)
+    cand = []
+    for i in range(3, n - 1):
+        if s[i] < p["floor"]: continue
+        nb = np.concatenate([s[max(1, i - r):i - e], s[i + e + 1:min(n, i + r + 1)]])
+        bg = float(np.percentile(nb, p["bg_pct"])) if len(nb) else 0.0
+        if s[i] < p["K"] * bg and not (s[i] >= p["abs_s"] and s[i] - bg >= p["abs_margin"]): continue
+        if s[i] < p["weak_s"]:
+            thr = min(max(p["frac_rel"] * 0.5 * float(T[i].mean() + T[i - 1].mean()), p["frac_lo"]), p["frac_hi"])
+            if float((np.abs(T[i] - T[i - 1]) > thr).mean()) < p["min_frac"]: continue
+        same = False
+        for o in p["same_offsets"]:
+            if i + o < n:
+                c, dx = ncc_dx(T[i - 2], T[i + o])
+                if c > p["same_ncc"] and dx < p["same_dx"]: same = True
+        if not same: cand.append(i)
+    groups = []
+    for c in cand:
+        if groups and c - groups[-1][-1] < p["min_gap"]: groups[-1].append(c)
+        else: groups.append([c])
+    cuts = []
+    for g in groups:
+        pk = max(g, key=lambda x: (s[x], -x)); mx = s[pk]
+        for _ in range(p["blend_back"]):
+            if (pk - 1) in g and s[pk - 1] >= p["first_frac"] * mx: pk -= 1
+        cuts.append(pk)
+    # gradual detector unchanged; its output is gated against the v2 hard cuts
+    L = p["grad_lag"]; cs = np.array(cuts)
+    grad = [g for g in _grad_all(F, p) if not len(cs) or np.abs(cs - (g[0] + g[1]) // 2).min() > L]
+    allc = sorted(set(cuts) | set((g[0] + g[1]) // 2 for g in grad))
+    return allc, grad, cuts
+
+def _grad_all(F, p):
+    s = score_of(F, p); n = len(s); T = F["thumbs"].astype(np.float32).reshape(n, -1); L = p["grad_lag"]; flag = np.zeros(n, bool)
+    for i in range(0, n - L):
+        if s[i + 1:i + L + 1].max() > p["grad_max_step"]: continue
+        a, b = T[i], T[i + L]; c, d = ncc_dx(a, b)
+        if d < p["grad_min_d"] or c > p["grad_max_ncc"]: continue
+        m = T[i + L // 2]; ab = a - b; den = float(ab @ ab)
+        al = float((m - b) @ ab) / den if den > 0 else 0.5
+        resid = np.abs(m - (al * a + (1 - al) * b)).mean() / d
+        if resid < p["grad_resid"] and 0.2 < al < 0.8: flag[i] = True
+    out = []; i = 0
+    while i < n:
+        if flag[i]:
+            j = i
+            while j + 1 < n and flag[j + 1]: j += 1
+            out.append([int((i + j) // 2), int((i + j) // 2 + L)]); i = j + 1
+        else: i += 1
+    return out
+
+def ours2(features=os.path.join(OUT, "features.npz"), outdir=os.path.join(OUT, "v2")):
+    os.makedirs(outdir, exist_ok=True)
+    F = dict(np.load(features))
+    allc, grad, hard = hist_adaptive2(F)
+    write("hist-adaptive-v2", HP2, allc, outdir, {"gradual": grad, "hard_cuts": [int(c) for c in hard]}, version="2.0")
+
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(); ap.add_argument("method"); ap.add_argument("--features", default=os.path.join(OUT, "features.npz")); ap.add_argument("--outdir", default=OUT)
+    ap = argparse.ArgumentParser(); ap.add_argument("method"); ap.add_argument("--features", default=os.path.join(OUT, "features.npz")); ap.add_argument("--outdir", default=None)
     a = ap.parse_args()
     if a.method in ("iframes", "all"): iframes()
     if a.method in ("ffscene", "all"): ffscene()
     if a.method in ("pyscene", "all"): pyscene()
+    if a.method == "ours2": ours2(a.features, a.outdir or os.path.join(OUT, "v2")); sys.exit(0)
+    a.outdir = a.outdir or OUT
     if a.method in ("ours", "all"): ours(a.features, a.outdir)

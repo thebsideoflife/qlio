@@ -32,6 +32,7 @@ def main() -> None:
     ap.add_argument("--hold-through", action="store_true")
     ap.add_argument("--zoom-lambda", type=float, default=None)
     ap.add_argument("--loose-cost", type=float, default=1.0)
+    ap.add_argument("--tag", default="", help="suffix for the job id, e.g. a crop-policy variant")
     a = ap.parse_args()
 
     shots = json.loads((CACHE / "shots.json").read_text())
@@ -39,7 +40,7 @@ def main() -> None:
     c = json.loads((CACHE / "crops" / f"{a.crops}.json").read_text())
     crops = {int(i): (s["zoom"], s["focusX"]) for i, s in c["shots"].items()}
     needs = {int(i): tuple(s["need"]) for i, s in c["shots"].items() if s.get("need")}
-    job_id = f"{a.crops}.l{a.zoom_lambda}c{a.loose_cost}{'h' if a.hold_through else ''}"
+    job_id = f"{a.crops}.l{a.zoom_lambda}c{a.loose_cost}{'h' if a.hold_through else ''}{'.' + a.tag if a.tag else ''}"
     out = {"job_id": job_id, "version": JOB_VERSION, "params": vars(a), "clock": shots["method"],
            "crop_method": a.crops, "crop_version": c["version"], "fps": fps, "segments": [], "shots": {}}
     for s in json.loads(GOLD.read_text())["segments"]:

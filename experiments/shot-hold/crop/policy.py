@@ -25,29 +25,34 @@ from pathlib import Path
 
 import numpy as np
 
-from shothold.geometry import TIGHT, focus_for_center, window, window_width, zoom_for_width
+from shothold.geometry import TIGHT, focus_for_center, window, window_width, zoom_for_width, zoom_stops
+
+_STOPS = zoom_stops()
 
 CACHE = Path(os.environ.get("SHOTHOLD_CACHE", "/tmp/shothold"))
 
 PARAMS = {
     "edge_guard_frames": 2,      # ignore samples this close to a cut (blend / detector slop)
-    "track_dx": 0.08,            # same face if centre-x moves less than this between samples
+    "track_dx": 0.15,            # same face if centre-x moves less than this between samples (0.25 s) ...
+    "track_size_ratio": 1.5,
+    "extent_pct": 10,
+    "widen_tolerance": 1.25,    # stay 9:16 unless the subject extent overhangs the window by >25%. Humans held 9:16 on 81% of shots     # ... and its height changes by less than this factor
     "min_presence": 0.3,         # track must be seen in this fraction of the shot's samples
     "min_face_h": 0.07,          # ignore background faces smaller than this (fraction of frame height)
     "second_face_ratio": 0.6,    # a second face "matters" if its salience >= ratio * top salience
     "margin_face_w": 0.6,        # breathing room each side, in subject face widths (soft: never forces a widen)
     "hard_margin_face_w": 0.1,   # margin that CAN force a widen
-    "zoom_stops": [1.0, 0.635, 0.36],  # 9:16, 3:4, 1:1 windows. Few letterbox sizes = fewer visible jumps
-    "min_zoom_two_shot": 0.635,    # never widen past 3:4 to keep two people; pick one instead
-    "min_zoom_travel": 0.36,     # never widen past 1:1 to absorb subject travel
-    "noface_zoom": 0.635,        # 3:4 window, centred. Not FULL.
+    "zoom_stops": _STOPS,  # 9:16, 3:4, 1:1 windows. Few letterbox sizes = fewer visible jumps
+    "min_zoom_two_shot": _STOPS[1],    # never widen past 3:4 to keep two people; pick one instead
+    "min_zoom_travel": _STOPS[-1],     # never widen past 1:1 to absorb subject travel
+    "noface_zoom": _STOPS[1],        # 3:4 window, centred. Not FULL.
     "zoom_snap": 0.05,           # treat zoom within this of TIGHT as TIGHT
     "central_min_h_ratio": 0.5,  # v3: a face this much smaller than the biggest cannot be the subject
     "setup_thumb_corr": 0.7,    # same setup if mid-shot thumbnails correlate this much ...
     "setup_dx": 0.06,            # ... and the subject centre agrees this closely
     "setup_lookback": 12,        # only match against this many previous shots
 }
-VERSION = "crop-v3.1"
+VERSION = "crop-v4.2"
 
 
 def shot_bounds(cuts: list[int], n_frames: int) -> list[tuple[int, int]]:
@@ -67,7 +72,7 @@ def build_tracks(samples: list[tuple[int, list[list[float]]]], p: dict) -> list[
                 if ti in used:
                     continue
                 d = abs(t["cx"][-1] - cx)
-                if d < bd:
+                if d < bd and max(t["h"][-1], f[3]) / max(1e-6, min(t["h"][-1], f[3])) < p["track_size_ratio"]:
                     best, bd = ti, d
             if best is None:
                 tracks.append({"cx": [], "l": [], "r": [], "h": [], "w": [], "mouth": [], "frames": []})
@@ -89,9 +94,12 @@ def build_tracks(samples: list[tuple[int, list[list[float]]]], p: dict) -> list[
         out.append(
             {
                 "cx": cx, "h": h, "w": st.median(t["w"]), "presence": pres,
-                "left": min(t["l"]), "right": max(t["r"]),
+                # robust travel extent: ignore the outer 10% of samples each side. Human editors held
+                # 9:16 on 88% of shots that min/max extents would have widened.
+                "left": float(np.percentile(t["l"], p["extent_pct"])), "right": float(np.percentile(t["r"], 100 - p["extent_pct"])),
                 "mouth_std": float(np.std(t["mouth"])) if len(t["mouth"]) >= 3 else 0.0,
                 "salience": h * h * pres * (1 - 0.5 * abs(cx - 0.5)),
+                "boxes": list(zip(t["frames"], t["l"], t["r"])),  # for eval only; not used by the policy
             }
         )
     return sorted(out, key=lambda t: -t["salience"])
@@ -101,7 +109,9 @@ def fit(left: float, right: float, min_zoom: float, p: dict) -> tuple[float, flo
     """Smallest widening that contains [left, right]. Returns zoom, focusX, fits."""
     need = right - left
     stops = [z for z in p["zoom_stops"] if z >= min_zoom - 1e-9] or [min_zoom]
-    zoom = next((z for z in stops if need <= window_width(z)), stops[-1])
+    # widen_tolerance: how much of the needed extent may overhang the window before we give up 9:16
+    tol = float(os.environ.get("SHOTHOLD_WIDEN_TOL", p["widen_tolerance"]))
+    zoom = next((z for z in stops if need <= tol * window_width(z)), stops[-1])
     return zoom, focus_for_center((left + right) / 2, zoom), need <= window_width(zoom) + 1e-9
 
 
@@ -128,6 +138,11 @@ def crop_subject(tracks: list[dict], p: dict, central: bool = False) -> dict:
             reason = f"{len(grp)} comparable faces fit" + ("" if z2 == TIGHT else ": widened slightly")
         else:
             reason = f"{len(grp)} comparable faces do not fit by 3:4: kept dominant"
+    # the extent handed to the job layer is what THIS decision committed to keeping: if we chose to
+    # stay tighter than the raw extent (widen_tolerance / zoom floor), do not let smoothing re-widen for it
+    w, c = window_width(zoom), (need[0] + need[1]) / 2
+    if need[1] - need[0] > w:
+        need = [c - w / 2, c + w / 2]
     return {"zoom": zoom, "focusX": fx, "reason": reason, "n_tracks": len(tracks), "subject_cx": top["cx"],
             "need": [round(max(0.0, need[0]), 4), round(min(1.0, need[1]), 4)]}
 
