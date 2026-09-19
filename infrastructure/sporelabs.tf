@@ -17,7 +17,7 @@ locals {
 variable "framing_engine" {
   description = "analyze_framing engine: gemini (legacy) or sporelabs (shot-hold service)"
   type        = string
-  default     = "gemini"
+  default     = "sporelabs"
   validation {
     condition     = contains(["gemini", "sporelabs"], var.framing_engine)
     error_message = "framing_engine must be gemini or sporelabs."
