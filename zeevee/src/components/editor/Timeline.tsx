@@ -72,7 +72,8 @@ const MIN_ZOOM = 1;
 const MAX_ZOOM = 20;
 const DEFAULT_ZOOM = 1;
 const FRAMING_POLL_MS = 10000;
-const FRAMING_MAX_MS = 600000;
+// First shot-hold run on a long asset builds a proxy before analysis.
+const FRAMING_MAX_MS = 30 * 60 * 1000;
 const MOVE_HOLD_MS = 175;
 
 type FramingSnapshot = {

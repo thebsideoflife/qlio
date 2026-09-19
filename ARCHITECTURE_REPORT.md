@@ -143,6 +143,7 @@ sequenceDiagram
     participant ZV as ZV Orchestration
     participant 12L as TwelveLabs
     participant LLM as Claude
+    participant SL as SporeLabs
     participant Render as Remotion
 
     User->>ZV: Upload Video
@@ -167,8 +168,9 @@ sequenceDiagram
     ZV-->>User: Proposed Segments
 
     User->>ZV: Adjust + Export
-    ZV->>12L: Analyze Framing per Segment
-    12L-->>ZV: Subject Position - CROP or FIT
+    ZV->>ZV: Build 360p frame-exact proxy
+    ZV->>SL: Shot-hold reframe (all segments)
+    SL-->>ZV: One hold per camera shot
 
     ZV->>Render: Render with Captions + Framing
     Render-->>User: Final Microdrama
@@ -276,7 +278,7 @@ flowchart TB
     style CSS fill:#4A90A4,stroke:#357082,color:#FFFFFF
 ```
 
-**Key Design Decision**: Framing uses discrete position tokens, not continuous values. This makes output reliable and reproducible.
+**Current engine (`FRAMING_ENGINE=sporelabs`, default)**: `analyzeFraming` builds a 360p, every-frame proxy of the raw master (`proxy/<assetId>.mp4`, fanned out across Lambda slices for long sources) and submits all segments to the SporeLabs shot-hold service. SporeLabs detects camera cuts from pixels and returns one `(zoom, focusX, focusY)` hold per shot, already on the source frame grid; segment bounds are never touched. Long jobs store `framingJob.sporelabsJobId` and continue polling in a fresh invocation. `FRAMING_ENGINE=gemini` restores the legacy per-segment Gemini `TIME|ZOOM` path.
 
 ---
 
@@ -589,7 +591,7 @@ flowchart LR
 | ------------------------- | --------------------------------------------------------------- | ---------------------------------- |
 | **Grounded Intelligence** | Two-stage pipeline: Video Intelligence → Narrative Intelligence | Prevents hallucinated timestamps   |
 | **Long Videos**           | Transparent chunking with overlap                               | Handles any length, seamless API   |
-| **Auto-Framing**          | Discrete position tokens                                        | Reliable, reproducible output      |
+| **Auto-Framing**          | Shot-hold: one crop per camera shot (SporeLabs)                 | Smooth, grounded, no model clocks  |
 | **Rendering**             | Massively parallel Lambda                                       | Fast exports, scales automatically |
 | **Preview**               | CSS-based framing                                               | Instant feedback, no re-encoding   |
 | **Caption Timing**        | Adjusted for stitched output                                    | Captions stay synced after editing |

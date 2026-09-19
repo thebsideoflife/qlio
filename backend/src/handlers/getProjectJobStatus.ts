@@ -127,7 +127,9 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     ): boolean => {
       if (!job || !job.startedAt) return false;
       if (!activeStatuses.includes(job.status)) return false;
-      const ageMs = Date.now() - new Date(job.startedAt).getTime();
+      // Long jobs (SporeLabs framing) heartbeat; age runs from the last beat.
+      const ageMs =
+        Date.now() - new Date(job.heartbeatAt ?? job.startedAt).getTime();
       return ageMs > STALE_JOB_THRESHOLD_MS;
     };
 

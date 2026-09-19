@@ -1,4 +1,4 @@
-import { APIGatewayProxyHandler, Handler } from "aws-lambda";
+import { APIGatewayProxyHandler, Context, Handler } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
@@ -24,6 +24,13 @@ import { promisify } from "util";
 import * as fs from "fs";
 import * as path from "path";
 import { checkAuth } from "../utils/auth";
+import { runShotHoldFraming } from "../services/shot-hold-framing";
+import {
+  ensureReframeProxy,
+  runProxyChunk,
+  type ProxyChunkPayload,
+} from "../services/reframe-proxy";
+import { getReframe, submitReframe } from "../services/sporelabs-reframe";
 
 const execFileAsync = promisify(execFile);
 
@@ -39,6 +46,13 @@ const BUCKET_NAME = process.env.BUCKET_NAME!;
 const GEMINI_SECRET_ARN = process.env.GEMINI_SECRET_ARN!;
 const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 const FFMPEG_PATH = "/opt/bin/ffmpeg";
+// "sporelabs": deterministic shot-hold service. "gemini" (default, and anything
+// unrecognised): the legacy per-segment TIME|ZOOM path below. Set by
+// infrastructure var.framing_engine; flip once the SporeLabs key is in place.
+const FRAMING_ENGINE =
+  process.env.FRAMING_ENGINE?.trim().toLowerCase() === "sporelabs"
+    ? "sporelabs"
+    : "gemini";
 
 // Dynamic concurrency based on segment duration to avoid OOM
 const MAX_CONCURRENCY = 5;
@@ -96,6 +110,12 @@ interface FramingJob {
   segmentCount?: number;
   completedCount?: number;
   error?: string;
+  /** Bumped on every update; stale detection keys off this, not startedAt. */
+  heartbeatAt?: string;
+  /** SporeLabs engine: resume polling this job instead of resubmitting. */
+  sporelabsJobId?: string;
+  stage?: string;
+  continuation?: number;
 }
 
 interface AsyncJobPayload {
@@ -104,6 +124,9 @@ interface AsyncJobPayload {
   segments: SegmentDescriptor[];
   targetAspectRatio: TargetAspectRatio;
   jobId: string;
+  /** SporeLabs continuation: keep polling this job in a fresh invocation. */
+  sporelabsJobId?: string;
+  continuation?: number;
 }
 
 // ============================================================================
@@ -541,13 +564,19 @@ async function getAssetRecord(projectId: string) {
   };
 }
 
+/**
+ * Pass `jobId` to make the write conditional on this job still owning the row;
+ * resolves false when a newer job has replaced it.
+ */
 async function updateFramingJob(
   projectId: string,
   updates: Partial<FramingJob>,
-): Promise<void> {
-  const expressions: string[] = ["updatedAt = :u"];
+  jobId?: string,
+): Promise<boolean> {
+  const expressions: string[] = ["updatedAt = :u", "framingJob.heartbeatAt = :u"];
   const names: Record<string, string> = {};
   const values: Record<string, any> = { ":u": new Date().toISOString() };
+  if (jobId) values[":jid"] = jobId;
 
   for (const [key, val] of Object.entries(updates)) {
     const attrName = `#fj_${key}`;
@@ -557,16 +586,23 @@ async function updateFramingJob(
     values[attrVal] = val;
   }
 
-  await docClient.send(
-    new UpdateCommand({
-      TableName: PROJECTS_TABLE,
-      Key: { projectId },
-      UpdateExpression: `set ${expressions.join(", ")}`,
-      ExpressionAttributeNames:
-        Object.keys(names).length > 0 ? names : undefined,
-      ExpressionAttributeValues: values,
-    }),
-  );
+  try {
+    await docClient.send(
+      new UpdateCommand({
+        TableName: PROJECTS_TABLE,
+        Key: { projectId },
+        UpdateExpression: `set ${expressions.join(", ")}`,
+        ConditionExpression: jobId ? "framingJob.jobId = :jid" : undefined,
+        ExpressionAttributeNames:
+          Object.keys(names).length > 0 ? names : undefined,
+        ExpressionAttributeValues: values,
+      }),
+    );
+  } catch (err: any) {
+    if (jobId && err?.name === "ConditionalCheckFailedException") return false;
+    throw err;
+  }
+  return true;
 }
 
 // ============================================================================
@@ -639,7 +675,9 @@ async function handleStartBatch(
     ? (targetAspectRatio as TargetAspectRatio)
     : "9:16";
 
-  // Reject if a job is already running (unless it's stale — >15 min old)
+  // Reject if a job is already running (unless it's stale — no heartbeat for
+  // >15 min). SporeLabs jobs can legitimately run longer than one Lambda, so
+  // age is measured from the last heartbeat, falling back to startedAt.
   const projectCheck = await docClient.send(
     new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
   );
@@ -648,7 +686,9 @@ async function handleStartBatch(
     existingJob &&
     (existingJob.status === "pending" || existingJob.status === "analyzing")
   ) {
-    const ageMs = Date.now() - new Date(existingJob.startedAt).getTime();
+    const ageMs =
+      Date.now() -
+      new Date(existingJob.heartbeatAt ?? existingJob.startedAt).getTime();
     const STALE_THRESHOLD_MS = 15 * 60 * 1000;
     if (ageMs < STALE_THRESHOLD_MS) {
       return errorResponse(
@@ -716,7 +756,10 @@ async function handleStartBatch(
 // ASYNC JOB EXECUTION — Gemini per-segment pipeline
 // ============================================================================
 
-async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
+async function executeFramingJob(
+  payload: AsyncJobPayload,
+  context?: Context,
+): Promise<void> {
   const { projectId, segments, targetAspectRatio, jobId } = payload;
 
   console.log(
@@ -777,6 +820,11 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
         completedAt: new Date().toISOString(),
         completedCount: segments.length,
       });
+      return;
+    }
+
+    if (FRAMING_ENGINE === "sporelabs") {
+      await executeShotHoldJob(payload, context);
       return;
     }
 
@@ -925,12 +973,108 @@ async function writeFramingResults(
 }
 
 // ============================================================================
+// SHOT-HOLD ENGINE — SporeLabs (see services/shot-hold-framing.ts)
+// ============================================================================
+
+async function executeShotHoldJob(
+  payload: AsyncJobPayload,
+  context?: Context,
+): Promise<void> {
+  const { projectId, segments, jobId } = payload;
+  const remainingMs = () => context?.getRemainingTimeInMillis() ?? 14 * 60_000;
+
+  const outcome = await runShotHoldFraming(
+    {
+      projectId,
+      jobId,
+      segments,
+      targetAspectRatio: payload.targetAspectRatio as "9:16" | "1:1",
+      sporelabsJobId: payload.sporelabsJobId,
+      continuation: payload.continuation,
+    },
+    {
+      readJob: async () => {
+        const res = await docClient.send(
+          new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
+        );
+        return (res.Item?.framingJob as FramingJob | undefined) ?? null;
+      },
+      updateJob: (updates) =>
+        updateFramingJob(projectId, updates as Partial<FramingJob>, jobId),
+      getAsset: async () => {
+        const { assetId, asset } = await getAssetRecord(projectId);
+        // RAW master, never annotated/ (burned-in guide lines).
+        return { assetId, rawKey: asset.key };
+      },
+      ensureProxy: (args) =>
+        ensureReframeProxy({
+          s3: s3Client,
+          lambda: lambdaClient,
+          bucket: BUCKET_NAME,
+          selfFunctionName: SELF_FUNCTION_NAME,
+          ...args,
+        }),
+      submitReframe,
+      getReframe,
+      writeResults: (keyframes) =>
+        writeFramingResults(
+          projectId,
+          segments,
+          keyframes,
+          payload.targetAspectRatio,
+          jobId,
+        ),
+      makeFallbackKeyframe,
+      invokeContinuation: async (next) => {
+        const nextPayload: AsyncJobPayload = {
+          ...payload,
+          sporelabsJobId: next.sporelabsJobId,
+          continuation: next.continuation,
+        };
+        await lambdaClient.send(
+          new InvokeCommand({
+            FunctionName: SELF_FUNCTION_NAME,
+            InvocationType: "Event",
+            Payload: JSON.stringify(nextPayload),
+          }),
+        );
+      },
+      remainingMs,
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    },
+  );
+
+  if (outcome === "completed") {
+    await updateFramingJob(
+      projectId,
+      {
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        completedCount: segments.length,
+      },
+      jobId,
+    );
+    console.log(`[Framing] Job ${jobId} completed: ${segments.length} segments`);
+  } else if (outcome === "superseded") {
+    console.log(`[Framing] Job ${jobId} superseded, aborting`);
+  }
+}
+
+// ============================================================================
 // HANDLER — Routes between API Gateway and async self-invoke
 // ============================================================================
 
 export const handler: Handler = async (event, context, callback) => {
+  // Proxy slice worker, invoked synchronously by ensureReframeProxy.
+  if (event.isProxyChunk) {
+    return runProxyChunk(
+      s3Client,
+      event as ProxyChunkPayload,
+      context.getRemainingTimeInMillis(),
+    );
+  }
   if (event.isAsyncJob) {
-    return executeFramingJob(event as AsyncJobPayload);
+    return executeFramingJob(event as AsyncJobPayload, context);
   }
   // Direct Lambda-to-Lambda invocation (e.g., from generateSegments)
   if (event.isDirectBatchStart) {
