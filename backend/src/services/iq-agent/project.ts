@@ -422,6 +422,8 @@ export interface FramingJobSnapshot {
   completedCount?: number;
   error?: string;
   startedAt?: string;
+  /** Last framing heartbeat; long SporeLabs jobs outlive startedAt + 15 min. */
+  heartbeatAt?: string;
 }
 
 /** Matches the stale threshold in analyzeFraming — do not start a second job. */
@@ -436,7 +438,7 @@ export function isFramingJobActive(
 ): boolean {
   if (!job) return false;
   if (job.status !== "pending" && job.status !== "analyzing") return false;
-  const started = Date.parse(job.startedAt ?? "");
+  const started = Date.parse(job.heartbeatAt ?? job.startedAt ?? "");
   // A job row with no readable timestamp counts as stale, matching what
   // analyzeFraming does with it. Calling it active instead would let one
   // half-written row disable auto-framing on the project forever; the framing

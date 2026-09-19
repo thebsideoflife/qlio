@@ -126,6 +126,7 @@ data "aws_iam_policy_document" "lambda_policy" {
       data.aws_secretsmanager_secret.anthropic_api_key.arn,
       aws_secretsmanager_secret.gemini_api_key.arn,
       data.aws_secretsmanager_secret.openrouter_api_key.arn,
+      aws_secretsmanager_secret.sporelabs_api_key.arn,
       aws_secretsmanager_secret.cloudfront_private_key.arn,
       aws_secretsmanager_secret.coleman_jockey_twelve_labs_key.arn,
       aws_secretsmanager_secret.showcase_read_key.arn
@@ -600,22 +601,26 @@ resource "aws_lambda_function" "analyze_framing" {
   handler          = "analyzeFraming.handler"
   runtime          = "nodejs20.x"
   source_code_hash = data.archive_file.analyze_framing_zip.output_base64sha256
-  timeout          = 900  # 15 minutes — batch framing can be slow
-  memory_size      = 3008 # Max Lambda memory — FFmpeg cuts multiple long segments in parallel
+  timeout          = 900  # 15 minutes — batch framing can be slow; SporeLabs jobs continue in a fresh invocation
+  memory_size      = 3008 # Max Lambda memory — FFmpeg cuts segments (Gemini) / encodes 360p proxy slices (SporeLabs)
   layers           = [aws_lambda_layer_version.ffmpeg.arn]
 
   ephemeral_storage {
-    size = 4096 # 4GB — for FFmpeg segment clips in /tmp (long segments need space)
+    size = 4096 # 4GB — segment clips (Gemini) or proxy parts + joined 360p proxy (~0.3GB/h)
   }
 
   environment {
-    variables = {
+    variables = merge(local.sporelabs_env, {
       PROJECTS_TABLE          = aws_dynamodb_table.projects.name
       ASSETS_TABLE            = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-      GEMINI_SECRET_ARN       = aws_secretsmanager_secret.gemini_api_key.arn
+      GEMINI_SECRET_ARN       = aws_secretsmanager_secret.gemini_api_key.arn # FRAMING_ENGINE=gemini rollback
       BUCKET_NAME             = aws_s3_bucket.media.bucket
-    }
+      # "gemini" = legacy TIME|ZOOM path; "sporelabs" = shot-hold service.
+      # Stays gemini until the SporeLabs key is in Secrets Manager and one project
+      # has been framed on SporeLabs; then flip here (or var.framing_engine).
+      FRAMING_ENGINE = var.framing_engine
+    })
   }
 }
 

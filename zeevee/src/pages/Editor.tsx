@@ -465,7 +465,7 @@ export default function Editor() {
 
     (async () => {
       const POLL = 10000;
-      const MAX = 600000;
+      const MAX = 30 * 60 * 1000;
       const start = Date.now();
       while (!cancelled && Date.now() - start < MAX) {
         await new Promise((r) => setTimeout(r, POLL));
