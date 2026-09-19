@@ -617,8 +617,7 @@ resource "aws_lambda_function" "analyze_framing" {
       GEMINI_SECRET_ARN       = aws_secretsmanager_secret.gemini_api_key.arn # FRAMING_ENGINE=gemini rollback
       BUCKET_NAME             = aws_s3_bucket.media.bucket
       # "gemini" = legacy TIME|ZOOM path; "sporelabs" = shot-hold service.
-      # Stays gemini until the SporeLabs key is in Secrets Manager and one project
-      # has been framed on SporeLabs; then flip here (or var.framing_engine).
+      # Roll back by setting var.framing_engine = "gemini".
       FRAMING_ENGINE = var.framing_engine
     })
   }
