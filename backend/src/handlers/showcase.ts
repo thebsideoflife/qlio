@@ -19,7 +19,7 @@ const ASSETS_TABLE = process.env.ASSETS_TABLE!;
 const BUCKET_NAME = process.env.BUCKET_NAME;
 /** CORS renders bucket (zeevee-renders-dev); preferred over Remotion keys. */
 const RENDERS_BUCKET = process.env.RENDERS_BUCKET;
-/** 12h — the showcase app fetches the catalogue once on launch. */
+/** 12h — signed URLs stay valid across demo sessions and refetches. */
 const PRESIGN_TTL_SEC = 43_200;
 
 // ==========================================================================

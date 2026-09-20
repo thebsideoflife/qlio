@@ -539,7 +539,9 @@ export default function Editor() {
     }
   };
 
-  // Sync playhead to the displayed video frame when possible; RAF is the fallback.
+  // Sync playhead to the displayed video frame (rVFC). rVFC can stop firing
+  // (e.g. playback started by keyboard before any click), so a RAF loop always
+  // runs as a backstop. Both publish the same frame-snapped time.
   useEffect(() => {
     if (!videoUrl) return;
 
@@ -549,6 +551,7 @@ export default function Editor() {
     let cancelled = false;
     let rafId = 0;
     let rvfcId = 0;
+    let lastRvfcAt = 0;
 
     const publishTime = (seconds: number) => {
       if (cancelled || !Number.isFinite(seconds)) return;
@@ -563,28 +566,37 @@ export default function Editor() {
       typeof video.requestVideoFrameCallback === "function" &&
       typeof video.cancelVideoFrameCallback === "function";
 
-    if (hasRvfc) {
-      const onFrame: VideoFrameRequestCallback = (_now, metadata) => {
-        if (cancelled) return;
-        publishTime(metadata.mediaTime);
-        rvfcId = video.requestVideoFrameCallback(onFrame);
-      };
-      rvfcId = video.requestVideoFrameCallback(onFrame);
-      return () => {
-        cancelled = true;
-        video.cancelVideoFrameCallback(rvfcId);
-      };
-    }
-
-    const tick = () => {
+    const onFrame: VideoFrameRequestCallback = (now, metadata) => {
       if (cancelled) return;
-      if (!isNaN(video.currentTime)) publishTime(video.currentTime);
-      rafId = requestAnimationFrame(tick);
+      // Re-arm first so a throw in publish can't end the loop.
+      rvfcId = video.requestVideoFrameCallback(onFrame);
+      lastRvfcAt = now;
+      publishTime(metadata.mediaTime);
     };
+    const armRvfc = () => {
+      if (!hasRvfc || cancelled) return;
+      video.cancelVideoFrameCallback(rvfcId);
+      rvfcId = video.requestVideoFrameCallback(onFrame);
+    };
+
+    const tick = (now: number) => {
+      if (cancelled) return;
+      rafId = requestAnimationFrame(tick);
+      // Defer to rVFC while it is delivering frames; otherwise read currentTime.
+      const rvfcLive = hasRvfc && now - lastRvfcAt < 250;
+      if (!rvfcLive && !isNaN(video.currentTime)) publishTime(video.currentTime);
+    };
+
+    armRvfc();
     rafId = requestAnimationFrame(tick);
+    video.addEventListener("play", armRvfc);
+    video.addEventListener("seeked", armRvfc);
     return () => {
       cancelled = true;
       cancelAnimationFrame(rafId);
+      if (hasRvfc) video.cancelVideoFrameCallback(rvfcId);
+      video.removeEventListener("play", armRvfc);
+      video.removeEventListener("seeked", armRvfc);
     };
   }, [dispatch, videoUrl, sourceFps]);
 
