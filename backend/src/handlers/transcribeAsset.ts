@@ -23,12 +23,11 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import {
-  getOpenRouterApiKey,
   transcribeAudioChunk,
   STT_RETRIES,
   STT_TIMEOUT_MS,
   WHISPER_MODEL,
-} from "../services/openrouter";
+} from "../services/sporelabs";
 import {
   normalizeLanguageCode,
   originalTranscriptKey,
@@ -709,7 +708,6 @@ export const handler: Handler<TranscribeAssetEvent> = async (event, context) => 
       }
     }
 
-    const apiKey = nextMissing >= 0 ? await getOpenRouterApiKey() : "";
     let wroteChunks = 0;
 
     for (const plan of plans) {
@@ -820,7 +818,6 @@ export const handler: Handler<TranscribeAssetEvent> = async (event, context) => 
       );
 
       const result = await transcribeAudioChunk({
-        apiKey,
         audio,
         filename: `chunk-${plan.index}.wav`,
         format: "wav",

@@ -111,7 +111,7 @@ resource "aws_lambda_function" "iq_agent_worker" {
   }
 
   environment {
-    variables = {
+    variables = merge(local.sporelabs_env, {
       PROJECTS_TABLE                = aws_dynamodb_table.projects.name
       ASSETS_TABLE                  = aws_dynamodb_table.assets.name
       AGENT_THREADS_TABLE           = aws_dynamodb_table.agent_threads.name
@@ -122,7 +122,7 @@ resource "aws_lambda_function" "iq_agent_worker" {
       ANTHROPIC_SECRET_ARN          = data.aws_secretsmanager_secret.anthropic_api_key.arn
       ANALYZE_FRAMING_FUNCTION_NAME = aws_lambda_function.analyze_framing.function_name
       API_PASSWORD_SECRET_ARN       = aws_secretsmanager_secret.api_password.arn
-    }
+    })
   }
 }
 

@@ -125,6 +125,7 @@ data "aws_iam_policy_document" "lambda_policy" {
       data.aws_secretsmanager_secret.anthropic_api_key.arn,
       aws_secretsmanager_secret.gemini_api_key.arn,
       data.aws_secretsmanager_secret.openrouter_api_key.arn,
+      aws_secretsmanager_secret.sporelabs_api_key.arn,
       aws_secretsmanager_secret.cloudfront_private_key.arn,
       aws_secretsmanager_secret.coleman_jockey_twelve_labs_key.arn
     ]
@@ -534,7 +535,7 @@ resource "aws_lambda_function" "generate_segments" {
   timeout          = 900 # 15 minutes — Pegasus async segmentation can exceed 10m on long sources
 
   environment {
-    variables = {
+    variables = merge(local.sporelabs_env, {
       PROJECTS_TABLE                = aws_dynamodb_table.projects.name
       ASSETS_TABLE                  = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN       = aws_secretsmanager_secret.api_password.arn
@@ -559,7 +560,7 @@ resource "aws_lambda_function" "generate_segments" {
       JOCKEY_V3_SELF_DIRECTED_ENABLED = "true"
       # Agents API (jockey1.0) key for the v3 self-directed path.
       JOCKEY_AGENTS_SECRET_ARN = aws_secretsmanager_secret.coleman_jockey_twelve_labs_key.arn
-    }
+    })
   }
 }
 
@@ -607,13 +608,12 @@ resource "aws_lambda_function" "analyze_framing" {
   }
 
   environment {
-    variables = {
+    variables = merge(local.sporelabs_env, {
       PROJECTS_TABLE          = aws_dynamodb_table.projects.name
       ASSETS_TABLE            = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-      GEMINI_SECRET_ARN       = aws_secretsmanager_secret.gemini_api_key.arn
       BUCKET_NAME             = aws_s3_bucket.media.bucket
-    }
+    })
   }
 }
 

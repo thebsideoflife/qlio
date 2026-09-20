@@ -5,38 +5,32 @@ import {
   GetCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import {
-  SecretsManagerClient,
-  GetSecretValueCommand,
-} from "@aws-sdk/client-secrets-manager";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import {
   S3Client,
   GetObjectCommand,
   HeadObjectCommand,
+  PutObjectCommand,
+  DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
 import { randomUUID } from "crypto";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
-import * as path from "path";
 import { checkAuth } from "../utils/auth";
+import { sporelabsAnalyzeVideo } from "../services/sporelabs";
 
 const execFileAsync = promisify(execFile);
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
-const secretsClient = new SecretsManagerClient({});
 const lambdaClient = new LambdaClient({});
 const s3Client = new S3Client({});
 
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
 const BUCKET_NAME = process.env.BUCKET_NAME!;
-const GEMINI_SECRET_ARN = process.env.GEMINI_SECRET_ARN!;
 const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 const FFMPEG_PATH = "/opt/bin/ffmpeg";
 
@@ -308,27 +302,8 @@ function keyframesToLegacyResult(keyframes: FramingKeyframe[]): FramingResult {
 }
 
 // ============================================================================
-// GEMINI HELPERS
+// GEMINI HELPERS (via SporeLabs, model google/gemini-2.5-pro)
 // ============================================================================
-
-let geminiClient: GoogleGenerativeAI | null = null;
-let fileManager: GoogleAIFileManager | null = null;
-
-async function getGeminiClient(): Promise<GoogleGenerativeAI> {
-  if (geminiClient) return geminiClient;
-  const secret = await secretsClient.send(
-    new GetSecretValueCommand({ SecretId: GEMINI_SECRET_ARN }),
-  );
-  if (!secret.SecretString) throw new Error("Gemini API key not found");
-  geminiClient = new GoogleGenerativeAI(secret.SecretString);
-  fileManager = new GoogleAIFileManager(secret.SecretString);
-  return geminiClient;
-}
-
-function getFileManager(): GoogleAIFileManager {
-  if (!fileManager) throw new Error("Call getGeminiClient() first");
-  return fileManager;
-}
 
 function buildGeminiPrompt(segmentDuration: number): string {
   return `You are analyzing a video clip to decide how to crop it from 16:9 landscape to 9:16 vertical.
@@ -398,54 +373,38 @@ async function cutSegmentClip(
   await execFileAsync(FFMPEG_PATH, args, { timeout: 120_000 });
 }
 
-async function uploadToGemini(filePath: string): Promise<string> {
-  const fm = getFileManager();
-
-  const uploadResult = await fm.uploadFile(filePath, {
-    mimeType: "video/mp4",
-    displayName: path.basename(filePath),
-  });
-
-  let file = uploadResult.file;
-  console.log(`[Framing] Uploaded ${filePath} → ${file.name} (${file.state})`);
-
-  // Poll until ACTIVE
-  let attempts = 0;
-  while (file.state === FileState.PROCESSING && attempts < 30) {
-    await new Promise((r) => setTimeout(r, 2000));
-    file = await fm.getFile(file.name);
-    attempts++;
-  }
-
-  if (file.state !== FileState.ACTIVE) {
-    throw new Error(`File ${file.name} failed processing: ${file.state}`);
-  }
-
-  return file.uri;
+async function uploadClipForAnalysis(
+  localPath: string,
+  jobId: string,
+  segIndex: number,
+): Promise<{ key: string; url: string }> {
+  const key = `tmp/framing/${jobId}/segment-${segIndex}.mp4`;
+  await s3Client.send(
+    new PutObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: key,
+      Body: fs.createReadStream(localPath),
+      ContentType: "video/mp4",
+    }),
+  );
+  const url = await getSignedUrl(
+    s3Client,
+    new GetObjectCommand({ Bucket: BUCKET_NAME, Key: key }),
+    { expiresIn: 900 },
+  );
+  return { key, url };
 }
 
 async function analyzeSegmentWithGemini(
-  client: GoogleGenerativeAI,
-  fileUri: string,
+  videoUrl: string,
   segmentDuration: number,
 ): Promise<FramingKeyframe[]> {
-  const model = client.getGenerativeModel({ model: "gemini-2.5-pro" });
-
   const prompt = buildGeminiPrompt(segmentDuration);
-
-  const result = await model.generateContent([
-    { text: prompt },
-    {
-      fileData: {
-        mimeType: "video/mp4",
-        fileUri,
-      },
-    },
-  ]);
-
-  const responseText = result.response.text();
+  const responseText = await sporelabsAnalyzeVideo({
+    prompt,
+    videoUrl,
+  });
   console.log(`[Framing] Gemini response: ${responseText}`);
-
   return parseGeminiKeyframeResponse(responseText, segmentDuration);
 }
 
@@ -466,23 +425,20 @@ async function getAnnotatedKey(s3Key: string): Promise<string> {
 }
 
 async function processSegment(
-  client: GoogleGenerativeAI,
+  jobId: string,
   s3Key: string,
   segment: SegmentDescriptor,
   segIndex: number,
 ): Promise<FramingKeyframe[]> {
   const duration = segment.endTime - segment.startTime;
   const clipPath = `/tmp/segment-${segIndex}.mp4`;
+  let uploadedKey: string | undefined;
 
   try {
-    // 1. Cut segment with FFmpeg (uses annotated version if available)
     await cutSegmentClip(s3Key, segment.startTime, duration, clipPath);
-
-    // 2. Upload to Gemini File API
-    const fileUri = await uploadToGemini(clipPath);
-
-    // 3. Query Gemini for zoom keyframes
-    return await analyzeSegmentWithGemini(client, fileUri, duration);
+    const uploaded = await uploadClipForAnalysis(clipPath, jobId, segIndex);
+    uploadedKey = uploaded.key;
+    return await analyzeSegmentWithGemini(uploaded.url, duration);
   } catch (err) {
     console.error(
       `[Framing] Segment ${segIndex} (${segment.startTime.toFixed(1)}s-${segment.endTime.toFixed(1)}s) failed:`,
@@ -490,10 +446,16 @@ async function processSegment(
     );
     return [makeFallbackKeyframe()];
   } finally {
-    // Clean up clip
     try {
       fs.unlinkSync(clipPath);
     } catch {}
+    if (uploadedKey) {
+      try {
+        await s3Client.send(
+          new DeleteObjectCommand({ Bucket: BUCKET_NAME, Key: uploadedKey }),
+        );
+      } catch {}
+    }
   }
 }
 
@@ -784,9 +746,6 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
     const { asset } = await getAssetRecord(projectId);
     const s3Key = await getAnnotatedKey(asset.key);
 
-    // Get Gemini client
-    const client = await getGeminiClient();
-
     // Process segments in parallel with dynamic concurrency limit
     const allKeyframes = new Map<number, FramingKeyframe[]>();
     let completedCount = 0;
@@ -807,7 +766,7 @@ async function executeFramingJob(payload: AsyncJobPayload): Promise<void> {
             );
 
             const keyframes = await processSegment(
-              client,
+              jobId,
               s3Key,
               item.seg,
               item.i,

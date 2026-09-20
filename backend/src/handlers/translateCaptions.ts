@@ -17,7 +17,7 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { checkAuth } from "../utils/auth";
-import { getOpenRouterApiKey, translateCaptionLines, TRANSLATE_MODEL } from "../services/openrouter";
+import { translateCaptionLines, TRANSLATE_MODEL } from "../services/sporelabs";
 import { presignS3Uri } from "../utils/s3";
 import {
   groupWordsIntoCaptions,
@@ -340,9 +340,7 @@ async function translateWorker(event: TranslateWorkerEvent): Promise<void> {
       throw new Error("Original transcript has no caption lines");
     }
 
-    const apiKey = await getOpenRouterApiKey();
     const translated = await translateCaptionLines({
-      apiKey,
       sourceLanguage: originalLanguage,
       targetLanguage,
       lines: sourceLines.map((line) => line.text),

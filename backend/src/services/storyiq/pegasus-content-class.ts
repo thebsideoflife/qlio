@@ -2,7 +2,7 @@
  * Content Classifier
  *
  * Multi-tier classification with fallbacks:
- * 1. Claude title-based classification (via Bedrock) - fast, cheap
+ * 1. Claude title-based classification (via SporeLabs Haiku) - fast, cheap
  * 2. TwelveLabs Pegasus (first 120s of video) - most accurate but slow
  * 3. Default to "sports" - safe fallback for our use case
  *
@@ -12,11 +12,8 @@
  */
 
 import type { TwelveLabs, TwelvelabsApi } from "twelvelabs-js";
-import {
-  BedrockRuntimeClient,
-  InvokeModelCommand,
-} from "@aws-sdk/client-bedrock-runtime";
 import type { ContentType } from "./types";
+import { SPORELABS_HAIKU_MODEL, sporelabsChatText } from "../sporelabs";
 
 export interface ClassifyResult {
   contentType: ContentType;
@@ -40,7 +37,7 @@ const RETRY_DELAY_MS = 2000;
  * Classify video content with multi-tier fallback.
  *
  * Priority:
- * 1. Claude title classification (via Bedrock) - fast, cheap
+ * 1. Claude title classification (via SporeLabs) - fast, cheap
  * 2. TwelveLabs Pegasus (video analysis) - most accurate but slow
  * 3. Default to "sports" - safe fallback
  */
@@ -167,10 +164,8 @@ Respond with JSON only:
 }
 
 // ============================================================================
-// Tier 1: Claude Title-Based Classification (via Bedrock)
+// Tier 1: Claude Title-Based Classification (via SporeLabs)
 // ============================================================================
-
-const bedrockClient = new BedrockRuntimeClient({ region: "us-west-2" });
 
 async function classifyWithClaudeTitle(
   title: string,
@@ -191,22 +186,12 @@ Look for keywords like team names, league names (NFL, NBA, NHL, MLB, Premier Lea
 Respond with JSON only:
 {"type": "sports" | "serialized_scifi" | "generic", "confidence": 0.0-1.0, "reasoning": "brief explanation"}`;
 
-  const body = JSON.stringify({
-    anthropic_version: "bedrock-2023-05-31",
-    max_tokens: 256,
-    messages: [{ role: "user", content: prompt }],
+  const text = await sporelabsChatText({
+    model: SPORELABS_HAIKU_MODEL,
+    user: prompt,
+    maxTokens: 256,
+    timeoutMs: 30_000,
   });
-
-  const command = new InvokeModelCommand({
-    modelId: "anthropic.claude-3-haiku-20240307-v1:0",
-    contentType: "application/json",
-    accept: "application/json",
-    body,
-  });
-
-  const response = await bedrockClient.send(command);
-  const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-  const text = responseBody.content?.[0]?.text || "";
 
   console.log(`[Classifier] Claude raw response: ${text.substring(0, 200)}`);
 

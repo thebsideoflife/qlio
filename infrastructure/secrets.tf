@@ -49,5 +49,23 @@ data "aws_secretsmanager_secret" "openrouter_api_key" {
   name = "${var.project_name}/openrouter-api-key"
 }
 
-# We don't set the version/value here to keep it out of git.
-# User must manually set it in console: aws secretsmanager put-secret-value ...
+resource "aws_secretsmanager_secret" "sporelabs_api_key" {
+  name        = "${var.project_name}/sporelabs-api-key"
+  description = "SporeLabs API key for OpenAI-compatible LLM, Whisper, and Gemini calls"
+}
+
+resource "aws_secretsmanager_secret_version" "sporelabs_api_key" {
+  secret_id     = aws_secretsmanager_secret.sporelabs_api_key.id
+  secret_string = "REPLACE_ME_PASTE_SPORELABS_KEY"
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}
+
+locals {
+  sporelabs_env = {
+    SPORELABS_SECRET_ARN = aws_secretsmanager_secret.sporelabs_api_key.arn
+    SPORELABS_BASE_URL   = "https://sporelabs.dev/v1"
+  }
+}
