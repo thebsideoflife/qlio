@@ -41,6 +41,9 @@ def main() -> None:
         g = groups[key]
         ok = sum(r["verdict"] == "approve" for r in g)
         print(f"{' / '.join(key):75s} {ok:3d}/{len(g):3d} approved ({100 * ok / len(g):.0f}%)")
+    if any(r["kind"] == "cut" for r in rows):
+        print("\ncut approve rates above are NOT clock accuracy: round-1 cards mixed two wordings and the reviewer\n"
+              "answered 'is this a cut?' on all of them. Score clocks with: python -m eval.clock_labels")
     reasons = collections.Counter(x for r in rows if r["verdict"] == "deny" for x in r.get("reasons", []))
     print("\ndeny reasons:", dict(reasons.most_common()))
     fix = [r for r in rows if r["kind"] == "crop" and r.get("correction")]

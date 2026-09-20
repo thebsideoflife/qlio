@@ -12,6 +12,9 @@ Methods (all deterministic, all thresholds in PARAMS):
                  Weak labels mined from stored human crops (eval/subject_weak_labels.py): largest
                  face picks the human's subject 46% of the time (chance), most-central 75%.
                  Over-the-shoulder coverage puts the biggest face on the wrong person.
+  subject-v4     as v3, but a comparable face at least `focus_ratio` times sharper than the central one
+                 wins (crop/face_sharpness.py). Drama marks its subject with focus. Human review: all 3
+                 wrong-subject denials kept a face the lens had thrown soft; weak labels 79% -> 83%.
   subject-v2+setup   subject-v2, then shots that return to the same camera setup
                  (A-B-A coverage) share one crop, so the hold does not wobble between visits
 """
@@ -51,8 +54,10 @@ PARAMS = {
     "setup_thumb_corr": 0.7,    # same setup if mid-shot thumbnails correlate this much ...
     "setup_dx": 0.06,            # ... and the subject centre agrees this closely
     "setup_lookback": 12,        # only match against this many previous shots
+    "focus_ratio": 3.0,          # v4: a comparable face this many times sharper than the central one is the subject ...
+    "focus_min_score": 0.8,      # ... if the detector is sure it is a face (a sharp false face on decor won at 4039 without this)
 }
-VERSION = "crop-v4.2"
+VERSION = "crop-v4.3"
 
 
 def shot_bounds(cuts: list[int], n_frames: int) -> list[tuple[int, int]]:
@@ -75,12 +80,14 @@ def build_tracks(samples: list[tuple[int, list[list[float]]]], p: dict) -> list[
                 if d < bd and max(t["h"][-1], f[3]) / max(1e-6, min(t["h"][-1], f[3])) < p["track_size_ratio"]:
                     best, bd = ti, d
             if best is None:
-                tracks.append({"cx": [], "l": [], "r": [], "h": [], "w": [], "mouth": [], "frames": []})
+                tracks.append({"cx": [], "l": [], "r": [], "h": [], "w": [], "mouth": [], "frames": [], "focus": [], "score": []})
                 best = len(tracks) - 1
             used.add(best)
             t = tracks[best]
             t["cx"].append(cx); t["l"].append(f[0]); t["r"].append(f[0] + f[2])
-            t["h"].append(f[3]); t["w"].append(f[2]); t["frames"].append(frame)
+            t["h"].append(f[3]); t["w"].append(f[2]); t["frames"].append(frame); t["score"].append(f[4])
+            if len(f) >= 16 and f[15] is not None:  # focus, appended by attach_focus()
+                t["focus"].append(f[15])
             if len(f) >= 15 and f[3] > 0:  # mouth-corner midpoint to nose, in face heights
                 t["mouth"].append(((f[12] + f[14]) / 2 - f[10]) / f[3])
     n = max(1, len(samples))
@@ -98,6 +105,8 @@ def build_tracks(samples: list[tuple[int, list[list[float]]]], p: dict) -> list[
                 # 9:16 on 88% of shots that min/max extents would have widened.
                 "left": float(np.percentile(t["l"], p["extent_pct"])), "right": float(np.percentile(t["r"], 100 - p["extent_pct"])),
                 "mouth_std": float(np.std(t["mouth"])) if len(t["mouth"]) >= 3 else 0.0,
+                "focus": st.median(t["focus"]) if t["focus"] else None,
+                "score": st.median(t["score"]),
                 "salience": h * h * pres * (1 - 0.5 * abs(cx - 0.5)),
                 "boxes": list(zip(t["frames"], t["l"], t["r"])),  # for eval only; not used by the policy
             }
@@ -115,12 +124,37 @@ def fit(left: float, right: float, min_zoom: float, p: dict) -> tuple[float, flo
     return zoom, focus_for_center((left + right) / 2, zoom), need <= window_width(zoom) + 1e-9
 
 
-def crop_subject(tracks: list[dict], p: dict, central: bool = False) -> dict:
+def attach_focus(samples: list[tuple[int, list[list[float]]]], focus: dict[int, list]) -> list:
+    """Append each face's focus score (index 15) where crop/face_sharpness.py measured it."""
+    out = []
+    for f, faces in samples:
+        fs = focus.get(f)
+        out.append((f, [list(b[:15]) + [fs[k] if fs and k < len(fs) else None] for k, b in enumerate(faces)]))
+    return out
+
+
+def order_subject(tracks: list[dict], p: dict, use_focus: bool = False) -> tuple[list[dict], bool]:
+    """v3 ranking (most central among faces at least half the biggest), then v4's focus override."""
+    big = max(t["h"] for t in tracks)
+    tracks = sorted(tracks, key=lambda t: (t["h"] < p["central_min_h_ratio"] * big, abs(t["cx"] - 0.5)))
+    switched = False
+    if use_focus and tracks[0].get("focus"):
+        comp = [t for t in tracks[1:] if t["h"] >= p["central_min_h_ratio"] * big and t.get("focus")
+                and t.get("score", 1.0) >= p["focus_min_score"]]
+        sharp = [t for t in comp if t["focus"] >= p["focus_ratio"] * tracks[0]["focus"]]
+        if sharp:
+            pick = max(sharp, key=lambda t: t["focus"])
+            tracks = [pick] + [t for t in tracks if t is not pick]
+            switched = True
+    return tracks, switched
+
+
+def crop_subject(tracks: list[dict], p: dict, central: bool = False, use_focus: bool = False) -> dict:
     if not tracks:
         return {"zoom": p["noface_zoom"], "focusX": 0.5, "reason": "no face: centred 3:4", "n_tracks": 0}
+    switched = False
     if central:  # v3: re-rank by centrality among faces of comparable size; rivals judged on size
-        big = max(t["h"] for t in tracks)
-        tracks = sorted(tracks, key=lambda t: (t["h"] < p["central_min_h_ratio"] * big, abs(t["cx"] - 0.5)))
+        tracks, switched = order_subject(tracks, p, use_focus)
         tracks = [dict(t, salience=t["h"] * t["presence"]) for t in tracks]
     top = tracks[0]
     m = p["hard_margin_face_w"] * top["w"]
@@ -143,6 +177,8 @@ def crop_subject(tracks: list[dict], p: dict, central: bool = False) -> dict:
     w, c = window_width(zoom), (need[0] + need[1]) / 2
     if need[1] - need[0] > w:
         need = [c - w / 2, c + w / 2]
+    if switched:
+        reason += " · focus"
     return {"zoom": zoom, "focusX": fx, "reason": reason, "n_tracks": len(tracks), "subject_cx": top["cx"],
             "need": [round(max(0.0, need[0]), 4), round(min(1.0, need[1]), 4)]}
 
@@ -186,18 +222,21 @@ def main() -> None:
     p = PARAMS
     g = p["edge_guard_frames"]
 
+    fpath_focus = CACHE / "face_sharp.json"
+    focus = {int(k): v for k, v in json.loads(fpath_focus.read_text())["frames"].items()} if fpath_focus.exists() else {}
     per_shot_tracks = []
     import bisect
     for a, b in bounds:
         lo, hi = bisect.bisect_left(sampled, a + g), bisect.bisect_left(sampled, b - g)
         smp = [(f, fr[f]) for f in sampled[lo:hi]] or [(f, fr[f]) for f in sampled[bisect.bisect_left(sampled, a):bisect.bisect_left(sampled, b)]]
-        per_shot_tracks.append((build_tracks(smp, p), len(smp)))
+        per_shot_tracks.append((build_tracks(attach_focus(smp, focus), p), len(smp)))
 
     methods = {
         "center-tight": lambda tr: {"zoom": 1.0, "focusX": 0.5, "reason": "baseline", "n_tracks": len(tr)},
         "allfaces-v2": lambda tr: crop_allfaces(tr, p),
         "subject-v2": lambda tr: crop_subject(tr, p),
         "subject-v3": lambda tr: crop_subject(tr, p, central=True),
+        "subject-v4": lambda tr: crop_subject(tr, p, central=True, use_focus=True),
     }
     out = {}
     for name, fn in methods.items():

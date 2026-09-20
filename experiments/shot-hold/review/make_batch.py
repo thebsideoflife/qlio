@@ -3,6 +3,8 @@
 
   python -m review.make_batch crop --method subject-v2 --job <job_id> --n 36 [--seed 0] [--tag r1]
   python -m review.make_batch cut  --n 30
+  python -m review.make_batch cut  --frames picks.json --tag r2        # [[category, frame], ...]; one wording
+  python -m review.make_batch splitclip --job B --vs A --n 10 --tag r2  # exit-split A/B clips, one shot each
 
 A card is self-describing: asset, source frames, proposal, method + version. Stills are
 regenerable from (asset, source_frames), so labels stay valid if /tmp is wiped.
@@ -135,7 +137,10 @@ def cut_batch(a) -> None:
     segs = gold_segments()
     rng = random.Random(a.seed)
     cats: dict[str, list[int]] = {}
-    for p in sorted((CACHE / "clock" / "pairs").glob("*.jpg")):
+    if a.frames:  # explicit picks; every card asks the same question (round 1 mixed two wordings, see eval/clock_labels.py)
+        for cat, n in json.loads(Path(a.frames).read_text()):
+            cats.setdefault(cat, []).append(int(n))
+    for p in ([] if a.frames else sorted((CACHE / "clock" / "pairs").glob("*.jpg"))):
         m = re.match(r"([a-z]+)_(\d+)\.jpg", p.name)
         if m:
             cats.setdefault(m.group(1), []).append(int(m.group(2)))
@@ -165,7 +170,9 @@ def cut_batch(a) -> None:
             "input": {"fps": fps, "source_frames": fr, "images": rels,
                       "image_notes": (["N-30", "N-10", "N+10", "N+30"] if cat == "dissolve" else ["N-2", "N-1 (old shot)", "N (new shot)", "N+1"])[: len(fr)]},
             "proposal": {"cut_frame": n, "is_cut": in_clock,
-                         "reason": "long-dissolve detector proposes a soft cut at the midpoint. Approve = two different setups" if cat == "dissolve" else "clock says CUT here" if in_clock else "clock says NO cut here (candidate miss). Approve = the clock is right"},
+                         "reason": ("Is N the first frame of a DIFFERENT shot? Approve = yes, a cut. Deny = same shot "
+                                    "(light change, flash, motion). " + ("Clock-v3 cuts here." if in_clock else "Clock-v3 does not cut here."))
+                         if a.frames else "long-dissolve detector proposes a soft cut at the midpoint. Approve = two different setups" if cat == "dissolve" else "clock says CUT here" if in_clock else "clock says NO cut here (candidate miss). Approve = the clock is right"},
             "context": {"cut_sec": n / fps, "category": cat, "segment_title": seg["title"] if seg else None},
         })
     write(f"cut-{shots['method']}-{a.tag}", f"Cut · {shots['method']} · {a.tag}", cards)
@@ -190,6 +197,50 @@ def clip_batch(a) -> None:
     write(f"clip-{a.job}-{a.tag}", f"Clip A/B · {a.job} · {a.tag}", cards)
 
 
+def splitclip_batch(a) -> None:
+    """One short A/B clip per exit-split shot: left = one hold for the shot, right = the split.
+    A mid-shot pan can only be judged in motion."""
+    import subprocess
+    import sys
+    B = json.loads((CACHE / "job" / f"{a.job}.json").read_text())
+    sh = sorted(B["shots"].values(), key=lambda s: s["frames"][0])
+    groups = []
+    for k, s in enumerate(sh):
+        if s.get("split"):
+            if groups and groups[-1][-1] is sh[k - 1]:
+                groups[-1].append(s)
+            else:
+                groups.append([sh[k - 1], s])
+    must = {int(x) for x in (a.must or "").split(",") if x}
+    rng = random.Random(a.seed)
+    pick = [g for g in groups if any(p["frames"][0] <= m < p["frames"][1] for p in g for m in must)]
+    rest = [g for g in groups if g not in pick]
+    rng.shuffle(rest)
+    pick = sorted(pick + rest[: max(0, a.n - len(pick))], key=lambda g: g[0]["frames"][0])
+    segs = {s["id"]: s for s in gold_segments()}
+    cards = []
+    for g in pick:
+        x, y = g[0]["frames"][0], g[-1]["frames"][1]
+        sid = g[0]["segment_id"]
+        name = f"split_{x}__{a.job}.mp4"
+        subprocess.run([sys.executable, "-m", "review.render_compare", "--segment", sid, "--job", a.job, "--vs", a.vs,
+                        "--from-frame", str(max(0, x - 12)), "--to-frame", str(y + 12), "--out", name,
+                        "--labels", "A: one hold|B: pans mid-shot"], check=True, capture_output=True)
+        splits = [p["frames"][0] for p in g[1:] if p.get("split")]
+        cards.append({
+            "card_id": f"splitclip:{ASSET[:8]}:{x}-{y}:{B['job_id']}:{B['version']}",
+            "kind": "clip", "asset_id": ASSET, "method": B["job_id"], "method_version": B["version"],
+            "input": {"fps": B["fps"], "clip": name, "segment_id": sid, "images": [], "source_frames": [x, y],
+                      "source_range_sec": [max(0, x - 12) / B["fps"], (y + 12) / B["fps"]]},
+            "proposal": {"split_frames": splits, "focusX": [p["focusX"] for p in g], "zoom": g[0]["zoom"],
+                         "reason": f"ONE camera shot. B re-aims {len(splits)}x inside it (pan only, orange flash). "
+                                   "Approve = B is better than A. Deny = the mid-shot pan is worse than holding."},
+            "context": {"segment_title": segs[sid]["title"], "compare_with": a.vs},
+        })
+        print(name)
+    write(f"splitclip-{a.job}-{a.tag}", f"Exit split A/B · {a.tag}", cards)
+
+
 def write(batch_id: str, title: str, cards: list[dict]) -> None:
     BATCHES.mkdir(parents=True, exist_ok=True)
     (BATCHES / f"{batch_id}.json").write_text(json.dumps({"batch_id": batch_id, "title": title, "cards": cards}))
@@ -198,7 +249,7 @@ def write(batch_id: str, title: str, cards: list[dict]) -> None:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("kind", choices=["crop", "cut", "clip"])
+    ap.add_argument("kind", choices=["crop", "cut", "clip", "splitclip"])
     ap.add_argument("--method", default="subject-v2")
     ap.add_argument("--n", type=int, default=36)
     ap.add_argument("--seed", type=int, default=0)
@@ -206,5 +257,8 @@ if __name__ == "__main__":
     ap.add_argument("--shots-file", default=None, help="json {shotIndex: n}; restrict the batch to these shots and show the flag")
     ap.add_argument("--disagree-with", default=None, help="crop method; keep only shots where it disagrees with --method")
     ap.add_argument("--job", default=None, help="job id from shothold.run_job; overrides per-shot crops")
+    ap.add_argument("--frames", default=None, help="cut: json [[category, frame], ...] instead of clock/pairs")
+    ap.add_argument("--vs", default=None, help="splitclip: job id for the A (left) pane")
+    ap.add_argument("--must", default=None, help="splitclip: comma-separated frames whose shots must be included")
     a = ap.parse_args()
-    {"crop": crop_batch, "cut": cut_batch, "clip": clip_batch}[a.kind](a)
+    {"crop": crop_batch, "cut": cut_batch, "clip": clip_batch, "splitclip": splitclip_batch}[a.kind](a)

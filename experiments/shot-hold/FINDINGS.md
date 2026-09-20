@@ -1,8 +1,8 @@
 # Shot-hold framing R&D — findings, 18 Sep 2026
 
-> **Read the "Second pass" and "Where this stands" sections first.** The first-pass sections below are
-> kept as the record of what was believed at the time; several numbers and one claim ("no missed
-> cuts") were superseded the same day.
+> **Read "Third pass: after human review round 1" (at the end) first**, then "Where this stands".
+> The first- and second-pass sections are kept as the record of what was believed at the time;
+> several numbers and one claim ("no missed cuts") were superseded the same day.
 
 Local research only. Nothing here touches DynamoDB, S3, or a deployed path. Asset
 `64b4881a-…` (Nashville, Lionsgate Cut 081926), 60,991 frames at 23.976 fps, 26 stored segments.
@@ -324,3 +324,143 @@ Review material now queued (90 cards, about 20 minutes; start at the top):
 
 If a stored Nashville crop on a card is itself bad, say so in the note ("stored is wrong"): that
 tells me which segments to stop using as a reference.
+
+## Third pass: after human review round 1
+
+85 cards judged (`labels/labels.jsonl`). Nothing below touches the reviewed v1 outputs in `/tmp/shothold`:
+new runs live in `/tmp/shothold-v1b` (v1 clock, new crop code) and `/tmp/shothold-v3` (new clock).
+
+### Reading the labels
+
+- **Clips 4 of 4 approved**, default and always-9:16. Nothing to change at the segment level.
+- **Cut cards cannot be read as approve rates.** Round-1 cards used two wordings (hard cuts:
+  Approve = "this is a cut"; miss candidates: Approve = "the clock is right that there is NO cut").
+  The stills show the reviewer answered "is this a cut?" on every card: 16243 is an obvious cut and
+  was Approved; 869, 7546, 21046, 47965 are one continuous shot and were Denied; 52720, 53051, 59687
+  are lightning or photo flashes and were Denied. So the 6 denied miss candidates mean **the clock was
+  right on all 6**, not 6 missed cuts. `eval/clock_labels.py` scores clocks on that reading (13710 excluded:
+  its four stills are blank white). Round-2 cut cards all ask the same question.
+- **All 8 denied suspicious / hist-only cuts are the same composition under a light change** (concert
+  spotlights, gain shifts in "I Can Hear Them Playing"). The one approved suspicious cut is a real cut
+  between two aerials.
+- **Crop: 13 denials, by cause** (from notes plus 8-frame strips of each held shot, `eval/split_probe.py`):
+
+  | cause | cards | what fixes it |
+  |---|---|---|
+  | wrong subject: the crop kept a face the lens threw out of focus | 3 (25532, 46732, 17710) | focus cue (below) |
+  | subject walks or stands out of a static window in one long shot | 3 (20806, 53870, 53672) | exit split, 1 of 3 |
+  | clock miss: whip-blur cut (3830), 35 s cross-dissolve montage (55648-56479) | 2 | exit split, partly |
+  | 1-2 s action shot: the face stays in the window, the action (fight, turn, second person) does not | 3 (52240, 34972, 52344) | nothing here; needs a body signal or a wider stop |
+  | unexplained / probable misclick (33692 denied with note "fine") | 2 | none |
+
+  Only 1 of the 12 "should have been split" holds contains a cut any detector finds (3830,
+  PySceneDetect-content only). "Split" mostly means "the subject moved", not "you missed a cut".
+- The reviewer never nudged zoom (`[` `]`), though 5 notes say "or zoom out". The 17 corrections are pan only.
+
+### Clock: `clock-v3` = union clock minus a lighting veto (`clock/clock_v3.py`)
+
+`clock/struct_features.py` (one more 90 s proxy pass) measures whether two frames share the same
+**gradient field**: edge direction, not edge strength, contrast-normalised. A light change keeps it and a camera
+cut does not. A candidate is vetoed only if all three consecutive pairs around it stay alike (similarity > 0.6), so an
+off-by-one cut frame cannot veto a real cut.
+
+| | similarity across the cut |
+|---|---|
+| 8 human-denied lighting cuts | 0.72 to 0.86 |
+| 799 three-detector consensus cuts | median 0.27, 99.5th pct 0.41; one at 0.89 (2949), itself a light change |
+| human-approved real cuts | 0.18 to 0.41 |
+
+All 69 candidates the veto removes across v1, v2, both PySceneDetect detectors and the union were checked by eye:
+69 of 69 are the same shot (spotlights, candle flicker, lightning, press flashes in the finale, a title lighting up).
+clock-v3 also merges `clock/dissolve.py` (reviewer: 3 of 4 proposals are real dissolves).
+
+| clock (`python -m eval.clock_labels`) | cuts | human-labelled cuts found | labelled non-cuts kept |
+|---|---:|---:|---:|
+| hist-adaptive-v1 (reviewed) | 882 | 7 of 12 | 8 of 18 |
+| union-v1 | 897 | 8 of 12 | 5 of 18 |
+| **clock-v3** | 856 | **11 of 12** | 3 of 18 |
+
+Still missed: 3830 (whip-blur; only PySceneDetect-content has it, and adding that detector brings 28 extra
+candidates past the veto, about 25 of them motion inside one shot, including two human-labelled non-cuts). Still
+kept: 53051 (lightning through a rainy windscreen), 24049 (the denied dissolve), 59039 (2 frames from the
+approved dissolve 59041; the two labels agree, the hard-cut tolerance does not). The montage at 55648 is not
+found by any clock. Through the job layer clock-v3 changes little: 668 vs 670 holds.
+
+### Crop: `subject-v4` = central face, unless a comparable face is 3x sharper (`crop/face_sharpness.py`)
+
+Per-face focus = Laplacian energy of the inner face (48x48, contrast-normalised), one 60 s proxy pass over
+frames with two or more faces. Drama marks its subject with focus.
+
+| subject rule | weak labels (94, stored human crops) | reviewed wrong-subject cards fixed | distance from the reviewer's 17 corrections (median crop centre) |
+|---|---:|---:|---:|
+| most central (v3) | 79% | 0 of 3 | 0.100 |
+| sharpest face alone | 54% | | |
+| **central unless a rival is 3x sharper and detector score ≥ 0.8 (v4)** | **83%** | **3 of 3** | **0.081** |
+
+It switches the subject on 24 of 334 multi-face shots. By eye on those: about 13 clearly better (a sharp speaker
+over a soft foreground shoulder), 10 unclear, 1 wrong (a sharp false face on decor at 4039, removed by the detector-score
+guard). `eval.frame_containment` scores v4 slightly *worse* (11.4% → 12.3%) because it defines the subject as the
+most central face. It cannot judge a rule that overrides centrality, so the review cards decide this one.
+
+### Job: exit split, pan-only second hold inside one shot (`crop/exit_split.py`, `job-v1` + `tied`)
+
+The reviewer answered spec open question 3: when the subject leaves, they want a new hold. Narrow version:
+follow **the shot's own subject** (seeded where the policy chose it, then nearest face each 0.25 s, jump ≤ 0.2
+of the frame width) and split into at most 3 pieces of ≥ 1 s when that removes ≥ 3 samples with the face >25% outside. Pan
+only: split frames are written as `tied`, and the Viterbi cannot change zoom across them, so the letterbox never
+moves mid-shot (asserted in `eval/job_summary.py`, tested). The new hold starts on the frame of largest picture
+change between samples, so the jump rides motion.
+
+A first version re-picked "most central face" per sample. It panned A-B-A across approved two-shots
+(19391: 0.91 → 0.11 → 0.85). Following the shot's own subject fixed that.
+
+| job (clock-v3) | holds | zoom changes | mid-shot pans | holds < 1 s | 9:16 time | subject >25% outside |
+|---|---:|---:|---:|---:|---:|---:|
+| subject-v3 (reviewed config, new clock) | 668 | 64 | 0 | 46 | 85% | 11.2% |
+| subject-v4 | 679 | 66 | 0 | 50 | 84% | 12.1% |
+| **subject-v4 + exit split** | 713 | 66 | 33 | 52 | 84% | 11.1% (last third of shots 14.3% → 12.3%) |
+
+29 shots split. Of the reviewer's notes it catches 53870 (walk-out), the montage 55648 (3 pieces, partly
+right), and 3806. 3806 is the lesson: across the missed whip cut, face identity does not carry over, and B lands
+on the profile woman instead of the one facing camera. An exit split cannot fully stand in for a missed cut. It
+misses 20806 and 43601, where the subject leaves in the last second before a cut, and every 1-2 s action shot. By eye over
+all 30 splits of the version just before the ≥ 1 s piece fix (29 remain): about 22 clearly follow a moving subject or rescue a missed transition (55207 singer → man at the door;
+58903 across the approved dissolve 59041), a few are small re-centres, no A-B-A flips. Whether a mid-shot pan
+reads as smooth or as a jump can only be judged in motion: that is the round-2 clip batch.
+
+### Prove-gates, per layer
+
+| layer | gate | v1 (reviewed) | now |
+|---|---|---|---|
+| clock | human-labelled cuts found / non-cuts kept | 7 of 12 / 8 of 18 | 11 of 12 / 3 of 18 |
+| clock | three-detector consensus cuts vetoed | n/a | 0 real (1 vetoed, itself a light change) |
+| crop | wrong-subject denials fixed; distance from corrections | 0 of 3; 0.100 | 3 of 3; 0.081 |
+| job | zoom changes mid-shot; keyframes off a cut or split frame | 0; 0 | 0; 0 (asserted) |
+| job | round-2 split A/B clips | n/a | pending |
+
+### Review round 2 (32 cards, about 10 minutes)
+
+| batch | cards | question |
+|---|---:|---|
+| `splitclip-…-r2` | 10 | One shot each. A = one hold, B = pans mid-shot (orange flash). Approve = B is better. |
+| `crop-subject-v4…-r2-focus` | 12 | Focus switched the subject (3 are round-1 denials, re-cut with v4). Approve = right person. |
+| `cut-clock-v3-r2` | 10 | 8 cuts the union adds, 2 veto controls. Approve = yes, a cut (same wording on every card). |
+
+```bash
+cd experiments/shot-hold
+.venv/bin/python review/server.py                  # same UI; round-2 batches are listed
+.venv/bin/python -m eval.clock_labels              # clock gate
+SHOTHOLD_CACHE=/tmp/shothold-v3 .venv/bin/python -m eval.job_summary
+# rebuild clock-v3 path from the cache: struct_features, face_sharpness, clock_v3, then in /tmp/shothold-v3:
+#   crop.policy; crop.exit_split --crops subject-v4; run_job --crops subject-v4+split --shots shots_split.json ...
+```
+
+### What I would do next
+
+1. Read round 2. If the split clips are approved, lower `min_gain` to 2 so the end-of-shot exits (20806, 43601)
+   split too. If they are denied, keep one hold and spend the effort on the 3:4 stop for moving shots instead.
+2. Short action shots need a person/body box (the face stays in; the action does not). This is also the missing
+   no-face signal from the reality-show test. It is a detector choice, not tuning.
+3. Whip-blur cuts: a narrow rule (sustained high score then a new stable picture) rather than adding
+   PySceneDetect-content wholesale.
+4. Not done, and still true: no audio, no VLM, one drama asset. Nothing ships from here.

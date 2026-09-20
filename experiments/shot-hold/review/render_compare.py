@@ -3,6 +3,8 @@
 Stills cannot show choppiness; this can. Local file only, read-only on the project.
 
   python -m review.render_compare --segment s3 --job subject-v2.l2.0c4.0h [--max-sec 70]
+  python -m review.render_compare --segment s3 --job B --vs A --from-frame 3790 --to-frame 3900 --out x.mp4
+      two jobs (left = --vs, right = --job) over a short frame range, e.g. one shot with an exit split
 """
 
 from __future__ import annotations
@@ -44,23 +46,32 @@ def main() -> None:
     ap.add_argument("--segment", required=True)
     ap.add_argument("--job", required=True)
     ap.add_argument("--max-sec", type=float, default=70)
+    ap.add_argument("--vs", default=None, help="job id for the LEFT pane instead of the stored track")
+    ap.add_argument("--from-frame", type=int, default=None)
+    ap.add_argument("--to-frame", type=int, default=None)
+    ap.add_argument("--out", default=None, help="file name under review/clips")
+    ap.add_argument("--labels", default=None, help="left|right pane labels")
     a = ap.parse_args()
     job = json.loads((CACHE / "job" / f"{a.job}.json").read_text())
     fps = job["fps"]
     seg = next(s for s in json.loads(GOLD.read_text())["segments"] if s["id"] == a.segment)
     prop = next(s for s in job["segments"] if s["id"] == a.segment)["keyframes"]
-    f0 = frame_index(seg["startTime"], fps)
-    f1 = min(frame_index(seg["endTime"], fps), f0 + int(a.max_sec * fps))
+    s0 = frame_index(seg["startTime"], fps)
+    f0 = max(s0, a.from_frame) if a.from_frame is not None else s0
+    f1 = min(frame_index(seg["endTime"], fps), a.to_frame if a.to_frame is not None else f0 + int(a.max_sec * fps))
 
     def track(kfs):
-        t = sorted((f0 + max(0, frame_index(seg["startTime"] + k["time"], fps) - f0), k["zoom"] if k["zoom"] is not None else 1.0, k["focusX"]) for k in kfs)
+        t = sorted((s0 + max(0, frame_index(seg["startTime"] + k["time"], fps) - s0), k["zoom"] if k["zoom"] is not None else 1.0, k["focusX"]) for k in kfs)
         return t
 
-    tracks = [track(seg["keyframes"]), track(prop)]
-    labels = [f"stored ({len(seg['keyframes'])} holds)", f"proposed ({len(prop)} holds)"]
+    left = seg["keyframes"]
+    if a.vs:
+        left = next(s for s in json.loads((CACHE / "job" / f"{a.vs}.json").read_text())["segments"] if s["id"] == a.segment)["keyframes"]
+    tracks = [track(left), track(prop)]
+    labels = a.labels.split("|") if a.labels else [f"{'stored' if not a.vs else 'A'} ({len(left)} holds)", f"proposed ({len(prop)} holds)"]
     out_dir = CACHE / "review" / "clips"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"{a.segment}__{a.job}.mp4"
+    out = out_dir / (a.out or f"{a.segment}__{a.job}.mp4")
     # decode the segment from the master at 720p through ffmpeg (accurate seek), compose, encode
     dec = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{f0 / fps:.6f}", "-i", str(CACHE / "master.mp4"),
                             "-frames:v", str(f1 - f0), "-vf", "scale=1280:720", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
@@ -77,7 +88,7 @@ def main() -> None:
         panes = []
         for tr, lab in zip(tracks, labels):
             cur = [k for k in tr if k[0] <= f][-1] if any(k[0] <= f for k in tr) else tr[0]
-            panes.append(pane(img, cur[1], cur[2], lab, f - cur[0] if cur[0] != f0 else 99))
+            panes.append(pane(img, cur[1], cur[2], lab, f - cur[0] if cur[0] != s0 else 99))
         enc.stdin.write(np.hstack([panes[0], np.zeros((H, 10, 3), np.uint8), panes[1]]).tobytes())
     enc.stdin.close(); enc.wait(); dec.kill()
     print(out)

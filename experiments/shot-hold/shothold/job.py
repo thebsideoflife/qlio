@@ -27,6 +27,7 @@ def smooth_zoom(
     *,
     clip_cost: float = 10.0,
     loose_cost: float = 1.0,
+    tied: list[bool] | None = None,
 ) -> list[float]:
     """Pick one zoom stop per shot for a whole segment. Exact DP (Viterbi) over
 
@@ -35,7 +36,8 @@ def smooth_zoom(
     A zoom change moves the letterbox bars, which the viewer sees even on a camera cut;
     a pan on a cut is free. `lam` is seconds of mild looseness we accept to avoid one
     zoom change: THE "less choppy" knob. Shots with no subject (need None) cost nothing at
-    any zoom, so they inherit their neighbours' zoom instead of forcing a change."""
+    any zoom, so they inherit their neighbours' zoom instead of forcing a change. `tied[i]` (an exit
+    split inside one camera shot) forbids a zoom change INTO shot i: the bars never move mid-shot."""
     n, k = len(durs), len(stops)
     if n == 0:
         return []
@@ -59,6 +61,10 @@ def smooth_zoom(
         best[0][zi] = cost(0, stops[zi])
     for i in range(1, n):
         for zi in range(k):
+            if tied and tied[i]:
+                best[i][zi] = best[i - 1][zi] + cost(i, stops[zi])
+                back[i][zi] = zi
+                continue
             prev = min(range(k), key=lambda pj: (best[i - 1][pj] + (lam if pj != zi else 0.0), pj))
             best[i][zi] = best[i - 1][prev] + (lam if prev != zi else 0.0) + cost(i, stops[zi])
             back[i][zi] = prev
@@ -84,6 +90,7 @@ def keyframes_for_segment(
     zoom_lambda: float | None = None,
     stops: tuple[float, ...] | None = None,
     loose_cost: float = 1.0,
+    tied: set[int] | None = None,
 ) -> list[dict]:
     """One keyframe at segment open, then one per interior camera cut whose crop
     actually differs. Two density knobs, both thresholds we own:
@@ -106,7 +113,8 @@ def keyframes_for_segment(
     if zoom_lambda is not None and needs is not None:
         idx = [shot_at(a) for a in bounds[:-1]]
         zs = smooth_zoom([(b - a) / fps for a, b in zip(bounds, bounds[1:])],
-                         [needs.get(i) for i in idx], list(stops or zoom_stops()), zoom_lambda, loose_cost=loose_cost)
+                         [needs.get(i) for i in idx], list(stops or zoom_stops()), zoom_lambda, loose_cost=loose_cost,
+                         tied=[a in (tied or ()) for a in bounds[:-1]])
         crops = dict(crops)
         for i, z in zip(idx, zs):
             nd = needs.get(i)

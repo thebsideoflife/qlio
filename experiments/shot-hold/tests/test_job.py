@@ -40,6 +40,15 @@ def test_lambda_trades_zoom_changes_for_looseness():
     assert smooth_zoom(durs, needs, stops, 0.0)[-1] == smooth_zoom(durs, needs, stops, 0.0)[-2]  # no-face inherits
 
 
+def test_exit_split_never_moves_the_letterbox():
+    durs = [2.0] * 4
+    needs = [(.4, .6), (.3, .7), (.4, .6), (.3, .7)]
+    stops = [1.0, 0.635, 0.36]
+    free = smooth_zoom(durs, needs, stops, 0.0)
+    tied = smooth_zoom(durs, needs, stops, 0.0, tied=[False, True, False, True])  # 1 and 3 are mid-shot splits
+    assert free[0] != free[1] and tied[0] == tied[1] and tied[2] == tied[3]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

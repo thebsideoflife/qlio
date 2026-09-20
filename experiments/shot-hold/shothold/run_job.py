@@ -33,10 +33,11 @@ def main() -> None:
     ap.add_argument("--zoom-lambda", type=float, default=None)
     ap.add_argument("--loose-cost", type=float, default=1.0)
     ap.add_argument("--tag", default="", help="suffix for the job id, e.g. a crop-policy variant")
+    ap.add_argument("--shots", default="shots.json", help="shots_split.json after crop.exit_split")
     a = ap.parse_args()
 
-    shots = json.loads((CACHE / "shots.json").read_text())
-    fps, cuts = shots["fps"], shots["cuts"]
+    shots = json.loads((CACHE / a.shots).read_text())
+    fps, cuts, tied = shots["fps"], shots["cuts"], set(shots.get("tied", []))
     c = json.loads((CACHE / "crops" / f"{a.crops}.json").read_text())
     crops = {int(i): (s["zoom"], s["focusX"]) for i, s in c["shots"].items()}
     needs = {int(i): tuple(s["need"]) for i, s in c["shots"].items() if s.get("need")}
@@ -46,7 +47,7 @@ def main() -> None:
     for s in json.loads(GOLD.read_text())["segments"]:
         kfs = keyframes_for_segment(s["startTime"], s["endTime"], fps, cuts, crops,
                                     min_hold_frames=a.min_hold, same_crop_iou=a.same_iou, needs=needs,
-                                    hold_through=a.hold_through, zoom_lambda=a.zoom_lambda, loose_cost=a.loose_cost)
+                                    hold_through=a.hold_through, zoom_lambda=a.zoom_lambda, loose_cost=a.loose_cost, tied=tied)
         out["segments"].append({"id": s["id"], "title": s["title"], "startTime": s["startTime"],
                                 "endTime": s["endTime"], "keyframes": kfs})
         f0, f1 = frame_index(s["startTime"], fps), frame_index(s["endTime"], fps)
@@ -59,9 +60,9 @@ def main() -> None:
             if abs(hold["zoom"] - base["zoom"]) > 0.02:
                 note += f" · job: zoom {base['zoom']:.2f}→{hold['zoom']:.2f} (smoothed)"
             elif hold["sourceFrame"] != x:
-                note += " · job: held through cut"
+                note += " · job: held through " + ("split" if x in tied else "cut")
             out["shots"][str(i)] = {"zoom": hold["zoom"], "focusX": hold["focusX"], "reason": note,
-                                    "frames": [x, y], "segment_id": s["id"], "reframed_here": hold["sourceFrame"] == x,
+                                    "frames": [x, y], "segment_id": s["id"], "reframed_here": hold["sourceFrame"] == x, "split": x in tied,
                                     "n_tracks": base.get("n_tracks"), "per_shot": [base["zoom"], base["focusX"]]}
     (CACHE / "job").mkdir(exist_ok=True)
     (CACHE / "job" / f"{job_id}.json").write_text(json.dumps(out, indent=1))
