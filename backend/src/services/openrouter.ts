@@ -2,7 +2,13 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
-import { languageLabel, type CaptionWord } from "../utils/transcript-format";
+import { type CaptionWord } from "../utils/transcript-format";
+
+/**
+ * OpenRouter is now used only for Whisper transcription (transcribeAsset).
+ * Chat and translation calls go through ./sporelabs. Transcription is moving to
+ * a self-hosted SporeLabs Whisper endpoint separately; delete this file then.
+ */
 
 const secretsClient = new SecretsManagerClient({});
 
@@ -10,8 +16,6 @@ const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 // Accuracy is the product requirement. Do not make this environment-selectable:
 // a silent switch to a distilled/turbo model changes transcript timing/content.
 export const WHISPER_MODEL = "openai/whisper-large-v3" as const;
-export const TRANSLATE_MODEL =
-  process.env.OPENROUTER_TRANSLATE_MODEL || "openai/gpt-4o-mini";
 
 /** verbose_json + word timestamps only work on OpenAI-compatible STT providers. */
 const STT_PROVIDER = {
@@ -198,140 +202,4 @@ export async function transcribeAudioChunk(params: {
     }
   }
   throw lastError || new Error("OpenRouter STT failed");
-}
-
-function translationLanguageName(code: string): string {
-  const normalized = (code || "").trim().toLowerCase();
-  if (!normalized || normalized === "und") {
-    return "the original spoken language";
-  }
-  return languageLabel(normalized);
-}
-
-function alignTranslationBatch(
-  source: string[],
-  translated: string[],
-): string[] {
-  if (translated.length === source.length) return translated;
-  if (translated.length > source.length) return translated.slice(0, source.length);
-  return [...translated, ...source.slice(translated.length)];
-}
-
-export async function translateCaptionLines(params: {
-  apiKey: string;
-  sourceLanguage: string;
-  targetLanguage: string;
-  lines: string[];
-}): Promise<string[]> {
-  if (params.lines.length === 0) return [];
-
-  const sourceName = translationLanguageName(params.sourceLanguage);
-  const targetName = translationLanguageName(params.targetLanguage);
-  const system = `You translate burnt-in video captions. Translate each line from ${sourceName} to ${targetName}. Keep proper names, numbers, and on-screen terms. Do not merge or split lines. Return JSON: {"lines":["..."]} with the same number of strings, same order.`;
-
-  const BATCH = 40;
-  const out: string[] = [];
-
-  for (let i = 0; i < params.lines.length; i += BATCH) {
-    const batch = params.lines.slice(i, i + BATCH);
-    const payload = {
-      model: TRANSLATE_MODEL,
-      temperature: 0.2,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: system },
-        {
-          role: "user",
-          content: JSON.stringify({ lines: batch }),
-        },
-      ],
-    };
-
-    let lastError: Error | null = null;
-    let translated: string[] | null = null;
-    for (let attempt = 1; attempt <= STT_RETRIES; attempt++) {
-      try {
-        const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-          method: "POST",
-          headers: {
-            ...openRouterHeaders(params.apiKey),
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(STT_TIMEOUT_MS),
-        });
-
-        const raw = await response.text();
-        if (!response.ok) {
-          const err = new Error(
-            `OpenRouter chat ${response.status}: ${raw.slice(0, 400)}`,
-          );
-          if (isRetryableStatus(response.status) && attempt < STT_RETRIES) {
-            lastError = err;
-            await sleep(1000 * 2 ** (attempt - 1));
-            continue;
-          }
-          throw err;
-        }
-
-        const parsed = JSON.parse(raw) as {
-          choices?: Array<{ message?: { content?: string } }>;
-        };
-        const content = parsed.choices?.[0]?.message?.content;
-        if (!content) {
-          throw new Error("OpenRouter translation returned empty content");
-        }
-
-        try {
-          const json = JSON.parse(content) as { lines?: unknown };
-          if (Array.isArray(json.lines)) {
-            translated = json.lines.map((line) => String(line ?? ""));
-          }
-        } catch {
-          throw new Error(
-            `Could not parse translation JSON: ${content.slice(0, 200)}`,
-          );
-        }
-        if (translated && translated.length !== batch.length) {
-          if (attempt < STT_RETRIES) {
-            lastError = new Error(
-              `Translation length mismatch: got ${translated.length}, expected ${batch.length}`,
-            );
-            translated = null;
-            await sleep(1000 * 2 ** (attempt - 1));
-            continue;
-          }
-          console.warn(
-            `[translate] length mismatch after ${STT_RETRIES} attempts; aligning ${translated.length} -> ${batch.length}`,
-          );
-          translated = alignTranslationBatch(batch, translated);
-        }
-        break;
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        const retryable =
-          lastError.name === "TimeoutError" ||
-          lastError.name === "AbortError" ||
-          /chat 5\d\d|chat 429/.test(lastError.message);
-        if (retryable && attempt < STT_RETRIES) {
-          await sleep(1000 * 2 ** (attempt - 1));
-          continue;
-        }
-        throw lastError;
-      }
-    }
-
-    if (!translated) {
-      throw lastError || new Error("Translation batch failed");
-    }
-    if (translated.length !== batch.length) {
-      console.warn(
-        `[translate] aligning batch length ${translated.length} -> ${batch.length}`,
-      );
-      translated = alignTranslationBatch(batch, translated);
-    }
-    out.push(...translated);
-  }
-
-  return out;
 }

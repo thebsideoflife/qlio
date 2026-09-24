@@ -49,14 +49,13 @@ resource "aws_lambda_function" "translate_captions" {
   memory_size      = 512
 
   environment {
-    variables = {
+    variables = merge(local.sporelabs_env, {
       PROJECTS_TABLE          = aws_dynamodb_table.projects.name
       ASSETS_TABLE            = aws_dynamodb_table.assets.name
       BUCKET_NAME             = aws_s3_bucket.media.id
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-      OPENROUTER_SECRET_ARN   = data.aws_secretsmanager_secret.openrouter_api_key.arn
       TRANSLATE_FUNCTION_NAME = "${var.project_name}-translate-captions"
-    }
+    })
   }
 }
 

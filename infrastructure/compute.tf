@@ -123,23 +123,12 @@ data "aws_iam_policy_document" "lambda_policy" {
       aws_secretsmanager_secret.twelve_labs_key.arn,
       aws_secretsmanager_secret.api_password.arn,
       aws_secretsmanager_secret.twelve_labs_signing_secret.arn,
-      data.aws_secretsmanager_secret.anthropic_api_key.arn,
-      aws_secretsmanager_secret.gemini_api_key.arn,
-      data.aws_secretsmanager_secret.openrouter_api_key.arn,
+      data.aws_secretsmanager_secret.openrouter_api_key.arn, # transcribe_asset Whisper only
       aws_secretsmanager_secret.sporelabs_api_key.arn,
       aws_secretsmanager_secret.cloudfront_private_key.arn,
       aws_secretsmanager_secret.coleman_jockey_twelve_labs_key.arn,
       aws_secretsmanager_secret.showcase_read_key.arn
     ]
-  }
-  statement {
-    actions = [
-      "bedrock:InvokeModel",
-      "aws-marketplace:ViewSubscriptions",
-      "aws-marketplace:Subscribe",
-      "aws-marketplace:Unsubscribe"
-    ]
-    resources = ["*"]
   }
   statement {
     actions   = ["sts:AssumeRole"]
@@ -537,7 +526,7 @@ resource "aws_lambda_function" "generate_segments" {
   timeout          = 900 # 15 minutes — Pegasus async segmentation can exceed 10m on long sources
 
   environment {
-    variables = {
+    variables = merge(local.sporelabs_env, {
       PROJECTS_TABLE                = aws_dynamodb_table.projects.name
       ASSETS_TABLE                  = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN       = aws_secretsmanager_secret.api_password.arn
@@ -546,8 +535,6 @@ resource "aws_lambda_function" "generate_segments" {
       BUCKET_NAME                   = aws_s3_bucket.media.bucket
       DETECT_SCENES_FUNCTION        = aws_lambda_function.detect_scenes.function_name
       ANALYZE_FRAMING_FUNCTION_NAME = aws_lambda_function.analyze_framing.function_name
-      GEMINI_SECRET_ARN             = aws_secretsmanager_secret.gemini_api_key.arn
-      ANTHROPIC_SECRET_ARN          = data.aws_secretsmanager_secret.anthropic_api_key.arn
       # Jockey pipelines for compact_video + episode_recap. Both flags only
       # take effect when the request opts in via the frontend "Jockey mode"
       # toggle (jockeyEnabled) — default requests always use the legacy
@@ -562,7 +549,7 @@ resource "aws_lambda_function" "generate_segments" {
       JOCKEY_V3_SELF_DIRECTED_ENABLED = "true"
       # Agents API (jockey1.0) key for the v3 self-directed path.
       JOCKEY_AGENTS_SECRET_ARN = aws_secretsmanager_secret.coleman_jockey_twelve_labs_key.arn
-    }
+    })
   }
 }
 
@@ -614,10 +601,10 @@ resource "aws_lambda_function" "analyze_framing" {
       PROJECTS_TABLE          = aws_dynamodb_table.projects.name
       ASSETS_TABLE            = aws_dynamodb_table.assets.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-      GEMINI_SECRET_ARN       = aws_secretsmanager_secret.gemini_api_key.arn # FRAMING_ENGINE=gemini rollback
       BUCKET_NAME             = aws_s3_bucket.media.bucket
-      # "gemini" = legacy TIME|ZOOM path; "sporelabs" = shot-hold service.
-      # Roll back by setting var.framing_engine = "gemini".
+      # "gemini" = legacy TIME|ZOOM path (Gemini 2.5 Pro via SporeLabs);
+      # "sporelabs" = shot-hold service. Roll back by setting
+      # var.framing_engine = "gemini".
       FRAMING_ENGINE = var.framing_engine
     })
   }

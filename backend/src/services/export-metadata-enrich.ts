@@ -1,18 +1,9 @@
 /**
- * Enrich Pegasus clip descriptions with transcript-aware context via Claude.
- * Pegasus sees only the clip; the transcript carries names and broader story context.
- * Tries Bedrock first, falls back to direct Anthropic API, then Pegasus output.
+ * Enrich Pegasus clip descriptions with transcript-aware context via Claude
+ * through SporeLabs. Pegasus sees only the clip; the transcript carries names
+ * and broader story context. On failure, Pegasus output is returned as-is.
  */
 
-import Anthropic from "@anthropic-ai/sdk";
-import {
-  BedrockRuntimeClient,
-  InvokeModelCommand,
-} from "@aws-sdk/client-bedrock-runtime";
-import {
-  GetSecretValueCommand,
-  SecretsManagerClient,
-} from "@aws-sdk/client-secrets-manager";
 import type { TranscriptSegment } from "./storyiq/types";
 import {
   truncateFullTranscriptPlain,
@@ -23,12 +14,8 @@ import {
   type ExportMetadataOptions,
   type ParsedSegmentMetadata,
 } from "./export-metadata";
+import { SPORELABS_SONNET_MODEL, sporelabsChatText } from "./sporelabs";
 
-const bedrockClient = new BedrockRuntimeClient({ region: "us-west-2" });
-const secretsClient = new SecretsManagerClient({});
-// Must use inference profile ID — raw model IDs fail on-demand in us-west-2.
-const BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
-const ANTHROPIC_API_MODEL = "claude-sonnet-4-5-20250929";
 const ENRICHMENT_TIMEOUT_MS = 180_000; // 3 minutes
 
 // Context limits — Sonnet has a large context window (~800K chars).
@@ -36,7 +23,6 @@ const ENRICHMENT_TIMEOUT_MS = 180_000; // 3 minutes
 const MAX_FULL_TRANSCRIPT_CHARS = 24_000; // ~6K tokens — enough for character names
 const MAX_SCENE_DIALOGUE_CHARS = 16_000; // ~4K tokens — handles 10+ min segments
 
-let cachedAnthropicApiKey: string | null | undefined;
 
 export interface EnrichDescriptionsInput {
   pegasus: ParsedSegmentMetadata;
@@ -110,105 +96,16 @@ JSON only:
 }`;
 }
 
-async function getAnthropicApiKey(): Promise<string | null> {
-  if (cachedAnthropicApiKey !== undefined) {
-    return cachedAnthropicApiKey;
-  }
-
-  const secretArn = process.env.ANTHROPIC_SECRET_ARN;
-  if (!secretArn) {
-    cachedAnthropicApiKey = null;
-    return null;
-  }
-
-  try {
-    const secret = await secretsClient.send(
-      new GetSecretValueCommand({ SecretId: secretArn }),
-    );
-    const apiKey = secret.SecretString?.trim();
-    cachedAnthropicApiKey = apiKey || null;
-    return cachedAnthropicApiKey;
-  } catch (err) {
-    console.warn(
-      "[ExportMetadata] Could not load Anthropic API key for fallback:",
-      err,
-    );
-    cachedAnthropicApiKey = null;
-    return null;
-  }
-}
-
-async function invokeBedrock(prompt: string, signal: AbortSignal): Promise<string> {
-  const body = JSON.stringify({
-    anthropic_version: "bedrock-2023-05-31",
-    max_tokens: 1024,
-    messages: [{ role: "user", content: prompt }],
-  });
-
-  const response = await bedrockClient.send(
-    new InvokeModelCommand({
-      modelId: BEDROCK_MODEL,
-      contentType: "application/json",
-      accept: "application/json",
-      body,
-    }),
-    { abortSignal: signal },
-  );
-
-  const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-  return responseBody.content?.[0]?.text || "";
-}
-
-async function invokeAnthropicApi(prompt: string): Promise<string> {
-  const apiKey = await getAnthropicApiKey();
-  if (!apiKey) {
-    throw new Error("Anthropic API key not configured");
-  }
-
-  const client = new Anthropic({
-    apiKey,
-    timeout: ENRICHMENT_TIMEOUT_MS,
-  });
-
-  const message = await client.messages.create({
-    model: ANTHROPIC_API_MODEL,
-    max_tokens: 1024,
-    messages: [{ role: "user", content: prompt }],
-  });
-
-  const block = message.content[0];
-  return block?.type === "text" ? block.text : "";
-}
-
-async function withTimeout<T>(
-  ms: number,
-  fn: (signal: AbortSignal) => Promise<T>,
-): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ms);
-  try {
-    return await fn(controller.signal);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 async function invokeClaudeForEnrichment(
   prompt: string,
-): Promise<{ text: string; source: "bedrock" | "anthropic_api" }> {
-  try {
-    const text = await withTimeout(ENRICHMENT_TIMEOUT_MS, (signal) =>
-      invokeBedrock(prompt, signal),
-    );
-    return { text, source: "bedrock" };
-  } catch (bedrockErr) {
-    console.warn(
-      "[ExportMetadata] Bedrock enrichment failed, trying Anthropic API:",
-      bedrockErr,
-    );
-    const text = await invokeAnthropicApi(prompt);
-    return { text, source: "anthropic_api" };
-  }
+): Promise<{ text: string; source: "sporelabs" }> {
+  const text = await sporelabsChatText({
+    model: SPORELABS_SONNET_MODEL,
+    user: prompt,
+    maxTokens: 1024,
+    timeoutMs: ENRICHMENT_TIMEOUT_MS,
+  });
+  return { text, source: "sporelabs" };
 }
 
 /**

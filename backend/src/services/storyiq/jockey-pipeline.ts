@@ -1,5 +1,5 @@
 /**
- * Jockey Pipeline — Claude (Bedrock) narrative preprocess + windowed Pegasus
+ * Jockey Pipeline — Claude (SporeLabs) narrative preprocess + windowed Pegasus
  * segmentation for compact_video and episode_recap only.
  *
  * Phases:

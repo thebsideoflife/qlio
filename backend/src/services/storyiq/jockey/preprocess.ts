@@ -1,9 +1,6 @@
 /**
- * Jockey Phase 0 — Claude Sonnet (Bedrock, Anthropic API fallback) turns
- * transcript + producer prompt into a validated NarrativeBrief.
- *
- * No Gemini dependency: Bedrock auth is IAM; the Anthropic key fallback comes
- * from ANTHROPIC_SECRET_ARN (already on the generateSegments Lambda).
+ * Jockey Phase 0 — Claude Sonnet via SporeLabs turns transcript + producer
+ * prompt into a validated NarrativeBrief.
  */
 
 import { ZodError } from "zod";

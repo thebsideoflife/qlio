@@ -32,7 +32,6 @@ const lambdaClient = new LambdaClient({});
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
 const SECRET_ARN = process.env.SECRET_ARN!;
-const GEMINI_SECRET_ARN = process.env.GEMINI_SECRET_ARN;
 const JOCKEY_COMPACT_RECAP_ENABLED =
   process.env.JOCKEY_COMPACT_RECAP_ENABLED === "true";
 // Jockey v3 self-directed cutting (SPEC-jockey-v3-self-directed-cuts.md).
@@ -336,28 +335,12 @@ async function executeGenerationJob(
       jockeyRequested && JOCKEY_COMPACT_RECAP_ENABLED && isJockeyPurpose;
 
     // Always use the org TwelveLabs key — org-indexed assets are not readable
-    // under the Jockey/Agents key. Jockey preprocess uses Claude via Bedrock
-    // (IAM) with ANTHROPIC_SECRET_ARN fallback; Gemini is not required.
+    // under the Jockey/Agents key. Claude/Gemini calls go through SporeLabs.
     const secretVal = await secretsClient.send(
       new GetSecretValueCommand({ SecretId: SECRET_ARN }),
     );
     const apiKey = secretVal.SecretString;
     if (!apiKey) throw new Error("12Labs API Key not found");
-
-    // Get Gemini key for fallback classification (optional, Pegasus path only)
-    let geminiApiKey: string | undefined;
-    if (GEMINI_SECRET_ARN) {
-      try {
-        const geminiSecret = await secretsClient.send(
-          new GetSecretValueCommand({ SecretId: GEMINI_SECRET_ARN }),
-        );
-        geminiApiKey = geminiSecret.SecretString;
-      } catch (err) {
-        console.warn(
-          "[generateSegments] Could not get Gemini API key, fallback classification disabled",
-        );
-      }
-    }
 
     // Jockey v3 self-directed: resolve the Agents API key and per-asset
     // Agents context (cached asset/store ids, or a presigned URL for the
@@ -481,7 +464,6 @@ async function executeGenerationJob(
           transcriptS3Uri: asset.transcriptionUrl,
           videoDuration: payloadVideoDuration || asset.duration || 0,
           maxAsyncWaitMs,
-          geminiApiKey,
           title: videoTitle,
           jockeyV3,
           jockeyEnabled: jockeyRequested,
