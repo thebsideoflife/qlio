@@ -39,16 +39,15 @@ workflows use exists only in GitHub.
 | `Deploy backend` | push to `main` on `backend/**`, `infrastructure/**`, `deploy.sh`, `build-ffmpeg-layer.sh`; or Run workflow | `./deploy.sh` |
 | `Deploy Remotion site` | push to `main` on `zeevee/src/remotion/**` and the caption components; or Run workflow | `cd zeevee && ./deploy-remotion-site.sh` |
 
-**Debounce.** Each workflow uses `concurrency: deploy-<name>-<ref>` with
-`cancel-in-progress: true` and starts with a `debounce` job that sleeps 120 s,
+**Debounce.** Each workflow uses `concurrency: deploy-<name>-<ref>` and starts with a `debounce` job that sleeps 120 s,
 then checks `git ls-remote origin refs/heads/main`. If `main` has moved on, the
 deploy job is skipped and the newer commit's run deploys instead. Manual runs
 skip the wait.
 
-One consequence: a push that lands after the sleep window cancels a deploy
-that is already running. For the backend that can interrupt `tofu apply`;
-re-run the workflow or `./deploy.sh` and tofu reconciles. The FFmpeg image and
-layer caches in the workflow are unaffected.
+The Remotion site upload is stateless and uses `cancel-in-progress: true`, so
+a push after the sleep window cancels a running upload. The backend runs
+`tofu apply` and uses `cancel-in-progress: false`: a newer push queues behind
+the running apply rather than killing it mid-way.
 
 There is no test workflow in this repo, so there is nothing to run on demand;
 `npm test` in `backend/` and `zeevee/` are the local checks.

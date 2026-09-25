@@ -16,7 +16,10 @@ on:
 
 concurrency:
   group: deploy-backend-${{ github.ref }}
-  cancel-in-progress: true
+  # false: this run applies state (tofu / host apply). Cancelling it mid-way could
+  # leave half-applied infrastructure and a stuck lock, so a newer push queues
+  # behind it instead; the debounce job still collapses rapid merges.
+  cancel-in-progress: false
 
 env:
   AWS_REGION: us-west-2
@@ -26,8 +29,7 @@ jobs:
   debounce:
     # Coalesce a burst of pushes to main. Wait two minutes, then continue only
     # if this commit is still the tip of main; otherwise a newer push has its
-    # own run (which also cancels this one via `concurrency`), and that run
-    # deploys. Manual runs never wait.
+    # own run (queued behind this one), and that run deploys. Manual runs never wait.
     name: Debounce
     runs-on: ubuntu-latest
     outputs:
