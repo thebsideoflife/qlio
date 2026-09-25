@@ -1,6 +1,6 @@
 /**
- * Transcribe an asset with SporeLabs Whisper (large-v3-turbo), one pass over the
- * whole episode — the same run as the reference mlx_whisper pipeline.
+ * Transcribe an asset with SporeLabs Whisper (full large-v3), with targeted
+ * recovery passes over audible gaps on the same model.
  *
  *   hop 0   download the source, extract 16 kHz mono PCM (sample 0 = first presented
  *           audio sample), stage it in S3, submit one SporeLabs job, record the job.
@@ -83,8 +83,8 @@ const FFPROBE_PATH = process.env.FFPROBE_PATH || "/opt/bin/ffprobe";
 const POLL_INTERVAL_MS = 10_000;
 /** Time kept back for fetching the result and committing the transcript. */
 const FINISH_RESERVE_MS = 90_000;
-/** SporeLabs fails a job after 70 minutes; 8 hops of ~13 minutes outlast that. */
-const MAX_SPORELABS_HOPS = 8;
+/** SporeLabs allows two hours for a long full-model job; 12 hops cover that. */
+const MAX_SPORELABS_HOPS = 12;
 /** The presigned WAV is fetched once, right after the GPU picks the job up. */
 const AUDIO_URL_TTL_SECONDS = 2 * 60 * 60;
 

@@ -1,7 +1,8 @@
 /**
  * SporeLabs transcription client (`POST/GET {base}/audio/transcribe`).
  *
- * One Whisper large-v3-turbo pass over the whole file on a SporeLabs GPU, with the
+ * Full Whisper large-v3 over the whole file on a SporeLabs GPU, with targeted
+ * passes by that same model over audible gaps to recover missed words. Uses the
  * options of the reference mlx_whisper run (Scott's local pipeline):
  *   --word-timestamps True --language en --condition-on-previous-text False
  *   --hallucination-silence-threshold 2 --compression-ratio-threshold 2.0
@@ -20,9 +21,9 @@ import {
   type ReframeClientOptions,
 } from "./sporelabs-reframe";
 
-export const TRANSCRIBE_MODEL = "large-v3-turbo" as const;
+export const TRANSCRIBE_MODEL = "large-v3" as const;
 /** What we record in original.json's `model` field. */
-export const TRANSCRIBE_MODEL_ID = "openai/whisper-large-v3-turbo" as const;
+export const TRANSCRIBE_MODEL_ID = "openai/whisper-large-v3" as const;
 
 export const REFERENCE_WHISPER_OPTIONS = {
   language: "en",
