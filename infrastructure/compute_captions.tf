@@ -21,14 +21,16 @@ resource "aws_lambda_function" "transcribe_asset" {
     size = 10240
   }
 
+  # Whisper runs on SporeLabs (POST /v1/audio/transcribe); this Lambda extracts the
+  # audio, submits one job for the whole file and polls it, continuing in a fresh
+  # invocation when a job outlives this one.
   environment {
-    variables = {
-      TABLE_NAME            = aws_dynamodb_table.assets.name
-      BUCKET_NAME           = aws_s3_bucket.media.id
-      OPENROUTER_SECRET_ARN = data.aws_secretsmanager_secret.openrouter_api_key.arn
-      FFMPEG_PATH           = "/opt/bin/ffmpeg"
-      FFPROBE_PATH          = "/opt/bin/ffprobe"
-    }
+    variables = merge(local.sporelabs_env, {
+      TABLE_NAME   = aws_dynamodb_table.assets.name
+      BUCKET_NAME  = aws_s3_bucket.media.id
+      FFMPEG_PATH  = "/opt/bin/ffmpeg"
+      FFPROBE_PATH = "/opt/bin/ffprobe"
+    })
   }
 }
 

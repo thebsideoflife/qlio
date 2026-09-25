@@ -77,6 +77,32 @@ export function whisperChunkKey(
   return `transcriptions/${assetId}/versions/${encodeURIComponent(transcriptionVersion)}/chunks/${index}.json`;
 }
 
+/** Raw SporeLabs job response for a run. Kept forever: cleanup never deletes it. */
+export const SPORELABS_RAW_RESPONSE_FILE = "sporelabs-transcription.json";
+
+export function sporelabsRawResponseKey(
+  assetId: string,
+  transcriptionVersion: string,
+): string {
+  return `transcriptions/${assetId}/versions/${encodeURIComponent(transcriptionVersion)}/${SPORELABS_RAW_RESPONSE_FILE}`;
+}
+
+/** In-flight SporeLabs job for a run, so a continuation polls instead of resubmitting. */
+export function sporelabsJobStateKey(
+  assetId: string,
+  transcriptionVersion: string,
+): string {
+  return `transcriptions/${assetId}/versions/${encodeURIComponent(transcriptionVersion)}/sporelabs-job.json`;
+}
+
+/** The 16 kHz WAV handed to SporeLabs. Outside transcriptions/ so it never mixes with transcripts. */
+export function transcriptionAudioKey(
+  assetId: string,
+  transcriptionVersion: string,
+): string {
+  return `transcription-audio/${assetId}/${encodeURIComponent(transcriptionVersion)}.wav`;
+}
+
 export function isLegacyTranscriptKey(
   assetId: string,
   transcriptionUrl: string | null | undefined,
@@ -128,6 +154,7 @@ export function selectSupersededTranscriptKeys(params: {
   const legacy = `transcriptions/${params.assetId}.json`;
   return [...new Set(params.listedKeys)]
     .filter((key) => (key === legacy || key.startsWith(prefix)) && !keep.has(key))
+    .filter((key) => !key.endsWith(`/${SPORELABS_RAW_RESPONSE_FILE}`))
     .sort();
 }
 

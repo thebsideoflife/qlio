@@ -170,7 +170,8 @@ type ErrorEnvelope = {
   error?: { message?: string; type?: string; code?: string };
 };
 
-async function requestJson<T>(
+/** Shared by every SporeLabs job client (reframe, transcribe). */
+export async function requestJson<T>(
   method: "GET" | "POST",
   path: string,
   body: unknown,

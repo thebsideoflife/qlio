@@ -61,6 +61,21 @@ resource "aws_s3_bucket_lifecycle_configuration" "media" {
     }
   }
 
+  # 16 kHz WAV staged for a SporeLabs transcription job. The transcribe Lambda deletes
+  # it once the transcript is committed; this catches runs that failed before that.
+  rule {
+    id     = "cleanup-transcription-audio"
+    status = "Enabled"
+
+    filter {
+      prefix = "transcription-audio/"
+    }
+
+    expiration {
+      days = 2
+    }
+  }
+
   # Chunk files are only needed during indexing - delete after 7 days
   rule {
     id     = "cleanup-chunks"
