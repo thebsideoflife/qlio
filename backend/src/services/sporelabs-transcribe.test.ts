@@ -97,7 +97,7 @@ async function main() {
     assert(res.id === "tr_1", "submit returns job id");
     assert(calls[0].url === "https://sporelabs.test/v1/audio/transcribe", "POST {base}/audio/transcribe");
     const body = JSON.parse(String(calls[0].init.body));
-    assert(body.model === "large-v3-turbo", "asks for large-v3-turbo");
+    assert(body.model === "large-v3", "asks for full large-v3");
     assert(body.audio_url === PRESIGNED, "audio_url passes through");
     assert(body.duration_seconds === 2543.85, "duration hint for the wallet preflight");
     assert(body.options.language === "en", "language en");
