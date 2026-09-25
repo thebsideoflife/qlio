@@ -8,6 +8,8 @@ export interface CaptionLine {
   id: string;
   startTime: number;
   endTime: number;
+  /** When the last word ended; `endTime` may extend past it by the hold. */
+  speechEndTime?: number;
   text: string;
   /** Present on Whisper originals. Translations are line text only. */
   words?: CaptionWord[];

@@ -1,5 +1,6 @@
 import type { CaptionLine, CaptionStyle } from "./types";
 import { resolveCaptionContent } from "./captionContent";
+import { captionWordText, hasCaptionLineBreak } from "./captionGrouping";
 
 interface CaptionTextProps {
   caption: CaptionLine;
@@ -51,6 +52,7 @@ export function CaptionText({
           textShadow: "0 1px 2px rgba(0,0,0,0.8)",
           display: "block",
           textAlign: "center",
+          whiteSpace: "pre-line",
         }}
       >
         {displayText ? (
@@ -66,8 +68,12 @@ export function CaptionText({
                     : style.color,
               }}
             >
-              {word.value}
-              {index < visibleWords.length - 1 ? " " : ""}
+              {captionWordText(word.value)}
+              {index < visibleWords.length - 1
+                ? hasCaptionLineBreak(word.value)
+                  ? "\n"
+                  : " "
+                : ""}
             </span>
           ))
         )}
