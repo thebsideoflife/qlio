@@ -83,8 +83,8 @@ const FFPROBE_PATH = process.env.FFPROBE_PATH || "/opt/bin/ffprobe";
 const POLL_INTERVAL_MS = 10_000;
 /** Time kept back for fetching the result and committing the transcript. */
 const FINISH_RESERVE_MS = 90_000;
-/** SporeLabs allows two hours for a long full-model job; 12 hops cover that. */
-const MAX_SPORELABS_HOPS = 12;
+/** SporeLabs allows three hours for a long full-model job; 16 hops cover that. */
+const MAX_SPORELABS_HOPS = 16;
 /** The presigned WAV is fetched once, right after the GPU picks the job up. */
 const AUDIO_URL_TTL_SECONDS = 2 * 60 * 60;
 
