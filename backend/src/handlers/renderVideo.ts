@@ -28,7 +28,7 @@ const RENDER_JOBS_TABLE = process.env.RENDER_JOBS_TABLE!;
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
 const STITCH_FUNCTION_NAME = process.env.STITCH_FUNCTION_NAME!;
-const MAX_SEGMENTS = 100;
+const MAX_SEGMENTS = 60;
 
 // Types
 type AspectRatio = "9:16" | "1:1" | "16:9";
@@ -208,7 +208,9 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   );
 
   // Render load is bounded by total duration below; the count cap only guards
-  // against runaway requests (each segment adds one Remotion orchestrator).
+  // against runaway requests. Each segment adds ~2 Remotion Lambdas (orchestrator
+  // + chunk rounding); at the duration cap 60 keeps a render under ~850 of the
+  // account's 1,000 concurrent Lambdas.
   if (segments.length > MAX_SEGMENTS) {
     return {
       statusCode: 400,

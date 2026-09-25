@@ -16,6 +16,7 @@ import {
   presignRenderDownload,
 } from "../utils/renderDownloads";
 import { isSameRenderArtifact } from "../utils/renderArtifactCache";
+import { mapWithConcurrency } from "../utils/concurrency";
 import { getRenderProgress } from "@remotion/lambda/client";
 import type { AwsRegion } from "@remotion/lambda";
 
@@ -27,6 +28,7 @@ const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const RENDERS_BUCKET = process.env.RENDERS_BUCKET;
 const REMOTION_FUNCTION_NAME = process.env.REMOTION_FUNCTION_NAME;
 const AWS_REGION_NAME = process.env.AWS_REGION_NAME;
+const PROGRESS_CHECK_CONCURRENCY = 10;
 
 type RenderLocation = { bucket: string; key: string };
 
@@ -350,74 +352,78 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   let needsUpdate = false;
 
   if (job.status === "rendering" && REMOTION_FUNCTION_NAME && AWS_REGION_NAME) {
-    for (let i = 0; i < segmentRenders.length; i++) {
-      const segment = segmentRenders[i];
-      const download: SegmentDownload = {
-        segmentId: segment.segmentId,
-        title: segment.title,
-        status: segment.status,
-        contentHash: renderContentHash(segment.segmentId),
-      };
+    // Each getRenderProgress call invokes the Remotion Lambda. Checking them
+    // one by one pushes large exports past API Gateway's 29s limit.
+    const downloads = await mapWithConcurrency(
+      segmentRenders,
+      PROGRESS_CHECK_CONCURRENCY,
+      async (segment, i) => {
+        const download: SegmentDownload = {
+          segmentId: segment.segmentId,
+          title: segment.title,
+          status: segment.status,
+          contentHash: renderContentHash(segment.segmentId),
+        };
 
-      // If already completed/failed, generate URL if needed
-      if (segment.status === "completed") {
-        completedCount++;
-        download.downloadUrl = await generatePresignedUrl(segment);
-        segmentDownloads.push(download);
-        continue;
-      }
-
-      if (segment.status === "failed") {
-        failedCount++;
-        segmentDownloads.push(download);
-        continue;
-      }
-
-      // Check progress from Remotion
-      try {
-        const renderProgress = await getRenderProgress({
-          bucketName: segment.bucketName,
-          renderId: segment.renderId,
-          functionName: REMOTION_FUNCTION_NAME,
-          region: AWS_REGION_NAME as AwsRegion,
-        });
-
-        if (renderProgress.fatalErrorEncountered) {
-          const rawError =
-            renderProgress.errors?.[0]?.message || "Render failed";
-
-          segmentRenders[i].status = "failed";
-          download.status = "failed";
-          download.error = rawError;
-          failedCount++;
-          needsUpdate = true;
-
-          console.error(`Segment ${segment.segmentId} failed:`, rawError);
-        } else if (renderProgress.done) {
-          segmentRenders[i].status = "completed";
-          download.status = "completed";
+        // If already completed/failed, generate URL if needed
+        if (segment.status === "completed") {
           completedCount++;
-          needsUpdate = true;
-
-          // Generate presigned URL using stored bucket/key
           download.downloadUrl = await generatePresignedUrl(segment);
-
-          console.log(
-            `Segment ${segment.segmentId} completed! Key: ${segment.outputKey}`,
-          );
-        } else {
-          download.progress = Math.round(renderProgress.overallProgress * 100);
+          return download;
         }
-      } catch (error) {
-        console.error(
-          `Error checking progress for segment ${segment.segmentId}:`,
-          error,
-        );
-        download.progress = 0;
-      }
 
-      segmentDownloads.push(download);
-    }
+        if (segment.status === "failed") {
+          failedCount++;
+          return download;
+        }
+
+        // Check progress from Remotion
+        try {
+          const renderProgress = await getRenderProgress({
+            bucketName: segment.bucketName,
+            renderId: segment.renderId,
+            functionName: REMOTION_FUNCTION_NAME,
+            region: AWS_REGION_NAME as AwsRegion,
+          });
+
+          if (renderProgress.fatalErrorEncountered) {
+            const rawError =
+              renderProgress.errors?.[0]?.message || "Render failed";
+
+            segmentRenders[i].status = "failed";
+            download.status = "failed";
+            download.error = rawError;
+            failedCount++;
+            needsUpdate = true;
+
+            console.error(`Segment ${segment.segmentId} failed:`, rawError);
+          } else if (renderProgress.done) {
+            segmentRenders[i].status = "completed";
+            download.status = "completed";
+            completedCount++;
+            needsUpdate = true;
+
+            // Generate presigned URL using stored bucket/key
+            download.downloadUrl = await generatePresignedUrl(segment);
+
+            console.log(
+              `Segment ${segment.segmentId} completed! Key: ${segment.outputKey}`,
+            );
+          } else {
+            download.progress = Math.round(renderProgress.overallProgress * 100);
+          }
+        } catch (error) {
+          console.error(
+            `Error checking progress for segment ${segment.segmentId}:`,
+            error,
+          );
+          download.progress = 0;
+        }
+
+        return download;
+      },
+    );
+    segmentDownloads.push(...downloads);
 
     // Update job if any segments changed status
     if (needsUpdate) {
