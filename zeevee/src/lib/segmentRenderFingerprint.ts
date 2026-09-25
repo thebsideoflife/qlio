@@ -8,7 +8,16 @@ import type { Segment } from "@/store/editorSlice";
 
 // Keep in lockstep with backend/src/utils/segmentRenderFingerprint.ts. Bump
 // when a Remotion bundle change alters output without changing project inputs.
-export const RENDER_PIPELINE_VERSION = 6;
+export const RENDER_PIPELINE_VERSION = 7;
+
+function sortedWordEdits(
+  wordEdits: Record<string, string> | null | undefined,
+): Array<[string, string]> {
+  if (!wordEdits) return [];
+  return Object.keys(wordEdits)
+    .sort()
+    .map((key) => [key, wordEdits[key]] as [string, string]);
+}
 
 function normalizeFraming(framing: SegmentFraming | undefined) {
   if (!framing) return null;
@@ -41,6 +50,11 @@ export function computeSegmentRenderFingerprint(
       activeLanguage: captionSettings.activeLanguage || "original",
       ...(captionSettings.enabled && transcriptionVersion
         ? { transcriptionVersion }
+        : {}),
+      // Word edits (text, deletions, manual line breaks) change the burn-in.
+      // Sorted so key order never changes the hash.
+      ...(captionSettings.enabled
+        ? { wordEdits: sortedWordEdits(captionSettings.wordEdits) }
         : {}),
     },
     aspectRatio: globalFraming.aspectRatio,

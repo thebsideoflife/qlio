@@ -15,7 +15,11 @@ import {
   DEFAULT_GLOBAL_FRAMING,
   getEffectiveKeyframes,
 } from "@/remotion/types";
-import { groupWordsIntoCaptions } from "@/remotion/utils";
+import {
+  captionGroupingOptions,
+  groupWordsIntoCaptions,
+  holdCaptions,
+} from "@/remotion/captionGrouping";
 import { isOriginalCaptionLanguage } from "@/lib/transcript";
 import { reanchorKeyframesToTimeline } from "@/lib/timelineKeyframes";
 import {
@@ -155,6 +159,31 @@ const initialState: EditorState = {
 
 // Helper to mark state as edited
 // Note: Does NOT clear lastSegmentRenders - user decides when to re-render
+/** Original-language captions are grouped from the transcript words; translations are line text. */
+const showingOriginalCaptions = (state: EditorState): boolean => {
+  const active = state.captionSettings.activeLanguage;
+  return (
+    isOriginalCaptionLanguage(active, state.originalLanguage) ||
+    !active ||
+    !state.translations[active]
+  );
+};
+
+/**
+ * Regroup the original-language captions so the words on screen fit the
+ * caption box for the current style and output aspect (see captionGrouping).
+ */
+const regroupOriginalCaptions = (state: EditorState) => {
+  if (!showingOriginalCaptions(state)) return;
+  state.captions = groupWordsIntoCaptions(
+    state.transcriptWords,
+    captionGroupingOptions(
+      state.captionSettings.style,
+      state.globalFraming.aspectRatio,
+    ),
+  );
+};
+
 const markEdited = (state: EditorState) => {
   state.localVersion++;
 };
@@ -677,14 +706,7 @@ export const editorSlice = createSlice({
         return word;
       });
       state.transcriptWords = transcriptWithEdits;
-      const active = state.captionSettings.activeLanguage;
-      const showingOriginal =
-        isOriginalCaptionLanguage(active, state.originalLanguage) ||
-        !active ||
-        !state.translations[active];
-      if (showingOriginal) {
-        state.captions = groupWordsIntoCaptions(transcriptWithEdits);
-      }
+      regroupOriginalCaptions(state);
     },
     setCaptionLanguageMeta: (
       state,
@@ -709,7 +731,7 @@ export const editorSlice = createSlice({
       state.translations = action.payload;
     },
     setCaptionLines: (state, action: PayloadAction<CaptionLine[]>) => {
-      state.captions = action.payload;
+      state.captions = holdCaptions(action.payload);
     },
     setActiveCaptionLanguage: (
       state,
@@ -717,9 +739,9 @@ export const editorSlice = createSlice({
     ) => {
       state.captionSettings.activeLanguage = action.payload.language;
       if (action.payload.lines) {
-        state.captions = action.payload.lines;
+        state.captions = holdCaptions(action.payload.lines);
       } else {
-        state.captions = groupWordsIntoCaptions(state.transcriptWords);
+        regroupOriginalCaptions(state);
       }
       markEdited(state);
     },
@@ -745,7 +767,7 @@ export const editorSlice = createSlice({
       state.translations[action.payload.language] =
         action.payload.translationUrl;
       state.captionSettings.activeLanguage = action.payload.language;
-      state.captions = action.payload.lines;
+      state.captions = holdCaptions(action.payload.lines);
       markEdited(state);
     },
     restoreActiveCaptionLanguage: (
@@ -753,12 +775,15 @@ export const editorSlice = createSlice({
       action: PayloadAction<{ language: string; lines?: CaptionLine[] }>,
     ) => {
       state.captionSettings.activeLanguage = action.payload.language;
-      state.captions = action.payload.lines
-        ? action.payload.lines
-        : groupWordsIntoCaptions(state.transcriptWords);
+      if (action.payload.lines) {
+        state.captions = holdCaptions(action.payload.lines);
+      } else {
+        regroupOriginalCaptions(state);
+      }
     },
     setCaptionSettings: (state, action: PayloadAction<CaptionSettings>) => {
       state.captionSettings = action.payload;
+      regroupOriginalCaptions(state);
       // Note: setCaptionSettings from API load should NOT set dirty
     },
     updateCaptionStyle: (
@@ -769,6 +794,8 @@ export const editorSlice = createSlice({
         ...state.captionSettings.style,
         ...action.payload,
       };
+      // Font size and width change how many words fit a caption.
+      regroupOriginalCaptions(state);
       markEdited(state);
     },
     setCaptionsEnabled: (state, action: PayloadAction<boolean>) => {
@@ -804,25 +831,20 @@ export const editorSlice = createSlice({
         state.captionSettings.wordEdits = {};
       }
       state.captionSettings.wordEdits[key] = newValue;
-
-      const active = state.captionSettings.activeLanguage;
-      const showingOriginal =
-        isOriginalCaptionLanguage(active, state.originalLanguage) ||
-        !active ||
-        !state.translations[active];
-      if (showingOriginal) {
-        state.captions = groupWordsIntoCaptions(state.transcriptWords);
-      }
+      regroupOriginalCaptions(state);
       markEdited(state);
     },
 
     // Framing actions
     setGlobalFraming: (state, action: PayloadAction<GlobalFramingSettings>) => {
       state.globalFraming = action.payload;
+      regroupOriginalCaptions(state);
       // Note: setGlobalFraming from API load should NOT set dirty
     },
     setGlobalAspectRatio: (state, action: PayloadAction<AspectRatio>) => {
       state.globalFraming.aspectRatio = action.payload;
+      // The output frame changes how many words fit a caption.
+      regroupOriginalCaptions(state);
       // Default to crop mode for mobile aspect ratios (9:16)
       const isMobile = action.payload === "9:16";
       // Apply to all segments
