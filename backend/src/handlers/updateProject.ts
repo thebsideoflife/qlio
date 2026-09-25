@@ -6,6 +6,7 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { checkAuth } from "../utils/auth";
+import { captionSettingsEqual } from "../utils/caption-settings";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -78,10 +79,38 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       exprValues[":s"] = segments;
     }
 
+    const wantsMetadataMerge = Boolean(metadata && typeof metadata === "object");
+
+    // Read the stored fields we need to compare/merge against, in one round trip.
+    let existingItem: Record<string, any> | undefined;
+    if (captionSettings || wantsMetadataMerge) {
+      const existing = await docClient.send(
+        new GetCommand({
+          TableName: PROJECTS_TABLE,
+          Key: { projectId },
+          ProjectionExpression: "#meta, #captionSettings",
+          ExpressionAttributeNames: {
+            "#meta": "metadata",
+            "#captionSettings": "captionSettings",
+          },
+        }),
+      );
+      existingItem = existing.Item;
+    }
+
     if (captionSettings) {
       updateParts.push("#captionSettings = :cs");
       exprNames["#captionSettings"] = "captionSettings";
       exprValues[":cs"] = captionSettings;
+
+      // The editor autosaves the whole caption-settings object on every dirty
+      // tick, so only stamp captionSettingsUpdatedAt when the settings really
+      // changed. createProject uses this stamp to find the sibling project
+      // whose captions were most recently edited by a user.
+      if (!captionSettingsEqual(existingItem?.captionSettings, captionSettings)) {
+        updateParts.push("#captionSettingsUpdatedAt = :u");
+        exprNames["#captionSettingsUpdatedAt"] = "captionSettingsUpdatedAt";
+      }
     }
 
     if (globalFraming) {
@@ -90,17 +119,9 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       exprValues[":gf"] = globalFraming;
     }
 
-    if (metadata && typeof metadata === "object") {
+    if (wantsMetadataMerge) {
       // Merge generation inputs into existing metadata; preserve unrelated keys.
-      const existing = await docClient.send(
-        new GetCommand({
-          TableName: PROJECTS_TABLE,
-          Key: { projectId },
-          ProjectionExpression: "#meta",
-          ExpressionAttributeNames: { "#meta": "metadata" },
-        }),
-      );
-      const current = (existing.Item?.metadata ?? {}) as Record<string, unknown>;
+      const current = (existingItem?.metadata ?? {}) as Record<string, unknown>;
       const next: Record<string, unknown> = { ...current };
       for (const key of GENERATION_INPUT_KEYS) {
         if (key in metadata) next[key] = metadata[key];

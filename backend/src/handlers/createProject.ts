@@ -4,10 +4,18 @@ import {
   DynamoDBDocumentClient,
   PutCommand,
   GetCommand,
+  QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "crypto";
 import { checkAuth } from "../utils/auth";
 import { defaultProjectTitle } from "../utils/projectTitle";
+import {
+  DEFAULT_CAPTION_SETTINGS,
+  mergeCaptionSettings,
+  pickCaptionSettingsSource,
+  type CaptionSettings,
+  type ProjectCaptionFields,
+} from "../utils/caption-settings";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -25,6 +33,57 @@ interface Segment {
   sceneTags?: string[];
   keyDialogue?: string;
   characters?: string[];
+}
+
+/**
+ * Look up the asset's existing projects and return the caption settings a new
+ * project should start from: the built-in defaults with the most recently
+ * caption-edited sibling's settings layered on top. Returns null when no
+ * sibling has caption settings, or on any lookup failure (logged) so that
+ * project creation never fails because of this.
+ */
+async function inheritCaptionSettings(
+  assetId: string,
+): Promise<{ captionSettings: CaptionSettings; captionSettingsUpdatedAt: string } | null> {
+  try {
+    const siblings: ProjectCaptionFields[] = [];
+    let lastKey: Record<string, any> | undefined;
+    do {
+      const page = await docClient.send(
+        new QueryCommand({
+          TableName: PROJECTS_TABLE,
+          IndexName: "AssetIdIndex",
+          KeyConditionExpression: "assetId = :assetId",
+          ExpressionAttributeValues: { ":assetId": assetId },
+          ProjectionExpression:
+            "projectId, captionSettings, captionSettingsUpdatedAt, updatedAt, createdAt",
+          ExclusiveStartKey: lastKey,
+        }),
+      );
+      siblings.push(...((page.Items || []) as ProjectCaptionFields[]));
+      lastKey = page.LastEvaluatedKey;
+    } while (lastKey);
+
+    const source = pickCaptionSettingsSource(siblings);
+    if (!source) return null;
+
+    console.log(
+      `Inheriting caption settings for asset ${assetId} from project ${source.projectId} (captionSettingsUpdatedAt=${source.captionSettingsUpdatedAt})`,
+    );
+    return {
+      captionSettings: mergeCaptionSettings(
+        DEFAULT_CAPTION_SETTINGS,
+        source.captionSettings,
+      ),
+      captionSettingsUpdatedAt: source.captionSettingsUpdatedAt,
+    };
+  } catch (error) {
+    console.error(
+      `Failed to look up sibling caption settings for asset ${assetId}; creating project with no caption settings:`,
+      error,
+    );
+    return null;
+  }
 }
 
 export const handler: APIGatewayProxyHandler = async (event) => {
@@ -94,6 +153,11 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
     const projectTitle = defaultProjectTitle();
 
+    // 4. Inherit caption settings from the asset's most recently
+    // caption-edited project, if there is one. Only fills the starting point;
+    // when no sibling has caption settings the item is written exactly as before.
+    const inherited = await inheritCaptionSettings(assetId);
+
     // 5. Create Project with Segments
     await docClient.send(
       new PutCommand({
@@ -107,6 +171,12 @@ export const handler: APIGatewayProxyHandler = async (event) => {
           metadata: metadata || {},
           title: projectTitle,
           segments: generatedSegments,
+          ...(inherited
+            ? {
+                captionSettings: inherited.captionSettings,
+                captionSettingsUpdatedAt: inherited.captionSettingsUpdatedAt,
+              }
+            : {}),
         },
       })
     );

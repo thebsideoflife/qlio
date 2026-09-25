@@ -164,6 +164,7 @@ scripts/
 !backend/src/scripts/
 backend/src/scripts/*
 !backend/src/scripts/test-transcript-format.ts
+!backend/src/scripts/test-caption-settings.ts
 
 CLAUDE.md
 backfill-user-ids.sh
