@@ -81,7 +81,7 @@ export function computeSegmentRenderFingerprint(
       ...(captionSettings.enabled && transcriptionVersion
         ? { transcriptionVersion }
         : {}),
-      // Word edits (text, deletions, manual line breaks) change the burn-in.
+      // Word edits (text and deletions) change the burn-in.
       // Sorted so key order never changes the hash.
       ...(captionSettings.enabled
         ? { wordEdits: sortedWordEdits(captionSettings.wordEdits) }

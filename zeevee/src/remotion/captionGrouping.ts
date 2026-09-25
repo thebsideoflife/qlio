@@ -7,21 +7,18 @@
  * CaptionLine types on either side.
  *
  * Rules, in order:
- *   1. A word whose value ends with CAPTION_LINE_BREAK wraps the on-screen line
- *      after it (a manual line break made in the transcript editor).
- *   2. A caption never needs more than `maxLines` on-screen lines of
- *      `maxCharsPerLine` characters, so the words that appear always fit the
- *      caption box for the output frame and font size.
- *   3. Max `maxWords` words, max `maxDuration` seconds, or a pause longer than
- *      `minPauseBetweenLines` starts a new caption (the original rules).
- *   4. A caption stays on screen after its last word ends for `holdSeconds`,
+ *   1. A pause longer than `minPauseBetweenLines` is a caption boundary.
+ *   2. Within each continuous phrase, choose the lowest-cost set of captions:
+ *      prefer sentence and clause endings, balanced groups, and no lone word.
+ *      Each group is limited by `maxWords`, `maxDuration`, and the estimated
+ *      `maxLines` / `maxCharsPerLine` caption box fit.
+ *   3. A caption stays on screen after its last word ends for `holdSeconds`,
  *      or until the next caption's first word starts, whichever comes first.
  *      `speechEndTime` records when the last word actually ended.
  *
  * Deleted words (empty text) are dropped and never count toward any limit.
  */
 
-export const CAPTION_LINE_BREAK = "\n";
 export const CAPTION_HOLD_SECONDS = 5;
 export const CAPTION_MAX_LINES = 2;
 export const CAPTION_MAX_WORDS = 8;
@@ -59,25 +56,14 @@ export interface CaptionGroupingOptions {
   holdSeconds?: number;
 }
 
-/** The word as shown on screen: without the line-break marker, trimmed. */
+/** The word as shown on screen; discard legacy manual line-break markers. */
 export function captionWordText(value: string | null | undefined): string {
   return String(value ?? "").replace(/\n+$/, "").trim();
-}
-
-export function hasCaptionLineBreak(value: string | null | undefined): boolean {
-  return typeof value === "string" && value.endsWith(CAPTION_LINE_BREAK);
 }
 
 /** A word edit whose visible text is empty is a deletion. */
 export function isDeletedCaptionWord(value: string | null | undefined): boolean {
   return captionWordText(value) === "";
-}
-
-/** Store a word's text with or without a trailing line break. */
-export function withCaptionLineBreak(value: string, lineBreak: boolean): string {
-  const text = captionWordText(value);
-  if (text === "") return "";
-  return lineBreak ? `${text}${CAPTION_LINE_BREAK}` : text;
 }
 
 /** Output frame for a project aspect ratio (matches the Remotion compositions). */
@@ -127,35 +113,80 @@ export function captionLineCount(
 ): number {
   let lines = 0;
   let lineChars = 0;
-  let pendingBreak = false;
   for (const word of words) {
     const text = captionWordText(word.value);
     if (text === "") continue;
     if (lines === 0) {
       lines = 1;
       lineChars = text.length;
-    } else if (pendingBreak || lineChars + 1 + text.length > maxCharsPerLine) {
+    } else if (lineChars + 1 + text.length > maxCharsPerLine) {
       lines += 1;
       lineChars = text.length;
     } else {
       lineChars += 1 + text.length;
     }
-    pendingBreak = hasCaptionLineBreak(word.value);
   }
   return lines;
 }
 
-/** Caption text with manual breaks as newlines, deleted words dropped. */
+/** Caption text with deleted words dropped. */
 export function captionTextFromWords(words: readonly GroupableWord[]): string {
-  let text = "";
-  let separator = "";
-  for (const word of words) {
-    const value = captionWordText(word.value);
-    if (value === "") continue;
-    text += separator + value;
-    separator = hasCaptionLineBreak(word.value) ? CAPTION_LINE_BREAK : " ";
+  return words.map((word) => captionWordText(word.value)).filter(Boolean).join(" ");
+}
+
+/** Sentence punctuation has priority; commas and similar marks are softer cues. */
+function boundaryScore(value: string): number {
+  const text = captionWordText(value);
+  if (/[.!?]["'’”)]*$/.test(text)) return -10;
+  if (/[,;:]["'’”)]*$/.test(text)) return -4;
+  return 0;
+}
+
+/** Choose phrase boundaries globally so a full caption does not strand one word. */
+function groupPhrase<W extends GroupableWord>(
+  words: readonly W[],
+  maxWords: number,
+  maxDuration: number,
+  maxCharsPerLine: number,
+  maxLines: number,
+): W[][] {
+  const best = Array<number>(words.length + 1).fill(Number.POSITIVE_INFINITY);
+  const next = Array<number>(words.length).fill(words.length);
+  best[words.length] = 0;
+
+  for (let start = words.length - 1; start >= 0; start--) {
+    const limit = Math.min(words.length, start + Math.max(1, maxWords));
+    for (let end = start + 1; end <= limit; end++) {
+      const group = words.slice(start, end);
+      if (end > start + 1 && (
+        group[group.length - 1].end - group[0].start > maxDuration ||
+        captionLineCount(group, maxCharsPerLine) > maxLines
+      )) break;
+
+      const size = end - start;
+      // Make a singleton very expensive, even at a sentence boundary.
+      const orphanCost = size === 1 && words.length > 1 ? 40 : size === 2 ? 5 : 0;
+      const shortCost = size < 4 ? 4 - size : 0;
+      const balanceCost = Math.pow(Math.max(0, Math.min(maxWords, 8) - size), 2) / 4;
+      const endsPhrase = end === words.length;
+      const punctuation = endsPhrase ? 0 : boundaryScore(words[end - 1].value);
+      const crossesSentence = group.slice(0, -1).some(
+        (word) => boundaryScore(word.value) === -10,
+      ) ? 20 : 0;
+      const cost = 12 + orphanCost + shortCost + balanceCost + punctuation + crossesSentence + best[end];
+      // Stable tie-break: prefer the earlier boundary.
+      if (cost < best[start]) {
+        best[start] = cost;
+        next[start] = end;
+      }
+    }
   }
-  return text;
+
+  const groups: W[][] = [];
+  for (let start = 0; start < words.length; start = next[start]) {
+    groups.push(words.slice(start, next[start]));
+  }
+  return groups;
 }
 
 /**
@@ -196,33 +227,28 @@ export function groupWordsIntoCaptions<W extends GroupableWord>(
   } = options;
 
   const captions: GroupedCaption<W>[] = [];
-  let current: W[] = [];
+  let phrase: W[] = [];
 
   const flush = () => {
-    if (current.length === 0) return;
-    const last = current[current.length - 1];
-    captions.push({
-      id: `caption-${captions.length}`,
-      startTime: current[0].start,
-      endTime: last.end,
-      speechEndTime: last.end,
-      text: captionTextFromWords(current),
-      words: [...current],
-    });
-    current = [];
+    for (const current of groupPhrase(phrase, maxWords, maxDuration, maxCharsPerLine, maxLines)) {
+      const last = current[current.length - 1];
+      captions.push({
+        id: `caption-${captions.length}`,
+        startTime: current[0].start,
+        endTime: last.end,
+        speechEndTime: last.end,
+        text: captionTextFromWords(current),
+        words: [...current],
+      });
+    }
+    phrase = [];
   };
 
   for (const word of words) {
     if (isDeletedCaptionWord(word.value)) continue;
-    const prev = current.length > 0 ? current[current.length - 1] : null;
-    const shouldBreak =
-      prev != null &&
-      (current.length >= maxWords ||
-        word.end - current[0].start > maxDuration ||
-        word.start - prev.end > minPauseBetweenLines ||
-        captionLineCount([...current, word], maxCharsPerLine) > maxLines);
-    if (shouldBreak) flush();
-    current.push(word);
+    const prev = phrase[phrase.length - 1];
+    if (prev && word.start - prev.end > minPauseBetweenLines) flush();
+    phrase.push(word);
   }
   flush();
 
