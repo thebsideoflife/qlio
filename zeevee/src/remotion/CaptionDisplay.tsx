@@ -7,6 +7,8 @@ interface CaptionDisplayProps {
   settings: CaptionSettings;
   currentTime: number;
   containerHeight: number;
+  /** Start of the segment being played; held captions from before it are hidden. */
+  segmentStart?: number;
   children?: React.ReactNode;
 }
 
@@ -19,12 +21,13 @@ export function CaptionDisplay({
   settings,
   currentTime,
   containerHeight,
+  segmentStart,
   children,
 }: CaptionDisplayProps) {
   if (!settings.enabled) return null;
 
   const { style } = settings;
-  const activeCaption = activeCaptionAt(captions, currentTime);
+  const activeCaption = activeCaptionAt(captions, currentTime, segmentStart);
   if (!activeCaption) return null;
 
   return (

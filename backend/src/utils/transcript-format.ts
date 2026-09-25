@@ -4,6 +4,12 @@
  *   - original: { language, words: CaptionWord[] }
  *   - translation: { language, sourceLanguage, lines: CaptionLine[] }
  */
+import {
+  groupWordsIntoCaptions as groupCaptions,
+  holdCaptions,
+  type CaptionGroupingOptions,
+} from "./caption-grouping";
+
 
 export type CaptionWord = {
   start: number;
@@ -15,6 +21,8 @@ export type CaptionLine = {
   id: string;
   startTime: number;
   endTime: number;
+  /** When the last word ended; `endTime` may extend past it by the hold. */
+  speechEndTime?: number;
   text: string;
   words: CaptionWord[];
 };
@@ -304,18 +312,29 @@ export function applyWordEditsToWords(
 export function captionsFromParsedTranscript(
   parsed: ParsedTranscriptFile,
   wordEdits?: Record<string, string> | null,
+  options: CaptionGroupingOptions = {},
 ): CaptionLine[] {
-  if (parsed.kind === "translation") return parsed.lines;
-  return groupWordsIntoCaptions(applyWordEditsToWords(parsed.words, wordEdits));
+  // Translation lines were grouped when translated; only the hold applies.
+  if (parsed.kind === "translation") return holdCaptions(parsed.lines);
+  return groupWordsIntoCaptions(
+    applyWordEditsToWords(parsed.words, wordEdits),
+    options,
+  );
 }
 
-/** Same overlap rule as the editor overlay: any line that is on screen in-range. */
+/**
+ * Same rule as the editor: a line is in range when its spoken words overlap it.
+ * The hold (`endTime` past `speechEndTime`) never pulls a line into a later
+ * segment, so a held caption does not carry over a cut.
+ */
 export function captionsOverlappingRange(
   captions: CaptionLine[],
   startTime: number,
   endTime: number,
 ): CaptionLine[] {
-  return captions.filter((c) => c.endTime > startTime && c.startTime < endTime);
+  return captions.filter(
+    (c) => (c.speechEndTime ?? c.endTime) > startTime && c.startTime < endTime,
+  );
 }
 
 export function shiftCaptionsBy(
@@ -326,6 +345,9 @@ export function shiftCaptionsBy(
     ...c,
     startTime: c.startTime + offset,
     endTime: c.endTime + offset,
+    ...(c.speechEndTime != null
+      ? { speechEndTime: c.speechEndTime + offset }
+      : {}),
     words: (c.words ?? []).map((w) => ({
       ...w,
       start: w.start + offset,
@@ -373,52 +395,12 @@ export function languageLabel(code: string): string {
 }
 
 /**
- * Same break rules as the editor (`groupWordsIntoCaptions`):
- * max 8 words, max 3s, or a pause > 0.3s.
+ * Same grouping as the editor: backend/src/utils/caption-grouping.ts is a
+ * byte-for-byte copy of zeevee/src/remotion/captionGrouping.ts.
  */
 export function groupWordsIntoCaptions(
   words: CaptionWord[],
-  options: {
-    maxWords?: number;
-    maxDuration?: number;
-    minPauseBetweenLines?: number;
-  } = {},
+  options: CaptionGroupingOptions = {},
 ): CaptionLine[] {
-  const { maxWords = 8, maxDuration = 3, minPauseBetweenLines = 0.3 } =
-    options;
-
-  if (words.length === 0) return [];
-
-  const captions: CaptionLine[] = [];
-  let currentWords: CaptionWord[] = [];
-  let lineStartTime = words[0].start;
-
-  const flush = () => {
-    if (currentWords.length === 0) return;
-    captions.push({
-      id: `caption-${captions.length}`,
-      startTime: lineStartTime,
-      endTime: currentWords[currentWords.length - 1].end,
-      text: currentWords.map((w) => w.value).join(" "),
-      words: [...currentWords],
-    });
-    currentWords = [];
-  };
-
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i];
-    const prevWord = i > 0 ? words[i - 1] : null;
-    const shouldBreak =
-      currentWords.length >= maxWords ||
-      (currentWords.length > 0 && word.end - lineStartTime > maxDuration) ||
-      (prevWord != null && word.start - prevWord.end > minPauseBetweenLines);
-
-    if (shouldBreak && currentWords.length > 0) {
-      flush();
-      lineStartTime = word.start;
-    }
-    currentWords.push(word);
-  }
-  flush();
-  return captions;
+  return groupCaptions(words, options);
 }

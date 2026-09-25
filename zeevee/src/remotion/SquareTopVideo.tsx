@@ -13,6 +13,8 @@ interface SquareTopVideoProps {
   captionSettings: CaptionSettings;
   currentTime: number;
   containerHeight: number;
+  /** Start of the segment being played (see CaptionDisplay). */
+  segmentStart?: number;
 }
 
 /**
@@ -35,6 +37,7 @@ export const SquareTopVideo: React.FC<SquareTopVideoProps> = ({
   captionSettings,
   currentTime,
   containerHeight,
+  segmentStart,
 }) => {
   const { fps } = useVideoConfig();
 
@@ -73,6 +76,7 @@ export const SquareTopVideo: React.FC<SquareTopVideoProps> = ({
         settings={captionSettings}
         currentTime={currentTime}
         containerHeight={containerHeight}
+        segmentStart={segmentStart}
       />
     </AbsoluteFill>
   );

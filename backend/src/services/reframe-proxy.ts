@@ -293,6 +293,51 @@ function runTool(
   });
 }
 
+export interface ProxyBounds {
+  /** Container duration in seconds; null when unknown. */
+  durationSec: number | null;
+  /** Container frame count (mp4 stts); null when unknown. */
+  frameCount: number | null;
+}
+
+/**
+ * Length of the proxy file SporeLabs will download, from its own container.
+ * Cheap (moov only, thanks to +faststart) and best-effort: it feeds the segment
+ * clamp, which is a safety net, so a failed probe warns and returns nulls
+ * instead of failing the job. `input` may be a presigned URL; never logged.
+ */
+export async function probeProxyBounds(input: string): Promise<ProxyBounds> {
+  try {
+    const { stdout } = await runTool(
+      FFPROBE_PATH,
+      [
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=nb_frames:format=duration",
+        "-of", "json",
+        input,
+      ],
+      60_000,
+      input,
+    );
+    const parsed = JSON.parse(stdout) as {
+      streams?: Array<{ nb_frames?: string }>;
+      format?: { duration?: string };
+    };
+    const nbFrames = Number(parsed.streams?.[0]?.nb_frames);
+    const duration = Number(parsed.format?.duration);
+    return {
+      durationSec: Number.isFinite(duration) && duration > 0 ? duration : null,
+      frameCount: Number.isInteger(nbFrames) && nbFrames > 0 ? nbFrames : null,
+    };
+  } catch (err) {
+    console.warn(
+      `[Proxy] Could not probe proxy length: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return { durationSec: null, frameCount: null };
+  }
+}
+
 async function countVideoPackets(filePath: string): Promise<number> {
   const { stdout } = await runTool(
     FFPROBE_PATH,
@@ -404,6 +449,15 @@ export interface ReframeProxy {
   fps: number;
   width: number;
   height: number;
+  /**
+   * Frames in the proxy file: the exact packet count when built here, the
+   * count recorded at build time on reuse, else the container's nb_frames.
+   * null when none is known. This, not the stored asset duration, bounds the
+   * segments sent to SporeLabs.
+   */
+  frameCount: number | null;
+  /** Container duration of the proxy in seconds; null when unknown. */
+  durationSec: number | null;
   reused: boolean;
 }
 
@@ -464,14 +518,23 @@ export async function ensureReframeProxy(
         await presignGet(s3, bucket, rawKey, SOURCE_URL_TTL_SEC),
       );
     }
-    console.log(`[Proxy] Reusing ${proxyKey} (fps ${info.fps}, ${info.width}x${info.height})`);
+    const url = await presignGet(s3, bucket, proxyKey, PROXY_URL_TTL_SEC);
+    const probed = await probeProxyBounds(url);
+    const metaFrames = Number(existing.Metadata?.frames);
+    const frameCount =
+      Number.isInteger(metaFrames) && metaFrames > 0 ? metaFrames : probed.frameCount;
+    console.log(
+      `[Proxy] Reusing ${proxyKey} (fps ${info.fps}, ${info.width}x${info.height}, ${frameCount ?? "?"} frames)`,
+    );
     return {
       key: proxyKey,
       etag: stripQuotes(existing.ETag),
-      url: await presignGet(s3, bucket, proxyKey, PROXY_URL_TTL_SEC),
+      url,
       fps: info.fps,
       width: info.width,
       height: info.height,
+      frameCount,
+      durationSec: probed.durationSec,
       reused: true,
     };
   }
@@ -551,6 +614,7 @@ export async function ensureReframeProxy(
     }
 
     const frames = await countVideoPackets(outPath);
+    const probed = await probeProxyBounds(outPath);
     if (info.frameCount != null && frames !== info.frameCount) {
       // Containers with edit lists can report a different count; flag, don't fail.
       console.warn(
@@ -589,6 +653,8 @@ export async function ensureReframeProxy(
       fps: info.fps,
       width: info.width,
       height: info.height,
+      frameCount: frames > 0 ? frames : probed.frameCount,
+      durationSec: probed.durationSec,
       reused: false,
     };
   } finally {

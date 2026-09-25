@@ -95,6 +95,7 @@ function SegmentVideo({
         captionSettings={captionSettings}
         currentTime={currentTime}
         containerHeight={height}
+        segmentStart={startTime}
       />
     );
   }
@@ -115,6 +116,7 @@ function SegmentVideo({
           settings={captionSettings}
           currentTime={currentTime}
           containerHeight={height}
+          segmentStart={startTime}
         />
       </AutoFramedVideo>
     );
@@ -133,6 +135,7 @@ function SegmentVideo({
         settings={captionSettings}
         currentTime={currentTime}
         containerHeight={height}
+        segmentStart={startTime}
       />
     </AbsoluteFill>
   );

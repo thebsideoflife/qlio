@@ -2,7 +2,7 @@
 
 // Bump whenever the Remotion bundle changes rendered pixels without changing
 // project inputs. This invalidates MP4s made by an older renderer.
-export const RENDER_PIPELINE_VERSION = 6;
+export const RENDER_PIPELINE_VERSION = 7;
 
 interface FramingKeyframe {
   time: number;
@@ -31,6 +31,15 @@ function getEffectiveKeyframes(framing: SegmentFraming): FramingKeyframe[] {
   ];
 }
 
+function sortedWordEdits(
+  wordEdits: Record<string, string> | null | undefined,
+): Array<[string, string]> {
+  if (!wordEdits) return [];
+  return Object.keys(wordEdits)
+    .sort()
+    .map((key) => [key, wordEdits[key]] as [string, string]);
+}
+
 function normalizeFraming(framing: SegmentFraming | undefined) {
   if (!framing) return null;
   const keyframes = getEffectiveKeyframes(framing)
@@ -50,7 +59,12 @@ export function computeSegmentRenderFingerprint(
     endTime: number;
     framing?: SegmentFraming;
   },
-  captionSettings: { enabled: boolean; style: unknown; activeLanguage?: string },
+  captionSettings: {
+    enabled: boolean;
+    style: unknown;
+    activeLanguage?: string;
+    wordEdits?: Record<string, string> | null;
+  },
   globalFraming: { aspectRatio: string; squareTop?: boolean },
   transcriptionVersion?: string | null,
 ): string {
@@ -65,6 +79,11 @@ export function computeSegmentRenderFingerprint(
       activeLanguage: captionSettings.activeLanguage || "original",
       ...(captionSettings.enabled && transcriptionVersion
         ? { transcriptionVersion }
+        : {}),
+      // Word edits (text, deletions, manual line breaks) change the burn-in.
+      // Sorted so key order never changes the hash.
+      ...(captionSettings.enabled
+        ? { wordEdits: sortedWordEdits(captionSettings.wordEdits) }
         : {}),
     },
     aspectRatio: globalFraming.aspectRatio,

@@ -6,6 +6,7 @@
  *
  * Invoked internally by renderVideo via Lambda.InvokeCommand.
  */
+import { captionGroupingOptions } from "../utils/caption-grouping";
 import { Handler } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
@@ -369,6 +370,7 @@ export const handler: Handler<
         captions = captionsFromParsedTranscript(
           parsed,
           parsed.kind === "original" ? captionSettings.wordEdits : undefined,
+          captionGroupingOptions(captionSettings.style, globalFraming?.aspectRatio),
         );
         console.log(
           `Loaded ${captions.length} caption lines from ${uri} (${parsed.kind})`,

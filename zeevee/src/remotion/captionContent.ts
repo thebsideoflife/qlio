@@ -1,4 +1,5 @@
 import type { CaptionLine, CaptionWord } from "./types";
+import { isDeletedCaptionWord } from "./captionGrouping";
 
 export type CaptionContent =
   | { mode: "words"; words: CaptionWord[] }
@@ -13,7 +14,9 @@ export type CaptionContent =
 export function resolveCaptionContent(
   caption: Pick<CaptionLine, "text" | "words">,
 ): CaptionContent {
-  const words = (caption.words ?? []).filter((word) => word.value !== "");
+  const words = (caption.words ?? []).filter(
+    (word) => !isDeletedCaptionWord(word.value),
+  );
   if (words.length > 0) return { mode: "words", words };
   const text = String(caption.text ?? "").trim();
   if (text) return { mode: "text", text };

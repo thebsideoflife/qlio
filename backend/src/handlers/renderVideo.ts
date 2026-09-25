@@ -9,6 +9,12 @@ import {
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { checkAuth } from "../utils/auth";
 import { resolveRenderTranscriptCandidates } from "../utils/transcript-source";
+import {
+  DEFAULT_CAPTION_SETTINGS,
+  mergeCaptionSettings,
+  type CaptionSettings,
+  type CaptionSettingsPatch,
+} from "../utils/caption-settings";
 import { v4 as uuidv4 } from "uuid";
 
 const client = new DynamoDBClient({});
@@ -24,22 +30,6 @@ const STITCH_FUNCTION_NAME = process.env.STITCH_FUNCTION_NAME!;
 
 // Types
 type AspectRatio = "9:16" | "1:1" | "16:9";
-
-interface CaptionSettings {
-  enabled: boolean;
-  style: {
-    fontSize: number;
-    fontFamily: string;
-    fontWeight?: string;
-    color: string;
-    backgroundColor: string;
-    position: { x: number; y: number };
-    maxWidth: number;
-    highlightColor?: string;
-  };
-  wordEdits?: Record<string, string>;
-  activeLanguage?: string;
-}
 
 interface GlobalFramingSettings {
   aspectRatio: AspectRatio;
@@ -65,20 +55,6 @@ interface Segment {
   title: string;
   framing?: SegmentFraming;
 }
-
-const DEFAULT_CAPTION_SETTINGS: CaptionSettings = {
-  enabled: true,
-  style: {
-    fontSize: 2,
-    fontFamily: "Inter, system-ui, sans-serif",
-    fontWeight: "600",
-    color: "#ffffff",
-    backgroundColor: "rgba(0, 0, 0, 0.8)",
-    position: { x: 50, y: 85 },
-    maxWidth: 95,
-    highlightColor: "#fbbf24",
-  },
-};
 
 const DEFAULT_GLOBAL_FRAMING: GlobalFramingSettings = {
   aspectRatio: "9:16",
@@ -123,7 +99,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     outputFormat?: "mp4" | "webm";
     quality?: string;
     segmentIds?: string[];
-    captionSettings?: Partial<CaptionSettings>;
+    captionSettings?: CaptionSettingsPatch;
   };
   try {
     body = JSON.parse(event.body || "{}");
@@ -188,16 +164,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   // Read project data. Client captionSettings win when the editor just
   // toggled language / edits and autosave has not flushed yet.
   let segments: Segment[] = project.segments || [];
-  const captionSettings: CaptionSettings = {
-    ...DEFAULT_CAPTION_SETTINGS,
-    ...(project.captionSettings || {}),
-    ...(body.captionSettings || {}),
-    style: {
-      ...DEFAULT_CAPTION_SETTINGS.style,
-      ...(project.captionSettings?.style || {}),
-      ...(body.captionSettings?.style || {}),
-    },
-  };
+  const captionSettings: CaptionSettings = mergeCaptionSettings(
+    mergeCaptionSettings(DEFAULT_CAPTION_SETTINGS, project.captionSettings),
+    body.captionSettings,
+  );
   const globalFraming: GlobalFramingSettings =
     project.globalFraming || DEFAULT_GLOBAL_FRAMING;
 

@@ -257,6 +257,98 @@ export async function requestJson<T>(
 }
 
 // ============================================================================
+// SEGMENT BOUNDS
+// ============================================================================
+
+/** What is known about the length of the file SporeLabs will decode. */
+export interface ReframeVideoBounds {
+  fps: number;
+  /** Frames in that file: an exact packet count, or the container's nb_frames. */
+  frameCount?: number | null;
+  /** Container duration in seconds. */
+  durationSec?: number | null;
+}
+
+export interface ReframeSegmentClamp {
+  id: string;
+  field: "start" | "end";
+  from: number;
+  to: number;
+}
+
+export interface ClampedReframeSegments {
+  /** Segments to submit, in the original order. Untouched objects are reused. */
+  segments: ReframeSegmentInput[];
+  clamped: ReframeSegmentClamp[];
+  /** Segments with no frame inside the video; not submitted. */
+  dropped: ReframeSegmentInput[];
+  /** Last usable segment end in seconds, or null when the length is unknown. */
+  maxEndSec: number | null;
+}
+
+/**
+ * Last usable segment end for the video SporeLabs will decode.
+ *
+ * The service puts bounds on the frame grid as `round(seconds * fps)` and
+ * rejects a segment whose end frame lies past the file's frame count ("A
+ * segment ends at frame 5664 but the video has 5637 frames"). The frame count
+ * is therefore the authoritative bound: a VFR-derived average fps times the
+ * stored asset duration can overshoot it by dozens of frames. The container
+ * duration is the fallback when no count is known.
+ */
+export function reframeMaxEndSec(bounds: ReframeVideoBounds): number | null {
+  const { fps, frameCount, durationSec } = bounds;
+  if (!(Number.isFinite(fps) && fps > 0)) return null;
+  if (frameCount != null && Number.isFinite(frameCount) && frameCount > 0) {
+    return frameCount / fps;
+  }
+  if (durationSec != null && Number.isFinite(durationSec) && durationSec > 0) {
+    return durationSec;
+  }
+  return null;
+}
+
+/**
+ * Clamp segment bounds into [0, maxEnd] before submit. A segment whose first
+ * frame is already at or past the end is dropped (the caller gives it a
+ * fallback hold); every other segment keeps its id and position. Non-finite
+ * bounds pass through untouched for the service to reject.
+ */
+export function clampReframeSegments(
+  segments: ReframeSegmentInput[],
+  bounds: ReframeVideoBounds,
+): ClampedReframeSegments {
+  const maxEndSec = reframeMaxEndSec(bounds);
+  const clamped: ReframeSegmentClamp[] = [];
+  const dropped: ReframeSegmentInput[] = [];
+  if (maxEndSec == null) return { segments, clamped, dropped, maxEndSec };
+
+  // Exclusive end frame of the file; a segment must start before it.
+  const endFrame = Math.round(maxEndSec * bounds.fps);
+  const out: ReframeSegmentInput[] = [];
+  for (const seg of segments) {
+    let { start, end } = seg;
+    if (Number.isFinite(start)) {
+      const floor = Math.max(0, start);
+      if (Math.round(floor * bounds.fps) >= endFrame) {
+        dropped.push(seg);
+        continue;
+      }
+      if (floor !== start) {
+        clamped.push({ id: seg.id, field: "start", from: start, to: floor });
+        start = floor;
+      }
+    }
+    if (Number.isFinite(end) && end > maxEndSec) {
+      clamped.push({ id: seg.id, field: "end", from: end, to: maxEndSec });
+      end = maxEndSec;
+    }
+    out.push(start === seg.start && end === seg.end ? seg : { ...seg, start, end });
+  }
+  return { segments: out, clamped, dropped, maxEndSec };
+}
+
+// ============================================================================
 // API
 // ============================================================================
 
