@@ -8,7 +8,7 @@ import type { Segment } from "@/store/editorSlice";
 
 // Keep in lockstep with backend/src/utils/segmentRenderFingerprint.ts. Bump
 // when a Remotion bundle change alters output without changing project inputs.
-export const RENDER_PIPELINE_VERSION = 7;
+export const RENDER_PIPELINE_VERSION = 8;
 
 function sortedWordEdits(
   wordEdits: Record<string, string> | null | undefined,
@@ -58,6 +58,7 @@ export function computeSegmentRenderFingerprint(
         : {}),
     },
     aspectRatio: globalFraming.aspectRatio,
+    framingEnabled: globalFraming.enabled !== false,
     // Coerce to boolean so old projects (squareTop undefined) hash identically
     // to squareTop=false — keeps the frontend and backend fingerprints in lockstep.
     squareTop: !!globalFraming.squareTop,

@@ -16,6 +16,7 @@ import {
   type CaptionSettingsPatch,
 } from "../utils/caption-settings";
 import { v4 as uuidv4 } from "uuid";
+import { RENDER_PIPELINE_VERSION } from "../utils/segmentRenderFingerprint";
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client, {
@@ -100,6 +101,8 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     quality?: string;
     segmentIds?: string[];
     captionSettings?: CaptionSettingsPatch;
+    segments?: Segment[];
+    globalFraming?: GlobalFramingSettings;
   };
   try {
     body = JSON.parse(event.body || "{}");
@@ -161,23 +164,26 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
   const asset = assetResult.Item;
 
-  // Read project data. Client captionSettings win when the editor just
-  // toggled language / edits and autosave has not flushed yet.
-  let segments: Segment[] = project.segments || [];
+  // Capture the editor's preview inputs in the render job. An older autosave
+  // can finish after Export's flush and otherwise change the DB read below.
+  let segments: Segment[] = Array.isArray(body.segments)
+    ? body.segments
+    : project.segments || [];
   const captionSettings: CaptionSettings = mergeCaptionSettings(
     mergeCaptionSettings(DEFAULT_CAPTION_SETTINGS, project.captionSettings),
     body.captionSettings,
   );
   const globalFraming: GlobalFramingSettings =
-    project.globalFraming || DEFAULT_GLOBAL_FRAMING;
+    body.globalFraming || project.globalFraming || DEFAULT_GLOBAL_FRAMING;
 
   // Filter to specific segments if segmentIds provided
   if (body.segmentIds && body.segmentIds.length > 0) {
     const requestedIds = new Set(body.segmentIds);
+    const totalSegments = segments.length;
     segments = segments.filter((s) => requestedIds.has(s.id));
     console.log(
       `Filtering to ${segments.length} of ${
-        project.segments?.length || 0
+        totalSegments
       } segments`,
     );
   }
@@ -227,7 +233,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   const outputFormat = body.outputFormat || "mp4";
   const compositionId = getCompositionId(
     globalFraming.aspectRatio,
-    globalFraming.squareTop,
+    globalFraming.enabled && globalFraming.squareTop,
   );
 
   // Create render job with all data the cutSegments handler needs
@@ -259,6 +265,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
   const renderJob = {
     jobId,
+    renderPipelineVersion: RENDER_PIPELINE_VERSION,
     projectId,
     status: "rendering",
     createdAt: new Date().toISOString(),

@@ -2,7 +2,7 @@
 
 // Bump whenever the Remotion bundle changes rendered pixels without changing
 // project inputs. This invalidates MP4s made by an older renderer.
-export const RENDER_PIPELINE_VERSION = 7;
+export const RENDER_PIPELINE_VERSION = 8;
 
 interface FramingKeyframe {
   time: number;
@@ -65,11 +65,12 @@ export function computeSegmentRenderFingerprint(
     activeLanguage?: string;
     wordEdits?: Record<string, string> | null;
   },
-  globalFraming: { aspectRatio: string; squareTop?: boolean },
+  globalFraming: { aspectRatio: string; enabled?: boolean; squareTop?: boolean },
   transcriptionVersion?: string | null,
+  renderPipelineVersion = RENDER_PIPELINE_VERSION,
 ): string {
   const payload = {
-    renderPipelineVersion: RENDER_PIPELINE_VERSION,
+    renderPipelineVersion,
     startTime: segment.startTime,
     endTime: segment.endTime,
     framing: normalizeFraming(segment.framing),
@@ -87,6 +88,7 @@ export function computeSegmentRenderFingerprint(
         : {}),
     },
     aspectRatio: globalFraming.aspectRatio,
+    framingEnabled: globalFraming.enabled !== false,
     // Coerce to boolean so old projects (squareTop undefined) hash identically
     // to squareTop=false — keeps this mirror in lockstep with the frontend copy.
     squareTop: !!globalFraming.squareTop,

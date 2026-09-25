@@ -1,5 +1,6 @@
 import { computeExportPackageFingerprint } from "./exportPackageFingerprint";
 import { isSameRenderArtifact } from "./renderArtifactCache";
+import { computeSegmentRenderFingerprint, RENDER_PIPELINE_VERSION } from "./segmentRenderFingerprint";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -101,6 +102,36 @@ assert(
       },
     ]),
   "an unselected render does not invalidate the package",
+);
+
+const renderInputs = {
+  startTime: 1,
+  endTime: 4,
+};
+const captionInputs = {
+  enabled: true,
+  style: { fontFamily: "'Playfair Display', serif", fontWeight: "700" },
+};
+const framingInputs = { aspectRatio: "9:16" };
+assert(
+  computeSegmentRenderFingerprint(renderInputs, captionInputs, {
+    ...framingInputs,
+    enabled: true,
+  }) !== computeSegmentRenderFingerprint(renderInputs, captionInputs, {
+    ...framingInputs,
+    enabled: false,
+  }),
+  "turning framing off invalidates the cached video",
+);
+assert(
+  computeSegmentRenderFingerprint(
+    renderInputs,
+    captionInputs,
+    framingInputs,
+    undefined,
+    RENDER_PIPELINE_VERSION - 1,
+  ) !== computeSegmentRenderFingerprint(renderInputs, captionInputs, framingInputs),
+  "an in-flight render keeps the renderer version captured at job creation",
 );
 
 console.log("exportCache.test: ok");

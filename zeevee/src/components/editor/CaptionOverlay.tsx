@@ -8,30 +8,50 @@ import {
 import { SNAP_POSITIONS } from "@/remotion/types";
 import { CaptionDisplay } from "@/remotion/CaptionDisplay";
 import { activeCaptionAt } from "@/remotion/captionTiming";
-// Load caption Google fonts for in-editor overlay preview.
-import "@/remotion/loadCaptionFonts";
+import { outputFrameForAspect } from "@/remotion/captionGrouping";
 
 interface CaptionOverlayProps {
   currentTime: number;
+  segmentStart?: number;
 }
 
 const SNAP_THRESHOLD = 8;
-// Reference height for font sizing - matches Remotion's 1080p base
-// This ensures consistent font sizes regardless of preview container size
-const REFERENCE_HEIGHT = 1080;
-
-export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
+export function CaptionOverlay({
+  currentTime,
+  segmentStart,
+}: CaptionOverlayProps) {
   const dispatch = useDispatch();
   const captions = useSelector((state: RootState) => state.editor.captions);
   const captionSettings = useSelector(
     (state: RootState) => state.editor.captionSettings,
   );
   const { enabled, style } = captionSettings;
+  const globalFraming = useSelector(
+    (state: RootState) => state.editor.globalFraming,
+  );
+  const frame = outputFrameForAspect(
+    globalFraming.enabled && globalFraming.squareTop
+      ? "9:16"
+      : globalFraming.aspectRatio,
+  );
   const transcriptionStatus = useSelector(
     (state: RootState) => state.editor.transcriptionStatus,
   );
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const [previewSize, setPreviewSize] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    const update = () => {
+      const rect = element.getBoundingClientRect();
+      setPreviewSize({ width: rect.width, height: rect.height });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [enabled]);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
@@ -152,6 +172,18 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
       className="absolute inset-0 pointer-events-none"
       style={{ zIndex: 10 }}
     >
+      {previewSize.width > 0 && previewSize.height > 0 && (
+        <div
+        style={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          width: frame.width,
+          height: frame.height,
+          transformOrigin: "top left",
+          transform: `scale(${previewSize.width / frame.width}, ${previewSize.height / frame.height})`,
+        }}
+      >
       {!activeCaption && transcriptionStatus === "pending" && (
         <div
           aria-hidden
@@ -177,7 +209,7 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
           >
             <div
               style={{
-                height: `${(style.fontSize / 100) * REFERENCE_HEIGHT * 0.55}px`,
+                height: `${(style.fontSize / 100) * frame.height * 0.55}px`,
                 backgroundColor: "rgba(255,255,255,0.28)",
                 borderRadius: 4,
               }}
@@ -190,7 +222,8 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
         captions={captions}
         settings={captionSettings}
         currentTime={currentTime}
-        containerHeight={REFERENCE_HEIGHT}
+        containerHeight={frame.height}
+        segmentStart={segmentStart}
       >
         <div
           className="absolute inset-0 pointer-events-auto cursor-move"
@@ -223,6 +256,8 @@ export function CaptionOverlay({ currentTime }: CaptionOverlayProps) {
           )}
         </div>
       </CaptionDisplay>
+        </div>
+      )}
     </div>
   );
 }

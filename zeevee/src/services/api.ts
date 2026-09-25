@@ -571,13 +571,15 @@ export interface GlobalFramingSettings {
   squareTop?: boolean;
 }
 
-// Project data is read from DB. captionSettings is sent so a language toggle
-// or word edit that has not flushed yet is still burned into the export.
+// Render the exact editor snapshot. Autosave can still be in flight when the
+// producer starts an export, so the project record is only a legacy fallback.
 export interface RenderRequest {
   outputFormat?: "mp4" | "webm";
   quality?: "draft" | "standard" | "high";
   segmentIds?: string[]; // Optional: render only specific segments (by ID)
   captionSettings?: CaptionSettings;
+  segments?: Segment[];
+  globalFraming?: GlobalFramingSettings;
 }
 
 export interface SegmentDownload {
@@ -587,6 +589,7 @@ export interface SegmentDownload {
   downloadUrl?: string;
   progress?: number;
   error?: string;
+  contentHash?: string;
 }
 
 export interface RenderJobResponse {

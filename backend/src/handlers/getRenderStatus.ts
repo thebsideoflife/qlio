@@ -58,6 +58,8 @@ interface SegmentDownload {
   downloadUrl?: string;
   progress?: number;
   error?: string;
+  /** Hash of the inputs captured when this render job started. */
+  contentHash?: string;
 }
 
 /**
@@ -118,8 +120,9 @@ async function persistRendersToProject(
       style: unknown;
       activeLanguage?: string;
     };
-    globalFraming?: { aspectRatio: string; squareTop?: boolean };
+    globalFraming?: { aspectRatio: string; enabled?: boolean; squareTop?: boolean };
     transcriptionVersion?: string;
+    renderPipelineVersion?: number;
   },
 ): Promise<Map<string, RenderLocation>> {
   const locations = new Map<string, RenderLocation>();
@@ -161,6 +164,7 @@ async function persistRendersToProject(
               captionSettings,
               globalFraming,
               job.transcriptionVersion,
+              job.renderPipelineVersion ?? 7,
             )
           : undefined;
         const existing = renderMap.get(seg.segmentId);
@@ -281,6 +285,18 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
   const job = result.Item;
   const segmentRenders: SegmentRender[] = job.segmentRenders || [];
+  const renderContentHash = (segmentId: string): string | undefined => {
+    const source = job.segments?.find((s: { id: string }) => s.id === segmentId);
+    return source
+      ? computeSegmentRenderFingerprint(
+          source,
+          job.captionSettings || { enabled: true, style: {} },
+          job.globalFraming || { aspectRatio: "9:16" },
+          job.transcriptionVersion,
+          job.renderPipelineVersion ?? 7,
+        )
+      : undefined;
+  };
 
   console.log(`Render status check for ${jobId}:`, {
     status: job.status,
@@ -340,6 +356,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         segmentId: segment.segmentId,
         title: segment.title,
         status: segment.status,
+        contentHash: renderContentHash(segment.segmentId),
       };
 
       // If already completed/failed, generate URL if needed
@@ -465,6 +482,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         segmentId: segment.segmentId,
         title: segment.title,
         status: segment.status,
+        contentHash: renderContentHash(segment.segmentId),
       };
 
       if (segment.status === "completed") {
