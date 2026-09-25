@@ -187,6 +187,8 @@ function harness(opts: {
   remaining?: number[];
   updateOk?: (u: Record<string, unknown>) => boolean;
   proxySize?: { width: number; height: number };
+  proxyFps?: number;
+  proxyBounds?: { frameCount?: number | null; durationSec?: number | null };
 }): Harness {
   const calls: Harness["calls"] = {
     updates: [],
@@ -213,9 +215,10 @@ function harness(opts: {
       return {
         url: "https://bucket/proxy/asset-1.mp4?sig",
         etag: "etag123",
-        fps: FPS,
+        fps: opts.proxyFps ?? FPS,
         width: opts.proxySize?.width ?? 1920,
         height: opts.proxySize?.height ?? 1080,
+        ...opts.proxyBounds,
       };
     },
     submitReframe: async (req) => {
@@ -326,6 +329,110 @@ async function runTests() {
     const written = calls.written[0];
     assert(written.get(0)![0].focusX === 0.43, "s1 mapped");
     assert(written.get(2)![0].zoom === 0.5, "s3 (absent from result) gets fallback");
+  }
+
+  // Segment bounds past the proxy's last frame are clamped before submit, with
+  // a warning; a segment entirely past the end is dropped and falls back.
+  // (Production case: VFR source, avg fps 31.055, proxy 5637 frames, stored
+  // asset duration put a segment end at frame 5664.)
+  {
+    const fps = 31.055;
+    const { deps, calls } = harness({
+      polls: [COMPLETED],
+      proxyFps: fps,
+      proxyBounds: { frameCount: 5637, durationSec: 182.4 },
+    });
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.map(String).join(" "));
+    };
+    let outcome: string;
+    try {
+      outcome = await runShotHoldFraming(
+        {
+          ...INPUT,
+          segments: [
+            { id: "s1", startTime: 12.5, endTime: 98 },
+            { id: "s2", startTime: 100, endTime: 5664 / fps },
+            { id: "s3", startTime: 200, endTime: 210 },
+          ],
+        },
+        deps,
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert(outcome === "completed", "clamped run completes");
+    const req = calls.submitted[0];
+    assert(req.segments.length === 2, "segment past the end is not submitted");
+    assert(
+      req.segments[0].start === 12.5 && req.segments[0].end === 98,
+      "in-range segment untouched",
+    );
+    assert(
+      Math.round(req.segments[1].end * fps) === 5637 && req.segments[1].start === 100,
+      "end clamped onto the proxy's last frame",
+    );
+    const warn = warns.find((w) => w.includes("Clamped"));
+    assert(
+      !!warn &&
+        warn.includes("5637 frames") &&
+        warn.includes("s2.end") &&
+        warn.includes("Dropped 1") &&
+        warn.includes("s3"),
+      `warning names the bound and the moved segments (${warn})`,
+    );
+    assert(!warns.some((w) => w.includes("?sig")), "warning never echoes the proxy URL");
+    const written = calls.written[0];
+    assert(
+      written.size === 3 && written.get(2)![0].zoom === 0.5,
+      "dropped segment still gets a fallback hold",
+    );
+  }
+
+  // Duration-only bound (older proxy without a frame count) still clamps.
+  {
+    const { deps, calls } = harness({
+      polls: [COMPLETED],
+      proxyBounds: { frameCount: null, durationSec: 120 },
+    });
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      await runShotHoldFraming(INPUT, deps);
+    } finally {
+      console.warn = originalWarn;
+    }
+    const req = calls.submitted[0];
+    assert(
+      req.segments.length === 2 && req.segments[1].end === 120,
+      "container duration bounds the end when no frame count is known",
+    );
+  }
+
+  // Every segment past the end: nothing to analyze, fail loudly.
+  {
+    const { deps, calls } = harness({
+      polls: [COMPLETED],
+      proxyFps: 25,
+      proxyBounds: { frameCount: 250, durationSec: 10 },
+    });
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    let message = "";
+    try {
+      await runShotHoldFraming(
+        { ...INPUT, segments: [{ id: "s1", startTime: 20, endTime: 30 }] },
+        deps,
+      );
+    } catch (err) {
+      message = (err as Error).message;
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert(message.includes("past the end"), "all-dropped run throws a clear error");
+    assert(calls.submitted.length === 0, "nothing submitted when no segment is left");
   }
 
   // Time runs low after submit: hand off, don't poll, don't resubmit.

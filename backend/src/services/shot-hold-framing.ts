@@ -12,8 +12,9 @@
  */
 
 import { randomUUID } from "crypto";
-import { buildReframeAssetKey } from "./sporelabs-reframe";
+import { buildReframeAssetKey, clampReframeSegments } from "./sporelabs-reframe";
 import type {
+  ClampedReframeSegments,
   ReframeClientOptions,
   ReframeJob,
   ReframeProgress,
@@ -59,6 +60,10 @@ export interface ShotHoldProxy {
   fps: number;
   width: number;
   height: number;
+  /** Frames in the proxy file actually sent; bounds the segments. */
+  frameCount?: number | null;
+  /** Container duration of that file; fallback bound. */
+  durationSec?: number | null;
 }
 
 export interface ShotHoldDeps {
@@ -201,24 +206,60 @@ export function mapReframeResult(
   return { keyframes, missing };
 }
 
+/**
+ * Segment bounds come from the asset record; the proxy is what SporeLabs
+ * decodes. When the two disagree (a VFR source's average fps times the stored
+ * duration overshoots the real frame count) the service rejects the job, so
+ * bounds are clamped to the proxy's length here. `clamp` says what moved.
+ */
 export function buildReframeRequest(
   input: ShotHoldJobInput,
   assetId: string,
   proxy: ShotHoldProxy,
-): ReframeRequest {
+): { request: ReframeRequest; clamp: ClampedReframeSegments } {
+  const clamp = clampReframeSegments(
+    input.segments.map((s) => ({ id: s.id, start: s.startTime, end: s.endTime })),
+    { fps: proxy.fps, frameCount: proxy.frameCount, durationSec: proxy.durationSec },
+  );
   return {
-    video_url: proxy.url,
-    asset_key: buildReframeAssetKey(assetId, proxy.etag),
-    fps: proxy.fps,
-    source_aspect: proxy.width / proxy.height,
-    target_aspect: input.targetAspectRatio,
-    segments: input.segments.map((s) => ({
-      id: s.id,
-      start: s.startTime,
-      end: s.endTime,
-    })),
-    options: {},
+    request: {
+      video_url: proxy.url,
+      asset_key: buildReframeAssetKey(assetId, proxy.etag),
+      fps: proxy.fps,
+      source_aspect: proxy.width / proxy.height,
+      target_aspect: input.targetAspectRatio,
+      segments: clamp.segments,
+      options: {},
+    },
+    clamp,
   };
+}
+
+/** One warning line per submit that had to move a bound. Never includes the proxy URL. */
+function describeClamp(
+  jobId: string,
+  proxy: ShotHoldProxy,
+  clamp: ClampedReframeSegments,
+): string {
+  const length =
+    proxy.frameCount != null
+      ? `${proxy.frameCount} frames @ ${proxy.fps.toFixed(3)} fps`
+      : `container duration ${proxy.durationSec?.toFixed(3)}s`;
+  const moves = clamp.clamped
+    .slice(0, 10)
+    .map((c) => `${c.id}.${c.field} ${c.from.toFixed(3)}→${c.to.toFixed(3)}`);
+  if (clamp.clamped.length > 10) moves.push(`… ${clamp.clamped.length - 10} more`);
+  const parts = [
+    `[Framing] Job ${jobId}: proxy ends at ${clamp.maxEndSec?.toFixed(3)}s (${length}); ` +
+      `segment bounds from the asset record overshoot it.`,
+  ];
+  if (moves.length > 0) parts.push(`Clamped ${clamp.clamped.length}: ${moves.join(", ")}.`);
+  if (clamp.dropped.length > 0) {
+    parts.push(
+      `Dropped ${clamp.dropped.length} past the end (fallback hold): ${clamp.dropped.map((d) => d.id).join(", ")}.`,
+    );
+  }
+  return parts.join(" ");
 }
 
 // ============================================================================
@@ -272,12 +313,20 @@ export async function runShotHoldFraming(
       return "completed";
     }
 
-    const request = buildReframeRequest(input, asset.assetId, proxy);
+    const { request, clamp } = buildReframeRequest(input, asset.assetId, proxy);
+    if (clamp.clamped.length > 0 || clamp.dropped.length > 0) {
+      console.warn(describeClamp(jobId, proxy, clamp));
+    }
+    if (request.segments.length === 0) {
+      throw new Error(
+        `SporeLabs reframe: all ${segments.length} segments lie past the end of the proxy video (${clamp.maxEndSec?.toFixed(3)}s)`,
+      );
+    }
     const submitted = await deps.submitReframe(request);
     sporelabsJobId = submitted.id;
     console.log(
       `[Framing] SporeLabs reframe ${sporelabsJobId} submitted for job ${jobId}: ` +
-        `${segments.length} segments, fps ${proxy.fps.toFixed(3)}, aspect ${request.source_aspect.toFixed(4)} → ${input.targetAspectRatio}`,
+        `${request.segments.length} of ${segments.length} segments, fps ${proxy.fps.toFixed(3)}, aspect ${request.source_aspect.toFixed(4)} → ${input.targetAspectRatio}`,
     );
     if (!(await deps.updateJob({ sporelabsJobId, stage: "queued" }))) {
       return "superseded";
