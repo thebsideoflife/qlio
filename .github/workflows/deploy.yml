@@ -1,6 +1,10 @@
 name: Deploy backend
 
+# Runs on a push to main (debounced: a burst of pushes deploys once, from the
+# newest commit) or from the Actions tab. Local equivalent: ./deploy.sh with the
+# `zeevee` AWS profile (docs/DEPLOY.md).
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -11,15 +15,47 @@ on:
       - '.github/workflows/deploy.yml'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: deploy-backend-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   AWS_REGION: us-west-2
   TF_VAR_profile: zeevee
 
 jobs:
+  debounce:
+    # Coalesce a burst of pushes to main. Wait two minutes, then continue only
+    # if this commit is still the tip of main; otherwise a newer push has its
+    # own run (which also cancels this one via `concurrency`), and that run
+    # deploys. Manual runs never wait.
+    name: Debounce
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Wait, then skip unless still the tip of main
+        id: check
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" != "push" ]]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sleep 120
+          tip="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$tip" == "${GITHUB_SHA}" ]]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Deploy skipped::main moved on to ${tip:0:12}; the run for that commit deploys it."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy:
+    needs: debounce
+    if: needs.debounce.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
