@@ -384,13 +384,18 @@ function execEdit(
   input: Record<string, unknown>,
   ctx: ExecContext,
 ): ExecOutcome {
-  const rawOps = Array.isArray(input.ops) ? (input.ops as EditOp[]) : null;
+  // Models sometimes stringify the ops array. Tolerate that here rather than
+  // failing a well-formed call over a transport quirk.
+  const rawOpsInput =
+    typeof input.ops === "string" ? tryParseJson(input.ops) : input.ops;
+  const rawOps = Array.isArray(rawOpsInput) ? (rawOpsInput as EditOp[]) : null;
 
   if (!rawOps || rawOps.length === 0) {
+    const received = describeOpsInput(input.ops, rawOpsInput);
     return {
       result: toolError(
         "no_ops",
-        "edit_segments was called with no operations.",
+        `edit_segments needs a non-empty ops array; received ${received}.`,
         "Pass ops as an array, e.g. [{op:'add', start: 412, end: 470, title:'Mara confronts her brother'}].",
       ),
     };
@@ -454,6 +459,23 @@ function execEdit(
     changedIds: outcome.changedIds,
     ledger,
   };
+}
+
+function tryParseJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+function describeOpsInput(original: unknown, parsed: unknown): string {
+  if (Array.isArray(parsed)) return "an empty ops array";
+  if (typeof original === "string") {
+    return "a string that is not a JSON array of operations";
+  }
+  if (original === undefined || original === null) return "no ops field";
+  return `ops as a ${typeof original}`;
 }
 
 /**
