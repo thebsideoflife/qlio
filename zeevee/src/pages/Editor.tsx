@@ -1268,6 +1268,12 @@ function TranscriptPanel({
                       {!isEmpty && (lineBreak || editMode) && (
                         <button
                           type="button"
+                          disabled={!editMode}
+                          aria-label={
+                            lineBreak
+                              ? "Remove caption line break"
+                              : "Add caption line break after this word"
+                          }
                           title={
                             editMode
                               ? lineBreak
@@ -1275,9 +1281,18 @@ function TranscriptPanel({
                                 : "Add caption line break after this word"
                               : "Caption line break after this word"
                           }
+                          onMouseDown={(e) => e.preventDefault()}
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (editMode) handleToggleLineBreak(word);
+                            if (!editMode) return;
+                            const editable = e.currentTarget.previousElementSibling as HTMLElement | null;
+                            const text = editable?.textContent ?? captionWordText(word.value);
+                            if (editable && document.activeElement === editable) {
+                              editable.dataset.toggleLineBreak = "true";
+                              editable.blur();
+                            } else {
+                              handleToggleLineBreak(word, text);
+                            }
                           }}
                           className={cn(
                             "ml-0.5 rounded px-1 text-[10px] font-mono align-middle",
