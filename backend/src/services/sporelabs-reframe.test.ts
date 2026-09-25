@@ -1,5 +1,5 @@
 /**
- * SporeLabs reframe client: retry policy, error envelope, key loader.
+ * SporeLabs reframe client: retry policy, error envelope, segment clamp, key loader.
  *
  * Run: npx tsx src/services/sporelabs-reframe.test.ts
  */
@@ -8,7 +8,9 @@ import {
   REFRAME_MAX_SEGMENTS,
   SporeLabsError,
   buildReframeAssetKey,
+  clampReframeSegments,
   getReframe,
+  reframeMaxEndSec,
   getSporeLabsReframeApiKey,
   submitReframe,
   type ReframeClientOptions,
@@ -244,6 +246,79 @@ async function main() {
     const bad = await expectError(() => getReframe("../etc", opts(fetchImpl, sleeps)));
     assert(bad instanceof SporeLabsError, "path-unsafe job id rejected");
     assert(calls.length === 0, "guards make no HTTP call");
+  }
+
+  // Segment bounds are clamped to the file SporeLabs will decode.
+  {
+    // Production case: VFR source, avg fps 31.055, proxy has 5637 frames, but
+    // the stored asset duration puts the last segment's end at frame 5664.
+    const fps = 31.055;
+    const bounds = { fps, frameCount: 5637, durationSec: 182.4 };
+    const segs = [
+      { id: "a", start: 0, end: 60 },
+      { id: "b", start: 60, end: 5664 / fps },
+      { id: "c", start: -0.02, end: 30 },
+      { id: "d", start: 5637 / fps, end: 5700 / fps },
+      { id: "e", start: 200, end: 210 },
+    ];
+    const res = clampReframeSegments(segs, bounds);
+    assert(
+      res.maxEndSec === 5637 / fps,
+      "frame count / fps is the bound, not the container duration",
+    );
+    assert(res.segments.length === 3, `past-the-end segments dropped (got ${res.segments.length})`);
+    assert(
+      res.dropped.map((d) => d.id).join() === "d,e",
+      "segments starting at or after the last frame are dropped",
+    );
+    assert(res.segments[0] === segs[0], "untouched segment object reused");
+    const b = res.segments[1];
+    assert(Math.round(b.end * fps) === 5637, "clamped end lands on the last frame");
+    assert(b.end < 5664 / fps && b.start === 60 && b.id === "b", "only the end moved");
+    assert(
+      res.segments[2].start === 0 && res.segments[2].end === 30,
+      "negative start clamped to 0",
+    );
+    assert(res.clamped.length === 2, "one clamp record per moved bound");
+    assert(
+      res.clamped.some((c) => c.id === "b" && c.field === "end" && c.from === 5664 / fps && c.to === 5637 / fps),
+      "end clamp recorded with before/after",
+    );
+    assert(
+      res.clamped.some((c) => c.id === "c" && c.field === "start" && c.from === -0.02 && c.to === 0),
+      "start clamp recorded",
+    );
+    assert(segs[1].end === 5664 / fps && segs[2].start === -0.02, "input not mutated");
+
+    // A segment ending exactly on the last frame is already valid.
+    const exact = clampReframeSegments([{ id: "y", start: 0, end: 5637 / fps }], bounds);
+    assert(
+      exact.clamped.length === 0 && exact.segments[0].end === 5637 / fps,
+      "end == frameCount/fps is not touched",
+    );
+
+    // No frame count: the container duration is the fallback bound.
+    const dur = clampReframeSegments(
+      [{ id: "x", start: 10, end: 181.9 }],
+      { fps, frameCount: null, durationSec: 181.5 },
+    );
+    assert(
+      dur.segments[0].end === 181.5 && dur.clamped.length === 1 && dur.maxEndSec === 181.5,
+      "container duration bounds the end when no frame count is known",
+    );
+
+    // Nothing known about the length: nothing changes.
+    const none = clampReframeSegments(segs, { fps, frameCount: null, durationSec: NaN });
+    assert(
+      none.segments === segs && none.maxEndSec === null && none.clamped.length === 0,
+      "unknown length leaves segments untouched",
+    );
+    assert(reframeMaxEndSec({ fps: 0, frameCount: 100 }) === null, "no fps → no bound");
+    assert(reframeMaxEndSec({ fps: 25, frameCount: 0, durationSec: 0 }) === null, "zero-length → no bound");
+
+    // Non-finite bounds pass through for the service to reject.
+    const nan = clampReframeSegments([{ id: "n", start: NaN, end: 10 }], bounds);
+    assert(Number.isNaN(nan.segments[0].start) && nan.clamped.length === 0, "NaN start passes through");
   }
 
   // Asset key: opaque, quotes stripped, charset + length bounded.
