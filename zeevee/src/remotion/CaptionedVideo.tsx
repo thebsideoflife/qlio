@@ -16,8 +16,6 @@ import { AutoFramedVideo } from "./AutoFramedVideo";
 import { SquareTopVideo } from "./SquareTopVideo";
 import { CaptionDisplay } from "./CaptionDisplay";
 import { segmentFrameBounds, clipFrameToSourceTime, rebaseFramingKeyframesToClip } from "./segmentFrameBounds";
-// Ensures Sanchez, Stardos Stencil (and other caption Google fonts) are ready for Lambda.
-import "./loadCaptionFonts";
 
 interface SegmentVideoProps {
   videoUrl: string;

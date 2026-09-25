@@ -1,6 +1,8 @@
+import { useEffect, useState } from "react";
 import type { CaptionLine, CaptionStyle } from "./types";
 import { resolveCaptionContent } from "./captionContent";
 import { captionWordText, hasCaptionLineBreak } from "./captionGrouping";
+import { isCaptionFontReady, loadCaptionFont } from "./loadCaptionFonts";
 
 interface CaptionTextProps {
   caption: CaptionLine;
@@ -20,6 +22,18 @@ export function CaptionText({
   currentTime,
   containerHeight,
 }: CaptionTextProps) {
+  const font = loadCaptionFont(style.fontFamily);
+  const [readyFamily, setReadyFamily] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    font.waitUntilDone()
+      .then(() => {
+        if (active) setReadyFamily(font.fontFamily);
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [font]);
+
   const content = resolveCaptionContent(caption);
   const visibleWords = content.mode === "words" ? content.words : [];
   const displayText = content.mode === "text" ? content.text : null;
@@ -31,7 +45,9 @@ export function CaptionText({
   const highlightColor = style.highlightColor || "#fbbf24";
   const showAnimation = highlightColor !== "none" && visibleWords.length > 0;
 
-  if (content.mode === "empty") return null;
+  if (content.mode === "empty" || (
+    readyFamily !== font.fontFamily && !isCaptionFontReady(font.fontFamily)
+  )) return null;
 
   return (
     <div
@@ -44,7 +60,7 @@ export function CaptionText({
     >
       <span
         style={{
-          fontFamily: style.fontFamily,
+          fontFamily: font.fontFamily,
           fontSize: `${(style.fontSize / 100) * containerHeight}px`,
           fontWeight: style.fontWeight ?? "600",
           lineHeight: 1.25,

@@ -5,9 +5,11 @@ on:
     branches: [main]
     paths:
       - "zeevee/src/remotion/**"
-      - "zeevee/src/components/editor/CaptionText.tsx"
-      - "zeevee/src/components/editor/CaptionDisplay.tsx"
-      - "zeevee/src/components/editor/CaptionOverlay.tsx"
+      - "zeevee/src/lib/zoomMath.ts"
+      - "zeevee/src/lib/sourceFps.ts"
+      - "zeevee/src/lib/segmentRenderFingerprint.ts"
+      - "zeevee/package.json"
+      - "zeevee/package-lock.json"
       - "zeevee/deploy-remotion-site.sh"
       - ".github/workflows/deploy-remotion-site.yml"
 

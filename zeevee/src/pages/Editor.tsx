@@ -280,7 +280,7 @@ export default function Editor() {
           null,
         )
     : { zoom: previewZoom, focusX: previewFocus.x, focusY: previewFocus.y };
-  const displayZoom = playheadFraming.zoom;
+  const displayZoom = globalFraming.enabled ? playheadFraming.zoom : 0;
   const displayFocusX = playheadFraming.focusX;
   const displayFocusY = playheadFraming.focusY;
   // Sliders edit the selected keyframe. Until one is selected, follow the
@@ -414,7 +414,7 @@ export default function Editor() {
   const aspectRatioValue = getAspectRatioValue(globalFraming.aspectRatio);
   // Square-top portrait mode wipes out all other framing while on. Defaulted to
   // false for projects created before this feature (missing field on load).
-  const squareTop = !!globalFraming.squareTop;
+  const squareTop = globalFraming.enabled && !!globalFraming.squareTop;
   const previewAspect = squareTop ? 9 / 16 : aspectRatioValue;
 
   useEffect(() => {
@@ -757,7 +757,10 @@ export default function Editor() {
                 </>
               )}
 
-              <CaptionOverlay currentTime={currentTime} />
+              <CaptionOverlay
+                currentTime={currentTime}
+                segmentStart={previewMode ? playheadSeg?.startTime : undefined}
+              />
     </div>
   ) : null;
 

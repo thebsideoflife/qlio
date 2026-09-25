@@ -162,6 +162,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   const [packageStatus, setPackageStatus] = useState<
     "idle" | "bundling" | "ready" | "failed"
   >("idle");
+  const [packageSelectionKey, setPackageSelectionKey] = useState<string | null>(null);
   const [packageProgress, setPackageProgress] =
     useState<ExportPackageProgress | null>(null);
   const [packageError, setPackageError] = useState<string | null>(null);
@@ -398,7 +399,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     }
   }, [projectId, dispatch]);
 
-  const buildMetadataDocument = useCallback(() => {
+  const buildMetadataDocument = useCallback((includedSegmentIds = selectedSegmentIds) => {
     const metaMap = new Map<string, SegmentMetadataCache>();
     for (const m of segmentMetadataRef.current || []) {
       metaMap.set(m.segmentId, m);
@@ -408,7 +409,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       projectTitle: projectTitle || "Untitled",
       projectThumbnailUrl,
       segments,
-      selectedSegmentIds,
+      selectedSegmentIds: includedSegmentIds,
       metadataBySegmentId: metaMap,
       options: metadataOptions,
     });
@@ -426,7 +427,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   }, [buildMetadataDocument]);
 
   const runPackageDownload = useCallback(
-    async (_downloads?: SegmentDownload[]) => {
+    async (downloads?: SegmentDownload[]) => {
       packageAbortRef.current?.abort();
       const controller = new AbortController();
       packageAbortRef.current = controller;
@@ -443,12 +444,33 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       });
 
       try {
+        const includedSegmentIds = downloads
+          ? downloads.filter((item) => item.status === "completed").map((item) => item.segmentId)
+          : Array.from(selectedSegmentIds);
+        setPackageSelectionKey([...includedSegmentIds].sort().join("\0"));
+        if (!downloads && includedSegmentIds.some((id) => {
+          const segment = segments.find((item) => item.id === id);
+          const cached = cachedRenderMap.get(id);
+          return !segment || !cached?.url || isSegmentRenderStale(
+            cached,
+            computeSegmentRenderFingerprint(
+              segment,
+              captionSettings,
+              globalFraming,
+              transcriptionVersion,
+            ),
+          );
+        })) {
+          throw new Error("Re-export the selected scenes before preparing a folder.");
+        }
         const started = await startExportPackage(projectId, {
-          segmentIds: Array.from(selectedSegmentIds),
+          segmentIds: includedSegmentIds,
           includeThumbnails: metadataEnabled && includeThumbnails,
           includePoster: metadataEnabled && includeThumbnails,
           projectTitle: projectTitle || "Untitled",
-          metadataDocument: metadataEnabled ? buildMetadataDocument() : null,
+          metadataDocument: metadataEnabled
+            ? buildMetadataDocument(new Set(includedSegmentIds))
+            : null,
         });
         if (controller.signal.aborted) return;
         if (started.status === "completed" && started.downloadUrl) {
@@ -486,6 +508,11 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       projectId,
       projectTitle,
       selectedSegmentIds,
+      segments,
+      cachedRenderMap,
+      captionSettings,
+      globalFraming,
+      transcriptionVersion,
       metadataEnabled,
       includeThumbnails,
       buildMetadataDocument,
@@ -547,6 +574,23 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     );
     return !isSegmentRenderStale(cached, hash);
   });
+  const selectedSegments = segments.filter((segment) => selectedSegmentIds.has(segment.id));
+  const allSelectedRenderedAndFresh =
+    hasAnySelection && selectedSegments.length === selectedSegmentIds.size &&
+    selectedSegments.every((segment) => {
+      const cached = cachedRenderMap.get(segment.id);
+      return !!cached?.url && !isSegmentRenderStale(
+        cached,
+        computeSegmentRenderFingerprint(
+          segment,
+          captionSettings,
+          globalFraming,
+          transcriptionVersion,
+        ),
+      );
+    });
+  const currentSelectionKey = [...selectedSegmentIds].sort().join("\0");
+  const folderMatchesSelection = packageSelectionKey === currentSelectionKey;
 
   // Initialize selection when project changes (not on segment updates)
   useEffect(() => {
@@ -698,19 +742,11 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
             const newRenders = result.segmentDownloads
               .filter((s) => s.status === "completed" && s.downloadUrl)
               .map((s) => {
-                const segment = segments.find((seg) => seg.id === s.segmentId);
                 return {
                   segmentId: s.segmentId,
                   title: s.title,
                   url: s.downloadUrl!,
-                  contentHash: segment
-                    ? computeSegmentRenderFingerprint(
-                        segment,
-                        captionSettings,
-                        globalFraming,
-                        transcriptionVersion,
-                      )
-                    : undefined,
+                  contentHash: s.contentHash,
                 };
               });
 
@@ -724,7 +760,29 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
             dispatch(setLastSegmentRenders(Array.from(mergedMap.values())));
           }
 
-          if (jobId && lastPackageDownloadJobRef.current !== jobId) {
+          const completedDownloads = (result.segmentDownloads || []).filter(
+            (item) => item.status === "completed",
+          );
+          const renderMatchesCurrentSettings =
+            completedDownloads.length === selectedSegmentIds.size &&
+            completedDownloads.length > 0 &&
+            completedDownloads.every((item) => {
+              const segment = segments.find(
+                (candidate) => candidate.id === item.segmentId,
+              );
+              return !!segment && selectedSegmentIds.has(item.segmentId) &&
+                item.contentHash === computeSegmentRenderFingerprint(
+                  segment,
+                  captionSettings,
+                  globalFraming,
+                  transcriptionVersion,
+                );
+            });
+          if (
+            jobId &&
+            lastPackageDownloadJobRef.current !== jobId &&
+            renderMatchesCurrentSettings
+          ) {
             lastPackageDownloadJobRef.current = jobId;
             void runPackageDownload(result.segmentDownloads);
           }
@@ -756,6 +814,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     dispatch,
     lastSegmentRenders,
     segments,
+    selectedSegmentIds,
     captionSettings,
     globalFraming,
     transcriptionVersion,
@@ -812,6 +871,8 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
         quality: "standard",
         segmentIds: Array.from(selectedSegmentIds),
         captionSettings,
+        segments: segments.filter((segment) => selectedSegmentIds.has(segment.id)),
+        globalFraming,
       });
       setJobId(result.jobId);
       setStatus("rendering");
@@ -826,6 +887,8 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     isProcessing,
     flushProjectForExport,
     captionSettings,
+    segments,
+    globalFraming,
   ]);
 
   const handleRerenderSegment = useCallback(
@@ -851,6 +914,8 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
           quality: "standard",
           segmentIds: [segmentId],
           captionSettings,
+          segments: segments.filter((segment) => segment.id === segmentId),
+          globalFraming,
         });
         setJobId(result.jobId);
         setStatus("rendering");
@@ -860,7 +925,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
         setError(apiError.response?.data?.error || "Failed to start render");
       }
     },
-    [projectId, isProcessing, flushProjectForExport, captionSettings],
+    [projectId, isProcessing, flushProjectForExport, captionSettings, segments, globalFraming],
   );
 
   const handleDownload = useCallback((url: string, title: string) => {
@@ -1074,6 +1139,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                 size="sm"
                 className="shrink-0 h-7 px-2 text-xs text-destructive hover:text-destructive"
                 onClick={() => void runPackageDownload()}
+                disabled={!allSelectedRenderedAndFresh}
               >
                 Retry
               </Button>
@@ -1605,9 +1671,8 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                   Metadata JSON
                 </Button>
               )}
-            {hasAnySelection &&
-              (status === "completed" || someRendered) &&
-              packageStatus === "ready" &&
+            {allSelectedRenderedAndFresh &&
+              packageStatus === "ready" && folderMatchesSelection &&
               packageDownloadUrl && (
                 <Button
                   asChild
@@ -1625,9 +1690,8 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                   </a>
                 </Button>
               )}
-            {hasAnySelection &&
-              (status === "completed" || someRendered) &&
-              packageStatus !== "ready" && (
+            {allSelectedRenderedAndFresh &&
+              (packageStatus !== "ready" || !folderMatchesSelection) && (
                 <Button
                   variant="outline"
                   size="sm"

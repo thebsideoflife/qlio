@@ -524,7 +524,7 @@ export const handler: Handler<
             }],
             captions: segmentCaptions,
             captionSettings,
-            globalFraming: { ...globalFraming, enabled: true },
+            globalFraming,
             sourceAspect,
             sourceFps,
           },
