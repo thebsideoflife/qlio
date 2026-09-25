@@ -6,6 +6,7 @@
 import {
   buildCatalogue,
   hueFromId,
+  humanizeSourceTitle,
   mapAssetKind,
   resolveNote,
   resolveRenderLocation,
@@ -96,14 +97,31 @@ function testPureHelpers(): void {
     "different projects get different hues",
   );
 
-  assertEqual(mapAssetKind("tv"), "series", "tv maps to series");
+  assertEqual(mapAssetKind("tv"), "episode", "tv maps to episode");
   assertEqual(
     mapAssetKind("MOVIE"),
     "film",
     "movie maps to film (case-insensitive)",
   );
-  assertEqual(mapAssetKind("other"), "clip", "other maps to clip");
-  assertEqual(mapAssetKind(null), "clip", "missing assetType maps to clip");
+  assertEqual(mapAssetKind("other"), "episode", "unknown assetType maps to episode");
+  assertEqual(mapAssetKind(null), "episode", "missing assetType maps to episode");
+  assertEqual(
+    mapAssetKind("tv", "Anthony Bourdain - No Reservations S01E01.mp4"),
+    "documentary",
+    "Bourdain filename maps to documentary",
+  );
+  assertEqual(
+    humanizeSourceTitle("LG_NASHVILLE_101_PILOT_HD_2CH_EN.mp4"),
+    "Nashville",
+    "Lionsgate Nashville filename becomes a human title",
+  );
+  assertEqual(
+    humanizeSourceTitle(
+      "Anthony Bourdain - No Reservations S01E01 - Paris Why the French Don't Suck.mp4",
+    ),
+    "No Reservations — Paris",
+    "Bourdain filename becomes a human title",
+  );
 
   assertEqual(
     resolveRenderLocation(
@@ -163,7 +181,7 @@ function testPureHelpers(): void {
     '"Quote"',
     "falls back to key dialogue",
   );
-  assertEqual(resolveNote({}, {}), null, "no note when nothing is written");
+  assertEqual(resolveNote({}, {}), undefined, "no note when nothing is written");
 }
 
 async function testBuildCatalogue(): Promise<void> {
@@ -219,11 +237,15 @@ async function testBuildCatalogue(): Promise<void> {
     "Cold open",
     "tagline is the first available episode note",
   );
-  assertEqual(series.assetId, "asset-nashville", "series links its source asset");
   assertEqual(
-    series.posterUrl,
-    "https://cdn.example/thumbnails/projects/nashville/cover.jpg?sig=1",
-    "series poster is the project cover",
+    series.sourceAssetId,
+    "asset-nashville",
+    "series links its source asset",
+  );
+  assertEqual(
+    series.tags.slice(0, 2),
+    ["2 parts", "Episode"],
+    "tags include part count and kind",
   );
 
   const episodes = series.episodes;
@@ -232,7 +254,8 @@ async function testBuildCatalogue(): Promise<void> {
     ["seg-a", "seg-b"],
     "episodes are rendered segments sorted by startTime",
   );
-  assertEqual(episodes[0].seriesId, NASHVILLE_PROJECT_ID, "episode links its series");
+  assertEqual(episodes[0].index, 1, "episode index is 1-based");
+  assertEqual(episodes[1].index, 2, "second rendered segment is part 2");
   assertEqual(episodes[0].sourceIn, 10, "sourceIn is startTime");
   assertEqual(episodes[0].sourceOut, 40, "sourceOut is endTime");
   assertEqual(episodes[0].durationSec, 30, "durationSec is endTime - startTime");
@@ -281,12 +304,11 @@ async function testBuildCatalogue(): Promise<void> {
   assertEqual(catalogue.assets.length, 1, "one SourceAsset per referenced asset");
   const asset = catalogue.assets[0];
   assertEqual(asset.id, "asset-nashville", "SourceAsset id is the assetId");
-  assertEqual(asset.kind, "series", "SourceAsset kind comes from assetType");
-  assertEqual(asset.assetType, "tv", "SourceAsset keeps the raw assetType");
+  assertEqual(asset.kind, "episode", "SourceAsset kind comes from assetType");
   assertEqual(
-    asset.originalName,
+    asset.filename,
     "nashville_master.mov",
-    "SourceAsset exposes originalName",
+    "SourceAsset filename is the dashboard originalName",
   );
   assertEqual(
     asset.durationSec,
@@ -295,8 +317,18 @@ async function testBuildCatalogue(): Promise<void> {
   );
   assertEqual(
     asset.title,
-    "nashville_master.mov",
-    "SourceAsset title falls back to originalName",
+    "nashville_master",
+    "SourceAsset title is a humanized filename",
+  );
+  assertEqual(
+    asset.seriesIds,
+    [NASHVILLE_PROJECT_ID],
+    "SourceAsset lists the series cut from it",
+  );
+  assertEqual(
+    asset.posterUrl,
+    "https://cdn.example/thumbnails/projects/nashville/cover.jpg?sig=1",
+    "SourceAsset poster is the project cover",
   );
 }
 
@@ -317,18 +349,23 @@ async function testMissingAssetRow(): Promise<void> {
   );
   assertEqual(
     catalogue.assets[0].durationSec,
-    null,
-    "missing duration stays null",
+    0,
+    "missing duration becomes 0",
   );
   assertEqual(
     catalogue.assets[0].kind,
-    "series",
+    "episode",
     "kind still comes from project metadata",
   );
   assertEqual(
+    catalogue.assets[0].filename,
+    "source.mp4",
+    "filename falls back when the asset row is missing",
+  );
+  assertEqual(
     catalogue.assets[0].title,
-    "Lionsgate Cut 081926",
-    "title falls back to the project title",
+    "source",
+    "title humanizes the filename fallback",
   );
   assertEqual(
     catalogue.series[0].episodes[0].posterUrl,

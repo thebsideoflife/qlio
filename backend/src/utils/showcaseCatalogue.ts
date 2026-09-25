@@ -1,58 +1,51 @@
 /**
  * Read-time mapping from Qlio rows to the `qlio-showcase` Catalogue shape
- * (qlio-showcase/src/data/types.ts: Catalogue, MicroSeries, Episode,
- * SourceAsset). Pure on purpose: the handler passes presigners in so the
- * mapping stays testable without AWS.
- *
- * Nothing here is persisted — the demo is a hardcoded project list plus a
- * mapping computed on every request.
+ * (qlio-showcase/src/data/types.ts). Extra fields the app ignores are not
+ * emitted — the feed, source rows, and "Part N" chrome all crash or go blank
+ * if `filename` / `sourceAssetId` / `tags` / `index` are missing.
  */
 
 import { mapWithConcurrency } from "./concurrency";
 
-export type SourceAssetKind = "series" | "film" | "clip";
+export type SourceKind =
+  | "episode"
+  | "film"
+  | "documentary"
+  | "sports"
+  | "reality"
+  | "talk";
 
 export interface SourceAsset {
-  /** Qlio assetId. */
   id: string;
-  /** `project.metadata.assetType` mapped for the mobile app. */
-  kind: SourceAssetKind;
-  /** Raw Qlio assetType ("tv" | "movie" | "other"), null when unset. */
-  assetType: string | null;
   title: string;
-  originalName: string | null;
-  durationSec: number | null;
+  filename: string;
+  kind: SourceKind;
+  durationSec: number;
+  posterUrl?: string | null;
+  seriesIds: string[];
 }
 
 export interface Episode {
-  /** Qlio segmentId. */
   id: string;
-  /** Owning MicroSeries.id (Qlio projectId). */
-  seriesId: string;
-  assetId: string | null;
+  index: number;
   title: string;
-  /** Segment description, else short generated metadata. */
-  note: string | null;
+  durationSec: number;
   sourceIn: number;
   sourceOut: number;
-  durationSec: number;
-  /** Presigned segmentRenders object. */
-  videoUrl: string;
-  /** Presigned segment thumbnail, else the project cover. */
-  posterUrl: string | null;
+  videoUrl?: string | null;
+  posterUrl?: string | null;
+  note?: string;
 }
 
 export interface MicroSeries {
-  /** Qlio projectId. */
   id: string;
   title: string;
-  tagline: string | null;
-  /** hash(projectId) % 360 — stable accent colour for the app. */
-  hue: number;
-  featured: boolean;
-  assetId: string | null;
-  posterUrl: string | null;
+  tagline: string;
+  sourceAssetId: string;
+  tags: string[];
   episodes: Episode[];
+  hue: number;
+  featured?: boolean;
 }
 
 export interface Catalogue {
@@ -60,7 +53,6 @@ export interface Catalogue {
   series: MicroSeries[];
 }
 
-/** projects table row, projected to what the showcase needs. */
 export interface ShowcaseProjectRow {
   projectId: string;
   assetId?: string;
@@ -91,18 +83,21 @@ export interface ShowcaseProjectRow {
       paragraph?: string;
     };
     thumbnailKey?: string;
+    tags?: {
+      iab?: { labels?: string[] };
+    };
   }>;
   metadata?: {
     assetType?: string | null;
-    userPrompt?: string | null;
+    format?: string | null;
   } | null;
 }
 
-/** assets table row, projected to what the showcase needs. */
 export interface ShowcaseAssetRow {
   assetId: string;
   title?: string;
   originalName?: string;
+  fileName?: string;
   duration?: number;
 }
 
@@ -117,22 +112,23 @@ export interface ShowcaseSelection {
 }
 
 export interface BuildCatalogueInput {
-  /** Hardcoded demo list; its order is the response order. */
   selections: ShowcaseSelection[];
   projects: ShowcaseProjectRow[];
   assets: ShowcaseAssetRow[];
-  /** Renders bucket (zeevee-renders-dev) preferred over Remotion-Lambda keys. */
   preferredRenderBucket?: string;
   presignVideo: (location: RenderLocation) => Promise<string | null>;
   presignThumbnail: (key: string) => Promise<string | null>;
 }
 
-/** Presigning is local CPU work, but keep the fan-out bounded anyway. */
 const PRESIGN_CONCURRENCY = 6;
 
-const KIND_BY_ASSET_TYPE: Record<string, SourceAssetKind> = {
-  tv: "series",
-  movie: "film",
+const KIND_TAG: Record<SourceKind, string> = {
+  episode: "Episode",
+  film: "Feature",
+  documentary: "Documentary",
+  sports: "Sports",
+  reality: "Reality",
+  talk: "Talk",
 };
 
 function round3(value: number): number {
@@ -148,7 +144,24 @@ function firstText(...candidates: Array<string | null | undefined>): string | nu
   return null;
 }
 
-/** Deterministic series accent: FNV-1a over the projectId, folded to 0..359. */
+function stripExtension(name: string): string {
+  return name.replace(/\.(mp4|mov|m4v|mkv|webm)$/i, "");
+}
+
+/** Human title for the source catalogue; `filename` keeps the dashboard name. */
+export function humanizeSourceTitle(filename: string): string {
+  const base = stripExtension(filename).trim();
+  if (!base) return "Untitled source";
+  if (/LG_NASHVILLE/i.test(base)) return "Nashville";
+  if (/bourdain/i.test(base) && /no reservations/i.test(base)) {
+    return "No Reservations — Paris";
+  }
+  if (/_/.test(base) && base === base.toUpperCase()) {
+    return base.replace(/_/g, " ").replace(/\s+/g, " ").trim();
+  }
+  return base;
+}
+
 export function hueFromId(id: string): number {
   let hash = 2166136261;
   for (let i = 0; i < id.length; i++) {
@@ -158,20 +171,21 @@ export function hueFromId(id: string): number {
   return Math.abs(hash) % 360;
 }
 
-/** `assetType` ("tv" | "movie" | "other") → mobile `kind`. */
 export function mapAssetKind(
   assetType: string | null | undefined,
-): SourceAssetKind {
+  filename?: string | null,
+): SourceKind {
+  const name = (filename ?? "").toLowerCase();
+  if (/bourdain|no reservations|documentary|fbi files/.test(name)) {
+    return "documentary";
+  }
+  if (/mariners|padres|pickleball|sport/.test(name)) return "sports";
   const normalized =
     typeof assetType === "string" ? assetType.trim().toLowerCase() : "";
-  return KIND_BY_ASSET_TYPE[normalized] ?? "clip";
+  if (normalized === "movie") return "film";
+  return "episode";
 }
 
-/**
- * Object to presign for one rendered segment. Prefers the CORS renders bucket
- * copy (`bucket`/`key`, e.g. zeevee-renders-dev) over the Remotion-Lambda
- * working key (`sourceBucket`/`sourceKey`).
- */
 export function resolveRenderLocation(
   render: {
     bucket?: string;
@@ -197,7 +211,6 @@ export function resolveRenderLocation(
   return copy ?? source;
 }
 
-/** `tagline` / `Episode.note`: segment description, else short metadata. */
 export function resolveNote(
   segment:
     | { description?: string; keyDialogue?: string }
@@ -213,44 +226,39 @@ export function resolveNote(
       }
     | undefined
     | null,
-): string | null {
-  return firstText(
-    segment?.description,
-    metadata?.descriptions?.short,
-    metadata?.descriptions?.two_sentences,
-    segment?.keyDialogue,
-    metadata?.descriptions?.paragraph,
+): string | undefined {
+  return (
+    firstText(
+      segment?.description,
+      metadata?.descriptions?.short,
+      metadata?.descriptions?.two_sentences,
+      segment?.keyDialogue,
+      metadata?.descriptions?.paragraph,
+    ) ?? undefined
   );
 }
 
-function buildSourceAsset(
-  assetId: string,
-  assetRow: ShowcaseAssetRow | undefined,
-  project: ShowcaseProjectRow,
-): SourceAsset {
-  const assetType = project.metadata?.assetType ?? null;
-  return {
-    id: assetId,
-    kind: mapAssetKind(assetType),
-    assetType: firstText(assetType),
-    title:
-      firstText(assetRow?.title, assetRow?.originalName, project.title) ??
-      "Untitled source",
-    originalName: firstText(assetRow?.originalName),
-    durationSec:
-      typeof assetRow?.duration === "number" && Number.isFinite(assetRow.duration)
-        ? round3(assetRow.duration)
-        : null,
-  };
+function seriesTags(
+  kind: SourceKind,
+  episodeCount: number,
+  metadataRows: NonNullable<ShowcaseProjectRow["segmentMetadata"]>,
+): string[] {
+  const tags: string[] = [`${episodeCount} part${episodeCount === 1 ? "" : "s"}`];
+  tags.push(KIND_TAG[kind]);
+  const iab = new Set<string>();
+  for (const row of metadataRows) {
+    for (const label of row.tags?.iab?.labels ?? []) {
+      const trimmed = label.trim();
+      if (trimmed && trimmed.toLowerCase() !== "clip") iab.add(trimmed);
+    }
+  }
+  for (const label of iab) {
+    if (tags.length >= 3) break;
+    if (!tags.includes(label)) tags.push(label);
+  }
+  return tags;
 }
 
-/**
- * Build the mobile Catalogue for the hardcoded demo projects.
- *
- * Episodes are exactly the project segments that have a `segmentRenders` row
- * pointing at a presignable object; series with no playable episode are
- * dropped so the app never renders an empty card.
- */
 export async function buildCatalogue(
   input: BuildCatalogueInput,
 ): Promise<Catalogue> {
@@ -260,14 +268,27 @@ export async function buildCatalogue(
   const assetRowById = new Map(
     input.assets.map((asset) => [asset.assetId, asset]),
   );
-  const assets = new Map<string, SourceAsset>();
   const series: MicroSeries[] = [];
+  const seriesIdsByAsset = new Map<string, string[]>();
+  const posterByAsset = new Map<string, string | null>();
+  const assetMeta = new Map<
+    string,
+    { filename: string; title: string; kind: SourceKind; durationSec: number }
+  >();
 
   for (const selection of input.selections) {
     const project = projectById.get(selection.projectId);
     if (!project) {
       console.warn(
         `[showcase] configured project ${selection.projectId} not found`,
+      );
+      continue;
+    }
+
+    const assetId = firstText(project.assetId);
+    if (!assetId) {
+      console.warn(
+        `[showcase] project ${project.projectId} has no assetId; skipped`,
       );
       continue;
     }
@@ -295,9 +316,9 @@ export async function buildCatalogue(
     const built = await mapWithConcurrency(
       segments,
       PRESIGN_CONCURRENCY,
-      async (segment, index): Promise<Episode | null> => {
+      async (segment): Promise<Omit<Episode, "index"> | null> => {
         const render = rendersBySegment.get(segment.id);
-        if (!render) return null; // not rendered → not an episode
+        if (!render) return null;
 
         const location = resolveRenderLocation(
           render,
@@ -327,11 +348,9 @@ export async function buildCatalogue(
 
         return {
           id: segment.id,
-          seriesId: project.projectId,
-          assetId: firstText(project.assetId),
           title:
             firstText(segment.title, metadata?.title, render.title) ??
-            `Part ${index + 1}`,
+            "Untitled part",
           note: resolveNote(segment, metadata),
           sourceIn: segment.startTime,
           sourceOut: segment.endTime,
@@ -342,7 +361,10 @@ export async function buildCatalogue(
       },
     );
 
-    const episodes = built.filter((episode): episode is Episode => !!episode);
+    const episodes: Episode[] = built
+      .filter((episode): episode is Omit<Episode, "index"> => !!episode)
+      .map((episode, index) => ({ ...episode, index: index + 1 }));
+
     if (episodes.length === 0) {
       console.warn(
         `[showcase] project ${project.projectId} has no playable rendered segments`,
@@ -350,26 +372,54 @@ export async function buildCatalogue(
       continue;
     }
 
-    const assetId = firstText(project.assetId);
-    if (assetId && !assets.has(assetId)) {
-      assets.set(
-        assetId,
-        buildSourceAsset(assetId, assetRowById.get(assetId), project),
-      );
+    const assetRow = assetRowById.get(assetId);
+    const filename =
+      firstText(assetRow?.originalName, assetRow?.fileName, assetRow?.title) ??
+      "source.mp4";
+    const kind = mapAssetKind(project.metadata?.assetType, filename);
+    const durationSec =
+      typeof assetRow?.duration === "number" && Number.isFinite(assetRow.duration)
+        ? round3(assetRow.duration)
+        : 0;
+
+    if (!assetMeta.has(assetId)) {
+      assetMeta.set(assetId, {
+        filename,
+        title: humanizeSourceTitle(filename),
+        kind,
+        durationSec,
+      });
     }
 
-    const posterKey = firstText(project.thumbnailKey);
+    const ids = seriesIdsByAsset.get(assetId) ?? [];
+    ids.push(project.projectId);
+    seriesIdsByAsset.set(assetId, ids);
+
+    const coverKey = firstText(project.thumbnailKey);
+    const coverUrl = coverKey ? await input.presignThumbnail(coverKey) : null;
+    if (!posterByAsset.has(assetId) && coverUrl) posterByAsset.set(assetId, coverUrl);
+
     series.push({
       id: project.projectId,
       title: firstText(project.title) ?? "Untitled series",
-      tagline: episodes.find((episode) => episode.note)?.note ?? null,
+      tagline: episodes.find((episode) => episode.note)?.note ?? "",
+      sourceAssetId: assetId,
+      tags: seriesTags(kind, episodes.length, project.segmentMetadata ?? []),
+      episodes,
       hue: hueFromId(project.projectId),
       featured: selection.featured === true,
-      assetId,
-      posterUrl: posterKey ? await input.presignThumbnail(posterKey) : null,
-      episodes,
     });
   }
 
-  return { assets: [...assets.values()], series };
+  const assets: SourceAsset[] = [...assetMeta.entries()].map(([id, meta]) => ({
+    id,
+    title: meta.title,
+    filename: meta.filename,
+    kind: meta.kind,
+    durationSec: meta.durationSec,
+    posterUrl: posterByAsset.get(id) ?? null,
+    seriesIds: seriesIdsByAsset.get(id) ?? [],
+  }));
+
+  return { assets, series };
 }
