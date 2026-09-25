@@ -13,8 +13,6 @@
  * transcription is not here yet: it still runs through ./openrouter.
  */
 
-import { languageLabel } from "../utils/transcript-format";
-
 import {
   GetSecretValueCommand,
   SecretsManagerClient,
@@ -41,10 +39,9 @@ export const SPORELABS_TRANSLATE_MODEL =
 export const SPORELABS_GEMINI_MODEL =
   process.env.SPORELABS_GEMINI_MODEL || "google/gemini-2.5-pro";
 
+/** Caption translation itself lives in ./translate-captions. */
 export const TRANSLATE_MODEL = SPORELABS_TRANSLATE_MODEL;
 
-const TRANSLATE_TIMEOUT_MS = 55_000;
-const TRANSLATE_RETRIES = 3;
 const FRAMING_TIMEOUT_MS = 180_000;
 
 let cachedApiKey: string | null = null;
@@ -320,115 +317,6 @@ function sleep(ms: number): Promise<void> {
 
 function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
-}
-
-// ---------------------------------------------------------------------------
-// Caption translation
-// ---------------------------------------------------------------------------
-
-function translationLanguageName(code: string): string {
-  const normalized = (code || "").trim().toLowerCase();
-  if (!normalized || normalized === "und") {
-    return "the original spoken language";
-  }
-  return languageLabel(normalized);
-}
-
-function alignTranslationBatch(
-  source: string[],
-  translated: string[],
-): string[] {
-  if (translated.length === source.length) return translated;
-  if (translated.length > source.length) return translated.slice(0, source.length);
-  return [...translated, ...source.slice(translated.length)];
-}
-
-export async function translateCaptionLines(params: {
-  sourceLanguage: string;
-  targetLanguage: string;
-  lines: string[];
-}): Promise<string[]> {
-  if (params.lines.length === 0) return [];
-
-  const sourceName = translationLanguageName(params.sourceLanguage);
-  const targetName = translationLanguageName(params.targetLanguage);
-  const system = `You translate burnt-in video captions. Translate each line from ${sourceName} to ${targetName}. Keep proper names, numbers, and on-screen terms. Do not merge or split lines. Return JSON: {"lines":["..."]} with the same number of strings, same order.`;
-
-  const BATCH = 40;
-  const out: string[] = [];
-
-  for (let i = 0; i < params.lines.length; i += BATCH) {
-    const batch = params.lines.slice(i, i + BATCH);
-    let lastError: Error | null = null;
-    let translated: string[] | null = null;
-    for (let attempt = 1; attempt <= TRANSLATE_RETRIES; attempt++) {
-      try {
-        const content = await sporelabsChatText({
-          model: SPORELABS_TRANSLATE_MODEL,
-          system,
-          user: JSON.stringify({ lines: batch }),
-          temperature: 0.2,
-          timeoutMs: TRANSLATE_TIMEOUT_MS,
-          json: true,
-          attempts: 1, // this loop owns retries
-        });
-
-        try {
-          const json = JSON.parse(content) as { lines?: unknown };
-          if (Array.isArray(json.lines)) {
-            translated = json.lines.map((line) => String(line ?? ""));
-          }
-        } catch {
-          throw new Error(
-            `Could not parse translation JSON: ${content.slice(0, 200)}`,
-          );
-        }
-        if (!translated) {
-          throw new Error("SporeLabs translation returned no lines");
-        }
-        if (translated.length !== batch.length) {
-          if (attempt < TRANSLATE_RETRIES) {
-            lastError = new Error(
-              `Translation length mismatch: got ${translated.length}, expected ${batch.length}`,
-            );
-            translated = null;
-            await sleep(1000 * 2 ** (attempt - 1));
-            continue;
-          }
-          console.warn(
-            `[translate] length mismatch after ${TRANSLATE_RETRIES} attempts; aligning ${translated.length} -> ${batch.length}`,
-          );
-          translated = alignTranslationBatch(batch, translated);
-        }
-        break;
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        const retryable =
-          lastError.name === "TimeoutError" ||
-          lastError.name === "AbortError" ||
-          (lastError instanceof SporeLabsError &&
-            isRetryableStatus(lastError.status));
-        if (retryable && attempt < TRANSLATE_RETRIES) {
-          await sleep(1000 * 2 ** (attempt - 1));
-          continue;
-        }
-        throw lastError;
-      }
-    }
-
-    if (!translated) {
-      throw lastError || new Error("Translation batch failed");
-    }
-    if (translated.length !== batch.length) {
-      console.warn(
-        `[translate] aligning batch length ${translated.length} -> ${batch.length}`,
-      );
-      translated = alignTranslationBatch(batch, translated);
-    }
-    out.push(...translated);
-  }
-
-  return out;
 }
 
 // ---------------------------------------------------------------------------
