@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { CaptionLine, CaptionStyle } from "./types";
 import { resolveCaptionContent } from "./captionContent";
-import { captionWordText, hasCaptionLineBreak } from "./captionGrouping";
+import { captionWordText } from "./captionGrouping";
 import { isCaptionFontReady, loadCaptionFont } from "./loadCaptionFonts";
 
 interface CaptionTextProps {
@@ -85,11 +85,7 @@ export function CaptionText({
               }}
             >
               {captionWordText(word.value)}
-              {index < visibleWords.length - 1
-                ? hasCaptionLineBreak(word.value)
-                  ? "\n"
-                  : " "
-                : ""}
+              {index < visibleWords.length - 1 ? " " : ""}
             </span>
           ))
         )}

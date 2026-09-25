@@ -55,8 +55,8 @@ const wide = captionsFromParsedTranscript(original, undefined, captionGroupingOp
 const narrow = captionsFromParsedTranscript(original, undefined, captionGroupingOptions({ fontSize: 4, maxWidth: 95 }, "9:16"));
 assert(narrow.length > wide.length, `portrait L font makes more captions (${narrow.length} vs ${wide.length})`);
 
-// Word edits: a trailing newline is a manual line break in the caption text.
+// Legacy line-break edits are treated as plain word text.
 const edited = captionsFromParsedTranscript(original, { "0.3-0.5": "quick\n" });
-assert(edited[0].text.startsWith("extraordinary quick\ndemonstrate"), `manual break survives: ${JSON.stringify(edited[0].text)}`);
+assert(edited[0].text.startsWith("extraordinary quick demonstrate"), `legacy marker ignored: ${JSON.stringify(edited[0].text)}`);
 
 console.log("caption-grouping tests passed");

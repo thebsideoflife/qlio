@@ -1,9 +1,7 @@
 import React, { useCallback } from "react";
 import {
   captionWordText,
-  hasCaptionLineBreak,
   isDeletedCaptionWord,
-  withCaptionLineBreak,
 } from "@/remotion/captionGrouping";
 import { Timeline } from "@/components/editor/Timeline";
 import { IQAgentPanel } from "@/components/editor/iq-agent/IQAgentPanel";
@@ -1051,30 +1049,14 @@ function TranscriptPanel({
     [editMode, onWordClick]
   );
 
-  // Save edited word on blur. The line-break marker is not part of the
-  // editable text, so carry it over from the word's current value.
+  // Save edited word on blur.
   const handleWordBlur = React.useCallback(
     (word: { start: number; end: number; value: string }, newValue: string) => {
       dispatch(
         updateCaptionWord({
           start: word.start,
           end: word.end,
-          newValue: withCaptionLineBreak(newValue, hasCaptionLineBreak(word.value)),
-        }),
-      );
-    },
-    [dispatch],
-  );
-
-  // Toggle a caption line break after this word (Shift+Enter, or the ↵ badge).
-  const handleToggleLineBreak = React.useCallback(
-    (word: { start: number; end: number; value: string }, text?: string) => {
-      const current = text ?? captionWordText(word.value);
-      dispatch(
-        updateCaptionWord({
-          start: word.start,
-          end: word.end,
-          newValue: withCaptionLineBreak(current, !hasCaptionLineBreak(word.value)),
+          newValue: captionWordText(newValue),
         }),
       );
     },
@@ -1087,13 +1069,7 @@ function TranscriptPanel({
       // Stop propagation for all keys to prevent timeline shortcuts from interfering
       e.stopPropagation();
       
-      if (e.key === "Enter" && e.shiftKey) {
-        // Shift+Enter: line break after this word. Save the text at the same time.
-        e.preventDefault();
-        const target = e.target as HTMLElement;
-        target.dataset.toggleLineBreak = "true";
-        target.blur();
-      } else if (e.key === "Enter") {
+      if (e.key === "Enter") {
         e.preventDefault();
         (e.target as HTMLElement).blur();
       } else if (e.key === "Escape") {
@@ -1170,9 +1146,8 @@ function TranscriptPanel({
         </div>
         {editMode && (
           <div className="text-[11px] text-muted-foreground">
-            Click a word to edit it. <kbd className="font-mono">Enter</kbd> saves,{" "}
-            <kbd className="font-mono">Shift+Enter</kbd> toggles a line break after
-            the word, or click ↵ beside it. Clearing a word deletes it.
+            Click a word to edit it. <kbd className="font-mono">Enter</kbd> saves.
+            Clearing a word deletes it.
           </div>
         )}
       </div>
@@ -1232,7 +1207,6 @@ function TranscriptPanel({
                     const isActive =
                       currentTime >= word.start && currentTime <= word.end;
                     const isEmpty = isDeletedCaptionWord(word.value);
-                    const lineBreak = hasCaptionLineBreak(word.value);
 
                     // Skip rendering empty words entirely (they were deleted)
                     if (isEmpty && !editMode) {
@@ -1240,18 +1214,13 @@ function TranscriptPanel({
                     }
 
                     return (
-                      <span key={`${word.start}-${word.end}-${wordIdx}`}>
                       <span
+                        key={`${word.start}-${word.end}-${wordIdx}`}
                         onClick={() => !editMode && handleWordClick(word)}
                         onBlur={(e) => {
                           if (!editMode) return;
                           const target = e.target as HTMLElement;
                           const newVal = target.textContent || "";
-                          if (target.dataset.toggleLineBreak === "true") {
-                            delete target.dataset.toggleLineBreak;
-                            handleToggleLineBreak(word, newVal);
-                            return;
-                          }
                           // Always save, even if empty (deletion) or same value
                           handleWordBlur(word, newVal);
                         }}
@@ -1267,47 +1236,6 @@ function TranscriptPanel({
                         )}
                       >
                         {isEmpty ? "[deleted]" : captionWordText(word.value)}
-                      </span>
-                      {!isEmpty && (lineBreak || editMode) && (
-                        <button
-                          type="button"
-                          disabled={!editMode}
-                          aria-label={
-                            lineBreak
-                              ? "Remove caption line break"
-                              : "Add caption line break after this word"
-                          }
-                          title={
-                            editMode
-                              ? lineBreak
-                                ? "Remove caption line break"
-                                : "Add caption line break after this word"
-                              : "Caption line break after this word"
-                          }
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (!editMode) return;
-                            const editable = e.currentTarget.previousElementSibling as HTMLElement | null;
-                            const text = editable?.textContent ?? captionWordText(word.value);
-                            if (editable && document.activeElement === editable) {
-                              editable.dataset.toggleLineBreak = "true";
-                              editable.blur();
-                            } else {
-                              handleToggleLineBreak(word, text);
-                            }
-                          }}
-                          className={cn(
-                            "ml-0.5 rounded px-1 text-[10px] font-mono align-middle",
-                            lineBreak
-                              ? "bg-blue-500/15 text-blue-700 dark:text-blue-400"
-                              : "text-muted-foreground hover:bg-blue-500/15 hover:text-blue-700",
-                            editMode ? "cursor-pointer" : "cursor-default",
-                          )}
-                        >
-                          ↵
-                        </button>
-                      )}
                       </span>
                     );
                   }).reduce<React.ReactNode[]>((acc, node) => {
