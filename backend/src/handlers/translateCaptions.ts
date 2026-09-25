@@ -17,7 +17,8 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { checkAuth } from "../utils/auth";
-import { translateCaptionLines, TRANSLATE_MODEL } from "../services/sporelabs";
+import { TRANSLATE_MODEL } from "../services/sporelabs";
+import { translateCaptionLines } from "../services/translate-captions";
 import { presignS3Uri } from "../utils/s3";
 import {
   groupWordsIntoCaptions,
