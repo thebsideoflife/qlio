@@ -17,14 +17,13 @@ import {
 import {
   S3Client,
   GetObjectCommand,
-  PutObjectCommand,
 } from "@aws-sdk/client-s3";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { renderMediaOnLambda } from "@remotion/lambda/client";
 import type { AwsRegion } from "@remotion/lambda";
 import { spawn } from "child_process";
-import { createWriteStream, createReadStream, promises as fs } from "fs";
+import { createWriteStream, promises as fs } from "fs";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
 import path from "path";
@@ -35,6 +34,7 @@ import {
   shiftCaptionsBy,
 } from "../utils/transcript-format";
 import { extractClip, probeClipTiming } from "../utils/videoClip";
+import { uploadClipToS3 } from "../utils/uploadClipToS3";
 import {
   rebaseFramingKeyframesToClip,
   segmentFrameBounds,
@@ -100,24 +100,6 @@ async function downloadFromS3(
   await pipeline(response.Body as Readable, writeStream);
   const stats = await fs.stat(localPath);
   console.log(`Downloaded ${stats.size} bytes`);
-}
-
-async function uploadToS3(
-  localPath: string,
-  bucket: string,
-  key: string,
-): Promise<void> {
-  const stats = await fs.stat(localPath);
-  const readStream = createReadStream(localPath);
-  await s3Client.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: readStream,
-      ContentType: "video/mp4",
-    }),
-  );
-  console.log(`Uploaded ${stats.size} bytes to s3://${bucket}/${key}`);
 }
 
 const DEFAULT_SOURCE_ASPECT = 16 / 9;
@@ -452,7 +434,7 @@ export const handler: Handler<
       }
 
       const clipKey = `clips/${jobId}/${segment.id}.mp4`;
-      await uploadToS3(clipPath, MEDIA_BUCKET, clipKey);
+      await uploadClipToS3(s3Client, clipPath, MEDIA_BUCKET, clipKey);
 
       const clipUrl = await getSignedUrl(
         s3Client,
