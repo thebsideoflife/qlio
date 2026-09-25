@@ -6,7 +6,7 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { checkAuth } from "../utils/auth";
-import { captionSettingsEqual } from "../utils/caption-settings";
+import { shouldStampCaptionSettings } from "../utils/caption-settings";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -105,9 +105,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
       // The editor autosaves the whole caption-settings object on every dirty
       // tick, so only stamp captionSettingsUpdatedAt when the settings really
-      // changed. createProject uses this stamp to find the sibling project
+      // changed (or, for a project with none stored yet, differ from the
+      // defaults). createProject uses this stamp to find the sibling project
       // whose captions were most recently edited by a user.
-      if (!captionSettingsEqual(existingItem?.captionSettings, captionSettings)) {
+      if (shouldStampCaptionSettings(existingItem?.captionSettings, captionSettings)) {
         updateParts.push("#captionSettingsUpdatedAt = :u");
         exprNames["#captionSettingsUpdatedAt"] = "captionSettingsUpdatedAt";
       }

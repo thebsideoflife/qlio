@@ -7,6 +7,7 @@ import {
   DEFAULT_CAPTION_SETTINGS,
   mergeCaptionSettings,
   pickCaptionSettingsSource,
+  shouldStampCaptionSettings,
   type CaptionSettings,
 } from "../utils/caption-settings";
 
@@ -43,9 +44,17 @@ assert(partial.enabled === true, "enabled falls back to base");
 assert(partial.activeLanguage === "es", "activeLanguage carried over");
 assert(partial.wordEdits?.["1.25"] === "Hola", "wordEdits carried over");
 assert(
-  DEFAULT_CAPTION_SETTINGS.style.fontSize === 2,
+  DEFAULT_CAPTION_SETTINGS.style.fontSize === 3,
   "merge does not mutate the defaults",
 );
+
+// Defaults mirror zeevee/src/remotion/types.ts DEFAULT_CAPTION_SETTINGS.
+assert(DEFAULT_CAPTION_SETTINGS.style.fontSize === 3, "default fontSize matches editor");
+assert(
+  DEFAULT_CAPTION_SETTINGS.style.backgroundColor === "rgba(0,0,0,0.5)",
+  "default backgroundColor matches editor",
+);
+assert(DEFAULT_CAPTION_SETTINGS.style.highlightColor === "#60a5fa", "default highlightColor matches editor");
 
 const disabled = mergeCaptionSettings(DEFAULT_CAPTION_SETTINGS, {
   enabled: false,
@@ -58,8 +67,8 @@ const undefinedFields = mergeCaptionSettings(DEFAULT_CAPTION_SETTINGS, {
   activeLanguage: undefined,
   style: { fontSize: undefined, highlightColor: undefined },
 });
-assert(undefinedFields.style.fontSize === 2, "undefined style field does not clobber base");
-assert(undefinedFields.style.highlightColor === "#fbbf24", "undefined highlightColor keeps base");
+assert(undefinedFields.style.fontSize === 3, "undefined style field does not clobber base");
+assert(undefinedFields.style.highlightColor === "#60a5fa", "undefined highlightColor keeps base");
 assert(!("activeLanguage" in undefinedFields), "undefined top-level field is dropped");
 
 // Layering twice (defaults <- project <- request) behaves like renderVideo did.
@@ -101,6 +110,69 @@ assert(
 );
 assert(!captionSettingsEqual(undefined, { enabled: true }), "missing vs present is unequal");
 assert(captionSettingsEqual(undefined, undefined), "both missing is equal");
+
+// --- shouldStampCaptionSettings ---
+const defaultsCopy: CaptionSettings = {
+  ...DEFAULT_CAPTION_SETTINGS,
+  style: { ...DEFAULT_CAPTION_SETTINGS.style },
+};
+const edited: CaptionSettings = {
+  ...defaultsCopy,
+  style: { ...defaultsCopy.style, fontSize: 5 },
+};
+
+// Stored exists: stamp iff it differs.
+assert(!shouldStampCaptionSettings(edited, { ...edited }), "stored equal -> no stamp");
+assert(
+  !shouldStampCaptionSettings(edited, { style: { ...edited.style }, enabled: true }),
+  "stored equal ignoring key order -> no stamp",
+);
+assert(shouldStampCaptionSettings(edited, defaultsCopy), "stored differs -> stamp");
+assert(
+  shouldStampCaptionSettings(defaultsCopy, defaultsCopy) === false,
+  "stored defaults + incoming defaults -> no stamp",
+);
+assert(
+  shouldStampCaptionSettings(defaultsCopy, { ...defaultsCopy, wordEdits: { "1": "x" } }),
+  "stored exists and incoming adds a word edit -> stamp",
+);
+
+// Stored missing: stamp iff incoming differs from the defaults.
+assert(!shouldStampCaptionSettings(undefined, defaultsCopy), "missing + defaults -> no stamp");
+assert(!shouldStampCaptionSettings(null, defaultsCopy), "null stored + defaults -> no stamp");
+assert(
+  !shouldStampCaptionSettings(undefined, { ...defaultsCopy, wordEdits: {} }),
+  "missing + defaults with empty wordEdits -> no stamp",
+);
+assert(
+  !shouldStampCaptionSettings(undefined, { ...defaultsCopy, activeLanguage: "original" }),
+  "missing + defaults with activeLanguage 'original' -> no stamp",
+);
+assert(
+  !shouldStampCaptionSettings(undefined, { ...defaultsCopy, activeLanguage: undefined }),
+  "missing + defaults with activeLanguage undefined -> no stamp",
+);
+assert(
+  !shouldStampCaptionSettings(undefined, { ...defaultsCopy, activeLanguage: "" }),
+  "missing + defaults with empty activeLanguage -> no stamp",
+);
+assert(shouldStampCaptionSettings(undefined, edited), "missing + edited style -> stamp");
+assert(
+  shouldStampCaptionSettings(undefined, { ...defaultsCopy, enabled: false }),
+  "missing + captions disabled -> stamp",
+);
+assert(
+  shouldStampCaptionSettings(undefined, { ...defaultsCopy, wordEdits: { "1.25": "Hola" } }),
+  "missing + word edit -> stamp",
+);
+assert(
+  shouldStampCaptionSettings(undefined, { ...defaultsCopy, activeLanguage: "es" }),
+  "missing + translated language -> stamp",
+);
+assert(
+  shouldStampCaptionSettings(undefined, { enabled: true, style: { fontSize: 3 } }),
+  "missing + partial settings that are not the full defaults -> stamp",
+);
 
 // --- pickCaptionSettingsSource ---
 const s1 = { enabled: true, style: { fontSize: 1 } };
@@ -187,6 +259,6 @@ assert(noStamp === null, "a candidate with no timestamp at all is skipped");
 
 // End-to-end: what createProject writes for a new project.
 const inherited = mergeCaptionSettings(DEFAULT_CAPTION_SETTINGS, byStamp!.captionSettings);
-assert(inherited.style.fontSize === 2 && inherited.style.maxWidth === 95, "inherited settings layer over defaults");
+assert(inherited.style.fontSize === 2 && inherited.style.maxWidth === 95, "inherited settings layer over defaults (source fontSize 2 beats default 3)");
 
 console.log("caption-settings tests passed");

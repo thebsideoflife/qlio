@@ -6,10 +6,11 @@
  * whether an incoming PATCH actually changed the settings, and (c) pick which
  * sibling project a new project should inherit its caption settings from.
  *
- * NOTE: the default values here intentionally match what renderVideo.ts used
- * before this module existed. Aligning them with the frontend defaults is a
- * separate change.
+ * DEFAULT_CAPTION_SETTINGS mirrors the editor's defaults in
+ * zeevee/src/remotion/types.ts (the frontend is the source of truth for what
+ * the editor shows); keep the two in sync.
  */
+import { ORIGINAL_CAPTION_LANGUAGE } from "./transcript-source";
 
 export interface CaptionStyle {
   fontSize: number;
@@ -37,14 +38,14 @@ export type CaptionSettingsPatch = Partial<
 export const DEFAULT_CAPTION_SETTINGS: CaptionSettings = {
   enabled: true,
   style: {
-    fontSize: 2,
+    fontSize: 3,
     fontFamily: "Inter, system-ui, sans-serif",
     fontWeight: "600",
     color: "#ffffff",
-    backgroundColor: "rgba(0, 0, 0, 0.8)",
+    backgroundColor: "rgba(0,0,0,0.5)",
     position: { x: 50, y: 85 },
     maxWidth: 95,
-    highlightColor: "#fbbf24",
+    highlightColor: "#60a5fa",
   },
 };
 
@@ -106,6 +107,53 @@ function sortKeysDeep(value: unknown): unknown {
     return out;
   }
   return value;
+}
+
+/**
+ * Whether a PATCH carrying `incoming` caption settings should stamp
+ * `captionSettingsUpdatedAt` on the project, i.e. whether it represents a
+ * genuine user edit rather than the editor autosaving what it loaded.
+ *
+ *  - stored settings exist: stamp iff `incoming` differs from them;
+ *  - stored settings missing (older project, or one created before
+ *    inheritance existed): stamp iff `incoming` differs from the built-in
+ *    defaults. For that comparison an absent `wordEdits` counts as `{}` and an
+ *    `activeLanguage` that is unset / "original" is ignored, so an untouched
+ *    old project that is merely opened once never becomes an inheritance
+ *    candidate.
+ */
+export function shouldStampCaptionSettings(
+  stored: unknown,
+  incoming: unknown,
+): boolean {
+  if (isCaptionSettingsObject(stored)) {
+    return !captionSettingsEqual(stored, incoming);
+  }
+  return !captionSettingsEqual(
+    normaliseForDefaultCompare(incoming),
+    normaliseForDefaultCompare(DEFAULT_CAPTION_SETTINGS),
+  );
+}
+
+function isCaptionSettingsObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normaliseForDefaultCompare(value: unknown): unknown {
+  if (!isCaptionSettingsObject(value)) return value;
+  const { activeLanguage, wordEdits, ...rest } = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {
+    ...rest,
+    wordEdits: isCaptionSettingsObject(wordEdits) ? wordEdits : {},
+  };
+  if (
+    typeof activeLanguage === "string" &&
+    activeLanguage !== "" &&
+    activeLanguage !== ORIGINAL_CAPTION_LANGUAGE
+  ) {
+    out.activeLanguage = activeLanguage;
+  }
+  return out;
 }
 
 /** The subset of a stored project record the inheritance picker looks at. */
