@@ -17,7 +17,7 @@ resource "aws_lambda_function" "generate_export_metadata" {
   layers           = [aws_lambda_layer_version.ffmpeg.arn]
 
   environment {
-    variables = {
+    variables = merge(local.sporelabs_env, {
       PROJECTS_TABLE = aws_dynamodb_table.projects.name
       ASSETS_TABLE   = aws_dynamodb_table.assets.name
       # Read-only. Lets this Lambda refuse a job while the IQ agent owns the cut.
@@ -29,8 +29,7 @@ resource "aws_lambda_function" "generate_export_metadata" {
       CLOUDFRONT_DOMAIN                 = aws_cloudfront_distribution.media.domain_name
       CLOUDFRONT_KEY_PAIR_ID            = aws_cloudfront_public_key.media.id
       CLOUDFRONT_PRIVATE_KEY_SECRET_ARN = aws_secretsmanager_secret.cloudfront_private_key.arn
-      ANTHROPIC_SECRET_ARN              = data.aws_secretsmanager_secret.anthropic_api_key.arn
       FFMPEG_PATH                       = "/opt/bin/ffmpeg"
-    }
+    })
   }
 }

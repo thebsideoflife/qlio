@@ -18,9 +18,9 @@ export TWELVE_LABS_INDEX_ID=6934df867a1ec630b5fb65bd
 # Agents API jockey1.0 — for agents-* approaches
 export JOCKEY_TWELVE_LABS_SECRET_ID=zeevee/coleman-jockey-12labs-key
 
-# Jockey preprocess uses Claude Sonnet via Bedrock — no extra key needed,
-# AWS_PROFILE covers it. Optional direct-API fallback:
-#   export ANTHROPIC_SECRET_ARN=<arn>   (or leave unset)
+# Jockey preprocess uses Claude Sonnet 4.5 via SporeLabs
+export SPORELABS_SECRET_ARN=$(aws secretsmanager describe-secret \
+  --secret-id zeevee/sporelabs-api-key --query ARN --output text)
 ```
 
 ## Quick start tomorrow
@@ -58,7 +58,7 @@ npm run jockey:eval:suite -- run --manifest eval-manifest.json
 | ID | What it tests |
 |----|----------------|
 | `pegasus-baseline` | Legacy production path (flag off) |
-| `jockey-gemini-full` | **Production Jockey**: Claude (Bedrock) brief + 10min windowed Pegasus. Id kept for eval-history compat — Gemini is no longer used. |
+| `jockey-gemini-full` | **Production Jockey**: Claude (SporeLabs) brief + 10min windowed Pegasus. Id kept for eval-history compat — Gemini is no longer used. |
 | `jockey-gemini-narrow-windows` | 7.5min windows (Claude brief) |
 | `jockey-pegasus-windowed-no-brief` | Windowing only (no LLM brief) |
 | `agents-brief-only` | jockey1.0 narrative brief diagnostic |

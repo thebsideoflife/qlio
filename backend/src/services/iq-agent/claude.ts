@@ -1,42 +1,27 @@
 /**
- * Claude via Bedrock `InvokeModel`, with the direct Anthropic API as a fallback
- * on throttling — the same dual-path pattern `export-metadata-enrich.ts` uses.
+ * IQ-agent model calls via SporeLabs (OpenAI-compatible), keeping the Claude
+ * message/tool shape the rest of the agent already speaks.
  *
- * Non-streaming on purpose: `bedrock:InvokeModelWithResponseStream` is a
- * distinct IAM action that is not granted, and the event log already gives the
- * UI per-block updates. Switching to streaming later would not change the
- * client, the transport, or the infrastructure.
+ * Non-streaming on purpose: the event log already gives the UI per-block
+ * updates. Switching to streaming later would not change the client, the
+ * transport, or the infrastructure.
  */
 
-import Anthropic from "@anthropic-ai/sdk";
 import {
-  BedrockRuntimeClient,
-  InvokeModelCommand,
-} from "@aws-sdk/client-bedrock-runtime";
-import {
-  GetSecretValueCommand,
-  SecretsManagerClient,
-} from "@aws-sdk/client-secrets-manager";
-import {
-  ANTHROPIC_API_MODEL,
-  BEDROCK_MODEL,
   MODEL_MAX_ATTEMPTS,
   MODEL_TIMEOUT_MS,
 } from "./config";
 import type { ToolSchema } from "./tools";
-
-const bedrockClient = new BedrockRuntimeClient({
-  region: process.env.AWS_REGION || "us-west-2",
-});
-const secretsClient = new SecretsManagerClient({});
-
-let cachedAnthropicKey: string | null | undefined;
-
-/**
- * Whether this container's Bedrock endpoint accepts `cache_control`. Discovered
- * once on the first rejection rather than re-learned on every iteration.
- */
-let promptCacheSupported = process.env.IQ_AGENT_PROMPT_CACHE !== "false";
+import {
+  SPORELABS_SONNET_MODEL,
+  SporeLabsError,
+  sporelabsChatCompletions,
+  type SporeLabsChatMessage,
+  type SporeLabsContentPart,
+  type SporeLabsTool,
+  type SporeLabsToolCall,
+  type SporeLabsToolChoice,
+} from "../sporelabs";
 
 /** Least time worth spending on another model attempt. */
 const MIN_MODEL_ATTEMPT_MS = 20_000;
@@ -74,7 +59,7 @@ export interface ClaudeResponse {
   blocks: ClaudeContentBlock[];
   stopReason: string;
   usage: ClaudeUsage;
-  source: "bedrock" | "anthropic_api";
+  source: "sporelabs";
 }
 
 export class ModelError extends Error {
@@ -111,12 +96,6 @@ export async function callClaude(params: {
   /** Omitted means `auto`, which is what the main loop wants. */
   toolChoice?: ClaudeToolChoice;
 }): Promise<ClaudeResponse> {
-  const tools = params.tools.map((t) => ({
-    name: t.name,
-    description: t.description,
-    input_schema: t.input_schema,
-  }));
-
   const budget = () =>
     params.deadlineAt === undefined
       ? MODEL_TIMEOUT_MS
@@ -136,14 +115,10 @@ export async function callClaude(params: {
     }
 
     try {
-      return await invokeBedrock({
-        system: promptCacheSupported
-          ? params.system
-          : stripCacheControl(params.system),
-        messages: promptCacheSupported
-          ? params.messages
-          : stripMessageCacheControl(params.messages),
-        tools,
+      return await invokeSporeLabs({
+        system: params.system,
+        messages: params.messages,
+        tools: params.tools,
         toolChoice: params.toolChoice,
         maxTokens: params.maxTokens,
         temperature: params.temperature,
@@ -152,261 +127,294 @@ export async function callClaude(params: {
     } catch (err) {
       lastError = err;
       const classified = classifyModelError(err);
-
-      // Some Bedrock regions/models reject cache_control. Drop it and retry
-      // rather than failing a run over a caching optimization. Remembered for
-      // the container so the next iteration does not rediscover it.
-      if (classified.code === "cache_control_unsupported" && promptCacheSupported) {
-        console.warn(
-          "[IQAgent] Bedrock rejected prompt caching; disabling it for this container.",
-        );
-        promptCacheSupported = false;
-        continue;
-      }
-
       if (!classified.retryable || attempt === MODEL_MAX_ATTEMPTS) {
-        break;
+        throw new ModelError(
+          classified.code,
+          classified.message,
+          classified.retryable,
+          errorText(err),
+        );
       }
 
-      const delay = Math.min(1000 * 2 ** (attempt - 1), Math.max(0, budget() - MIN_MODEL_ATTEMPT_MS));
+      const delay = Math.min(
+        1000 * 2 ** (attempt - 1),
+        Math.max(0, budget() - MIN_MODEL_ATTEMPT_MS),
+      );
       console.warn(
-        `[IQAgent] Bedrock ${classified.code} (attempt ${attempt}/${MODEL_MAX_ATTEMPTS}), retrying in ${delay}ms`,
+        `[IQAgent] SporeLabs ${classified.code} (attempt ${attempt}/${MODEL_MAX_ATTEMPTS}), retrying in ${delay}ms`,
       );
       await sleep(delay);
     }
   }
 
-  const bedrock = classifyModelError(lastError);
-
-  // A malformed request or a denied model fails identically on the direct API.
-  // Spending another full timeout on it only delays the error the user needs.
-  if (bedrock.code === "model_invalid_request" || bedrock.code === "model_access_denied") {
-    throw new ModelError(
-      bedrock.code,
-      bedrock.message,
-      bedrock.retryable,
-      errorText(lastError),
-    );
-  }
-
-  const fallbackBudget = budget();
-  if (fallbackBudget < MIN_MODEL_ATTEMPT_MS) {
-    throw new ModelError(
-      "model_deadline",
-      "Ran out of time in this invocation before the model answered.",
-      true,
-      errorText(lastError),
-    );
-  }
-
-  console.warn(
-    `[IQAgent] Bedrock exhausted, trying the Anthropic API: ${errorText(lastError)}`,
+  throw new ModelError(
+    "model_error",
+    "The model could not be reached.",
+    true,
+    lastError ? errorText(lastError) : undefined,
   );
-
-  try {
-    return await invokeAnthropicApi({
-      // Caching is decided inside, independently of `promptCacheSupported`:
-      // that flag records what Bedrock rejected, which says nothing about what
-      // the Anthropic API accepts.
-      system: params.system,
-      messages: params.messages,
-      tools,
-      toolChoice: params.toolChoice,
-      maxTokens: params.maxTokens,
-      temperature: params.temperature,
-      timeoutMs: fallbackBudget,
-    });
-  } catch (fallbackErr) {
-    const fallback = classifyModelError(fallbackErr);
-    throw new ModelError(
-      bedrock.code,
-      `The model could not be reached. Bedrock: ${bedrock.message}. Anthropic API: ${fallback.message}`,
-      bedrock.retryable || fallback.retryable,
-      `${errorText(lastError)} | ${errorText(fallbackErr)}`,
-    );
-  }
 }
 
-async function invokeBedrock(params: {
+async function invokeSporeLabs(params: {
   system: SystemBlock[];
   messages: ClaudeMessage[];
-  tools: unknown[];
+  tools: ToolSchema[];
   toolChoice?: ClaudeToolChoice;
   maxTokens: number;
   temperature: number;
   timeoutMs: number;
 }): Promise<ClaudeResponse> {
-  const body = JSON.stringify({
-    anthropic_version: "bedrock-2023-05-31",
-    max_tokens: params.maxTokens,
+  const result = await sporelabsChatCompletions({
+    model: SPORELABS_SONNET_MODEL,
+    messages: toOpenAIMessages(params.system, params.messages),
+    tools: params.tools.map(toOpenAITool),
+    toolChoice: toOpenAIToolChoice(params.toolChoice),
+    maxTokens: params.maxTokens,
     temperature: params.temperature,
-    system: params.system,
-    messages: params.messages,
-    tools: params.tools,
-    ...(params.toolChoice ? { tool_choice: params.toolChoice } : {}),
+    timeoutMs: params.timeoutMs,
   });
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), params.timeoutMs);
-  try {
-    const response = await bedrockClient.send(
-      new InvokeModelCommand({
-        modelId: BEDROCK_MODEL,
-        contentType: "application/json",
-        accept: "application/json",
-        body,
-      }),
-      { abortSignal: controller.signal },
-    );
-
-    const parsed = JSON.parse(new TextDecoder().decode(response.body)) as {
-      content?: ClaudeContentBlock[];
-      stop_reason?: string;
-      usage?: Record<string, number>;
-    };
-
-    // An empty array is as unusable as a missing one: the loop would record an
-    // assistant turn with no content, which the next request rejects.
-    if (!Array.isArray(parsed.content) || parsed.content.length === 0) {
-      throw new ModelError(
-        "malformed_response",
-        "Bedrock returned a response with no content blocks.",
-        true,
-        JSON.stringify(parsed).slice(0, 400),
-      );
-    }
-
-    return {
-      blocks: parsed.content,
-      stopReason: parsed.stop_reason ?? "end_turn",
-      usage: {
-        inputTokens: parsed.usage?.input_tokens ?? 0,
-        outputTokens: parsed.usage?.output_tokens ?? 0,
-        cacheReadTokens: parsed.usage?.cache_read_input_tokens ?? 0,
-        cacheCreationTokens: parsed.usage?.cache_creation_input_tokens ?? 0,
-      },
-      source: "bedrock",
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function invokeAnthropicApi(params: {
-  system: SystemBlock[];
-  messages: ClaudeMessage[];
-  tools: unknown[];
-  toolChoice?: ClaudeToolChoice;
-  maxTokens: number;
-  temperature: number;
-  timeoutMs: number;
-}): Promise<ClaudeResponse> {
-  const key = await getAnthropicApiKey();
-  if (!key.value) {
-    throw new ModelError(
-      key.reason === "unset" ? "no_fallback_key" : "fallback_key_unavailable",
-      key.reason === "unset"
-        ? "ANTHROPIC_SECRET_ARN is not configured, so there is no fallback path."
-        : `The Anthropic fallback key could not be read: ${key.detail}`,
-      key.reason !== "unset",
-    );
-  }
-
-  const client = new Anthropic({ apiKey: key.value, timeout: params.timeoutMs });
-
-  interface ApiResponse {
-    content: ClaudeContentBlock[];
-    stop_reason?: string;
-    usage?: {
-      input_tokens?: number;
-      output_tokens?: number;
-      cache_read_input_tokens?: number;
-      cache_creation_input_tokens?: number;
-    };
-  }
-
-  const send = (cached: boolean) =>
-    client.messages.create({
-      model: ANTHROPIC_API_MODEL,
-      max_tokens: params.maxTokens,
-      temperature: params.temperature,
-      system: (cached ? params.system : stripCacheControl(params.system)) as never,
-      messages: (cached
-        ? params.messages
-        : stripMessageCacheControl(params.messages)) as never,
-      tools: params.tools as never,
-      ...(params.toolChoice ? { tool_choice: params.toolChoice as never } : {}),
-    }) as unknown as Promise<ApiResponse>;
-
-  // Cached on this path too. The fallback fires when Bedrock is throttled,
-  // which is exactly when the request most needs to be cheap — and the two
-  // providers keep separate caches, so a run that has flipped over benefits
-  // from warming this one.
-  let message: ApiResponse;
-  try {
-    message = await send(true);
-  } catch (err) {
-    // This is the last line of defence for the run. If caching is the thing the
-    // API objects to, drop it and take the expensive answer over no answer.
-    // `cache_control_unsupported` is the specific classification for that
-    // complaint and is checked ahead of the generic 400, so it has to be listed
-    // here too or the retry never fires for the case it was written for.
-    const code = classifyModelError(err).code;
-    if (code !== "model_invalid_request" && code !== "cache_control_unsupported") {
-      throw err;
-    }
-    console.warn(
-      `[IQAgent] Anthropic rejected the cached request, retrying uncached: ${errorText(err)}`,
-    );
-    message = await send(false);
-  }
-
-  if (!Array.isArray(message.content) || message.content.length === 0) {
+  const blocks = fromOpenAIMessage(result.content, result.toolCalls);
+  if (blocks.length === 0) {
     throw new ModelError(
       "malformed_response",
-      "The Anthropic API returned a response with no content blocks.",
+      "SporeLabs returned a response with no content blocks.",
       true,
     );
   }
 
   return {
-    blocks: message.content,
-    stopReason: message.stop_reason ?? "end_turn",
+    blocks,
+    stopReason: toStopReason(result.finishReason),
+    // OpenAI-style prompt_tokens includes cache reads and writes; Anthropic's
+    // input_tokens (which the cost ledger prices) does not.
     usage: {
-      inputTokens: message.usage?.input_tokens ?? 0,
-      outputTokens: message.usage?.output_tokens ?? 0,
-      cacheReadTokens: message.usage?.cache_read_input_tokens ?? 0,
-      cacheCreationTokens: message.usage?.cache_creation_input_tokens ?? 0,
+      inputTokens: Math.max(
+        0,
+        result.usage.promptTokens -
+          result.usage.cachedTokens -
+          result.usage.cacheWriteTokens,
+      ),
+      outputTokens: result.usage.completionTokens,
+      cacheReadTokens: result.usage.cachedTokens,
+      cacheCreationTokens: result.usage.cacheWriteTokens,
     },
-    source: "anthropic_api",
+    source: "sporelabs",
   };
 }
 
-interface AnthropicKey {
-  value: string | null;
-  reason?: "unset" | "empty" | "fetch_failed";
-  detail?: string;
+function toOpenAITool(tool: ToolSchema): SporeLabsTool {
+  return {
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.input_schema,
+    },
+  };
 }
 
-async function getAnthropicApiKey(): Promise<AnthropicKey> {
-  if (cachedAnthropicKey) return { value: cachedAnthropicKey };
-  const secretArn = process.env.ANTHROPIC_SECRET_ARN;
-  if (!secretArn) return { value: null, reason: "unset" };
+function toOpenAIToolChoice(
+  choice: ClaudeToolChoice | undefined,
+): SporeLabsToolChoice | undefined {
+  if (!choice) return undefined;
+  if (choice.type === "auto") return "auto";
+  if (choice.type === "any") return "required";
+  return { type: "function", function: { name: choice.name } };
+}
 
-  try {
-    const secret = await secretsClient.send(
-      new GetSecretValueCommand({ SecretId: secretArn }),
-    );
-    const value = secret.SecretString?.trim() || null;
-    if (!value) return { value: null, reason: "empty" };
-    cachedAnthropicKey = value;
-    return { value };
-  } catch (err) {
-    // Deliberately not cached: a transient Secrets Manager blip must not
-    // disable the fallback for the rest of the container's life.
-    const detail = errorText(err);
-    console.warn(`[IQAgent] Anthropic key unavailable: ${detail}`);
-    return { value: null, reason: "fetch_failed", detail };
+type CacheControl = { type: "ephemeral" };
+
+function cacheControlOf(block: Record<string, unknown>): CacheControl | undefined {
+  const cc = block.cache_control as CacheControl | undefined;
+  return cc && typeof cc === "object" ? cc : undefined;
+}
+
+/**
+ * Claude Messages -> OpenAI chat messages. `cache_control` breakpoints are
+ * carried onto the matching content part: SporeLabs forwards them to
+ * Anthropic, so the prompt cache the agent was built around keeps working.
+ */
+export function toOpenAIMessages(
+  system: SystemBlock[],
+  messages: ClaudeMessage[],
+): SporeLabsChatMessage[] {
+  const out: SporeLabsChatMessage[] = [];
+  const systemParts: SporeLabsContentPart[] = system
+    .filter((block) => block.text)
+    .map((block) => ({
+      type: "text",
+      text: block.text,
+      ...(block.cache_control ? { cache_control: block.cache_control } : {}),
+    }));
+  if (systemParts.length > 0) {
+    out.push({ role: "system", content: systemParts });
+  }
+
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      out.push(assistantToOpenAI(message));
+      continue;
+    }
+    out.push(...userToOpenAI(message));
+  }
+
+  return out;
+}
+
+function assistantToOpenAI(message: ClaudeMessage): SporeLabsChatMessage {
+  const texts: string[] = [];
+  const toolCalls: SporeLabsToolCall[] = [];
+  for (const raw of message.content) {
+    const block = raw as Record<string, unknown>;
+    if (block.type === "text") {
+      texts.push(String(block.text ?? ""));
+    } else if (block.type === "tool_use") {
+      toolCalls.push({
+        id: String(block.id ?? ""),
+        type: "function",
+        function: {
+          name: String(block.name ?? ""),
+          arguments: JSON.stringify(block.input ?? {}),
+        },
+      });
+    }
+  }
+  const content = texts.join("\n") || null;
+  return {
+    role: "assistant",
+    content,
+    ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+  };
+}
+
+/**
+ * One Claude user turn can hold tool_results followed by text/images. OpenAI
+ * wants the tool messages first (directly after the assistant tool_calls),
+ * then any remaining user content. Images returned by tools cannot ride on a
+ * tool message, so they move into that trailing user message.
+ */
+function userToOpenAI(message: ClaudeMessage): SporeLabsChatMessage[] {
+  const out: SporeLabsChatMessage[] = [];
+  const leftover: SporeLabsContentPart[] = [];
+  const imagesFromTools: SporeLabsContentPart[] = [];
+
+  for (const raw of message.content) {
+    const block = raw as Record<string, unknown>;
+    if (block.type === "tool_result") {
+      const { text, images } = flattenToolResult(block);
+      const cc = cacheControlOf(block);
+      out.push({
+        role: "tool",
+        tool_call_id: String(block.tool_use_id ?? ""),
+        content: cc ? [{ type: "text", text, cache_control: cc }] : text,
+      });
+      imagesFromTools.push(...images);
+      continue;
+    }
+    leftover.push(...contentPartFromBlock(block));
+  }
+
+  const userParts = [...imagesFromTools, ...leftover];
+  if (userParts.length > 0) {
+    out.push({ role: "user", content: userParts });
+  }
+  return out;
+}
+
+function contentPartFromBlock(
+  block: Record<string, unknown>,
+): SporeLabsContentPart[] {
+  const cc = cacheControlOf(block);
+  const withCache = cc ? { cache_control: cc } : {};
+  if (block.type === "text") {
+    return [{ type: "text", text: String(block.text ?? ""), ...withCache }];
+  }
+  if (block.type === "image") {
+    const source = (block.source ?? {}) as {
+      media_type?: string;
+      data?: string;
+    };
+    if (source.media_type && source.data) {
+      return [
+        {
+          type: "image_url",
+          image_url: {
+            url: `data:${source.media_type};base64,${source.data}`,
+          },
+          ...withCache,
+        },
+      ];
+    }
+  }
+  return [];
+}
+
+function flattenToolResult(block: Record<string, unknown>): {
+  text: string;
+  images: SporeLabsContentPart[];
+} {
+  const images: SporeLabsContentPart[] = [];
+  const texts: string[] = [];
+  const content = block.content;
+
+  if (typeof content === "string") {
+    texts.push(content);
+  } else if (Array.isArray(content)) {
+    for (const raw of content) {
+      const item = raw as Record<string, unknown>;
+      if (item.type === "text") {
+        texts.push(String(item.text ?? ""));
+      } else if (item.type === "image") {
+        images.push(...contentPartFromBlock(item));
+      }
+    }
+  }
+  if (block.is_error) {
+    texts.unshift("ERROR");
+  }
+  return { text: texts.filter(Boolean).join("\n") || "(empty tool result)", images };
+}
+
+export function fromOpenAIMessage(
+  content: string | null,
+  toolCalls: SporeLabsToolCall[],
+): ClaudeContentBlock[] {
+  const blocks: ClaudeContentBlock[] = [];
+  if (content && content.trim()) {
+    blocks.push({ type: "text", text: content });
+  }
+  for (const call of toolCalls) {
+    let input: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(call.function.arguments || "{}");
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        input = parsed as Record<string, unknown>;
+      }
+    } catch {
+      input = {};
+    }
+    blocks.push({
+      type: "tool_use",
+      id: call.id,
+      name: call.function.name,
+      input,
+    });
+  }
+  return blocks;
+}
+
+/** OpenAI finish_reason -> the Anthropic stop_reason the agent logs. */
+function toStopReason(finishReason: string): string {
+  switch (finishReason) {
+    case "tool_calls":
+      return "tool_use";
+    case "length":
+      return "max_tokens";
+    case "stop":
+      return "end_turn";
+    default:
+      return finishReason;
   }
 }
 
@@ -420,19 +428,12 @@ export function classifyModelError(err: unknown): {
   }
 
   const name = (err as { name?: string })?.name ?? "";
-  const status = (err as { status?: number })?.status;
+  const status =
+    err instanceof SporeLabsError
+      ? err.status
+      : (err as { status?: number })?.status;
   const message = errorText(err);
 
-  // Checked before the generic status mapping: this arrives as a plain 400.
-  if (/cache_control|cacheControl/i.test(message) && /valid|support|unexpected/i.test(message)) {
-    return {
-      code: "cache_control_unsupported",
-      message,
-      retryable: false,
-    };
-  }
-
-  // HTTP status from the Anthropic SDK, which does not use AWS error names.
   if (status === 429) {
     return { code: "model_throttled", message, retryable: true };
   }
@@ -442,6 +443,9 @@ export function classifyModelError(err: unknown): {
   if (status === 401 || status === 403) {
     return { code: "model_access_denied", message, retryable: false };
   }
+  if (status === 402) {
+    return { code: "model_access_denied", message, retryable: false };
+  }
   if (status === 400) {
     return { code: "model_invalid_request", message, retryable: false };
   }
@@ -449,39 +453,10 @@ export function classifyModelError(err: unknown): {
   if (name === "AbortError" || /aborted|timed out/i.test(message)) {
     return { code: "model_timeout", message: "The model call timed out.", retryable: true };
   }
-  if (name === "ThrottlingException" || /throttl|too many requests|429/i.test(message)) {
+  if (/throttl|too many requests|429/i.test(message)) {
     return { code: "model_throttled", message, retryable: true };
   }
-  if (name === "ServiceUnavailableException" || name === "InternalServerException") {
-    return { code: "model_unavailable", message, retryable: true };
-  }
-  if (name === "AccessDeniedException") {
-    return {
-      code: "model_access_denied",
-      message: `Bedrock denied access to ${BEDROCK_MODEL}: ${message}`,
-      retryable: false,
-    };
-  }
-  if (name === "ValidationException") {
-    return { code: "model_invalid_request", message, retryable: false };
-  }
   return { code: "model_error", message, retryable: true };
-}
-
-function stripCacheControl(system: SystemBlock[]): SystemBlock[] {
-  return system.map(({ type, text }) => ({ type, text }));
-}
-
-function stripMessageCacheControl(messages: ClaudeMessage[]): ClaudeMessage[] {
-  return messages.map((message) => ({
-    ...message,
-    content: message.content.map((block) => {
-      if (typeof block !== "object" || block === null) return block;
-      if (!("cache_control" in block)) return block;
-      const { cache_control: _dropped, ...rest } = block as Record<string, unknown>;
-      return rest as ClaudeContentBlock;
-    }),
-  }));
 }
 
 export function errorText(err: unknown): string {

@@ -24,14 +24,13 @@
     "test:export-cache": "tsx src/utils/exportCache.test.ts",
     "test:sporelabs-reframe": "tsx src/services/sporelabs-reframe.test.ts",
     "test:shot-hold-framing": "tsx src/services/shot-hold-framing.test.ts",
-    "test": "npm run test:export-metadata && npm run test:agent-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates && npm run test:iq-agent && npm run test:transcription-sanitize && npm run test:transcript-format && npm run test:video-clip && npm run test:segment-frame-bounds && npm run test:render-downloads && npm run test:export-cache && npm run test:sporelabs-reframe && npm run test:shot-hold-framing"
+    "test": "npm run test:export-metadata && npm run test:agent-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates && npm run test:iq-agent && npm run test:transcription-sanitize && npm run test:transcript-format && npm run test:video-clip && npm run test:segment-frame-bounds && npm run test:render-downloads && npm run test:export-cache && npm run test:sporelabs && npm run test:sporelabs-reframe && npm run test:shot-hold-framing",
+    "test:sporelabs": "tsx src/services/sporelabs.test.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
-    "@aws-sdk/client-bedrock-runtime": "^3.947.0",
     "@aws-sdk/client-dynamodb": "^3.400.0",
     "@aws-sdk/client-lambda": "^3.400.0",
     "@aws-sdk/client-s3": "^3.948.0",
@@ -41,7 +40,6 @@
     "@aws-sdk/lib-dynamodb": "^3.400.0",
     "@aws-sdk/lib-storage": "^3.948.0",
     "@aws-sdk/s3-request-presigner": "^3.400.0",
-    "@google/generative-ai": "^0.24.1",
     "@remotion/lambda": "^4.0.387",
     "@remotion/renderer": "^4.0.387",
     "archiver": "^6.0.2",

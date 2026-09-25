@@ -41,18 +41,11 @@ resource "aws_secretsmanager_secret" "twelve_labs_signing_secret" {
   description = "Webhook Signing Secret for Twelve Labs"
 }
 
-# Reference the Anthropic API key secret (created manually via console/CLI)
-# This is a data source since the secret was created outside of Terraform
-data "aws_secretsmanager_secret" "anthropic_api_key" {
-  name = "${var.project_name}/anthropic-api-key"
-}
+# Anthropic (zeevee/anthropic-api-key, out of band) and Gemini
+# (qlio/gemini-api-key) keys are gone: every LLM call goes through SporeLabs
+# (sporelabs.tf). Removing gemini_api_key from state schedules its deletion.
 
-resource "aws_secretsmanager_secret" "gemini_api_key" {
-  name        = "qlio/gemini-api-key"
-  description = "API Key for Google Gemini"
-}
-
-# Created out of band (same pattern as Anthropic):
+# Whisper transcription only, until it moves to SporeLabs. Created out of band:
 # aws --profile zeevee --region us-west-2 secretsmanager create-secret \
 #   --name zeevee/openrouter-api-key \
 #   --secret-string 'sk-or-...'

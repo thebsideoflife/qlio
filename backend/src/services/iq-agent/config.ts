@@ -87,8 +87,6 @@ export const CONTEXT_SOFT_TOKEN_CAP = 120_000;
 export const MAX_OUTPUT_TOKENS = 8192;
 export const MODEL_TEMPERATURE = 0.4;
 
-export const BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
-export const ANTHROPIC_API_MODEL = "claude-sonnet-4-5-20250929";
 export const MODEL_TIMEOUT_MS = 300_000;
 export const MODEL_MAX_ATTEMPTS = 4;
 
