@@ -2,20 +2,34 @@
 set -e
 
 # ZeeVee Full Deployment Script
-# Usage: ./deploy.sh [--skip-docker]
+# Usage: ./deploy.sh [--skip-docker | --stitch-only]
 #
 # Options:
 #   --skip-docker    Skip building/pushing the FFmpeg Docker image (faster for non-stitch changes)
+#   --stitch-only    Build and deploy only the FFmpeg cutting Lambda image
 
 SKIP_DOCKER=false
+STITCH_ONLY=false
 for arg in "$@"; do
   case $arg in
     --skip-docker)
       SKIP_DOCKER=true
       shift
       ;;
+    --stitch-only)
+      STITCH_ONLY=true
+      shift
+      ;;
+    *)
+      echo "Unknown deploy option: $arg" >&2
+      exit 1
+      ;;
   esac
 done
+if [ "$SKIP_DOCKER" = true ] && [ "$STITCH_ONLY" = true ]; then
+  echo "--skip-docker and --stitch-only cannot be used together" >&2
+  exit 1
+fi
 
 echo "========================================"
 echo "  ZeeVee Deployment"
@@ -39,7 +53,9 @@ cd "$SCRIPT_DIR"
 echo "[1/4] Building backend..."
 cd backend
 npm run build
-./package-render.sh
+if [ "$STITCH_ONLY" = false ]; then
+  ./package-render.sh
+fi
 cd ..
 echo "✓ Backend built"
 echo ""
@@ -55,6 +71,10 @@ ECR_EXISTS=$(aws ecr describe-repositories --profile "$AWS_PROFILE" --region "$A
   --repository-names "zeevee-ffmpeg-lambda" 2>/dev/null && echo "yes" || echo "no")
 
 if [ "$ECR_EXISTS" = "no" ]; then
+  if [ "$STITCH_ONLY" = true ]; then
+    echo "  FFmpeg ECR repository is missing; run the full deployment first" >&2
+    exit 1
+  fi
   echo "  ECR repository doesn't exist, creating it first..."
   tofu apply "${TOFU_VAR_ARGS[@]}" -target=aws_ecr_repository.ffmpeg_lambda -target=aws_ecr_lifecycle_policy.ffmpeg_lambda -auto-approve
   echo "  ✓ ECR repository created"
@@ -83,7 +103,11 @@ else
   docker push "${ECR_URL}:latest"
   echo "  ✓ Docker image pushed to ECR"
 
-  for FUNCTION_NAME in "zeevee-stitch-segments" "zeevee-split-video"; do
+  FUNCTION_NAMES=("zeevee-stitch-segments")
+  if [ "$STITCH_ONLY" = false ]; then
+    FUNCTION_NAMES+=("zeevee-split-video")
+  fi
+  for FUNCTION_NAME in "${FUNCTION_NAMES[@]}"; do
     echo "  Updating ${FUNCTION_NAME}..."
     aws lambda update-function-code \
       --profile "$AWS_PROFILE" \
@@ -100,6 +124,11 @@ else
   cd ..
 fi
 echo ""
+
+if [ "$STITCH_ONLY" = true ]; then
+  echo "Cutting Lambda deployed; skipping unrelated Lambda packages and infrastructure"
+  exit 0
+fi
 
 # Step 4: Apply all infrastructure
 echo "[4/4] Applying infrastructure..."
@@ -151,4 +180,3 @@ echo ""
 #   aws logs tail /aws/lambda/zeevee-generate-segments --follow
 #
 # ============================================================================
-
