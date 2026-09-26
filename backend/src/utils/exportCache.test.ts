@@ -135,3 +135,37 @@ assert(
 );
 
 console.log("exportCache.test: ok");
+
+// Volatile editor fields (export timestamp, re-signed URLs) must not force a rebuild.
+const withMeta = (exportedAt: string, sig: string) =>
+  computeExportPackageFingerprint(
+    {
+      ...request,
+      metadataDocument: {
+        exportedAt,
+        projectThumbnailUrl: `https://s3.example/cover.jpg?sig=${sig}`,
+        scenes: [{ segmentId: "s1", thumbnailUrl: `https://s3.example/t.jpg?sig=${sig}`, mood: "tense" }],
+      },
+    },
+    [render],
+  );
+assert(
+  withMeta("2026-01-01T00:00:00Z", "a") === withMeta("2026-02-02T00:00:00Z", "b"),
+  "package identity ignores exportedAt and URL signatures",
+);
+
+assert(
+  withMeta("2026-01-01T00:00:00Z", "a") !==
+    computeExportPackageFingerprint(
+      {
+        ...request,
+        metadataDocument: {
+          exportedAt: "x",
+          projectThumbnailUrl: "https://s3.example/cover.jpg?sig=a",
+          scenes: [{ segmentId: "s1", thumbnailUrl: "https://s3.example/t.jpg?sig=a", mood: "calm" }],
+        },
+      },
+      [render],
+    ),
+  "real metadata edits still change the package",
+);

@@ -566,6 +566,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   );
 
   const isProcessing = status === "starting" || status === "rendering";
+  const retryingCount = segmentDownloads.filter((item) => item.retrying).length;
   const hasAnySelection = selectedSegmentIds.size > 0;
   const someRendered = segments.some((s) => {
     const cached = cachedRenderMap.get(s.id);
@@ -579,9 +580,9 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     return !isSegmentRenderStale(cached, hash);
   });
   const selectedSegments = segments.filter((segment) => selectedSegmentIds.has(segment.id));
-  const selectedNeedingRenderCount = selectedSegments.filter((segment) => {
+  const selectedEditedCount = selectedSegments.filter((segment) => {
     const cached = cachedRenderMap.get(segment.id);
-    return !cached?.url || isSegmentRenderStale(
+    return !!cached?.url && isSegmentRenderStale(
       cached,
       computeSegmentRenderFingerprint(
         segment,
@@ -591,6 +592,10 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       ),
     );
   }).length;
+  const selectedUnrenderedCount = selectedSegments.filter(
+    (segment) => !cachedRenderMap.get(segment.id)?.url,
+  ).length;
+  const selectedNeedingRenderCount = selectedEditedCount + selectedUnrenderedCount;
   const allSelectedRenderedAndFresh =
     hasAnySelection && selectedSegments.length === selectedSegmentIds.size &&
     selectedNeedingRenderCount === 0;
@@ -731,6 +736,38 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     staleMetadataSegmentIds,
   ]);
 
+  // Bring back the download whenever every selected scene is rendered and
+  // current — including after closing and reopening the page. The server
+  // returns an existing matching package instantly and only builds a new one
+  // when the renders or metadata actually changed.
+  const autoPackageKeyRef = useRef<string | null>(null);
+  const selectedRenderKey = selectedSegments
+    .map((segment) => `${segment.id}:${cachedRenderMap.get(segment.id)?.contentHash ?? ""}`)
+    .sort()
+    .join("|");
+  useEffect(() => {
+    if (!metadataResumeChecked || agentRunning || isProcessing) return;
+    if (!allSelectedRenderedAndFresh) return;
+    if (metadataEnabled && (metadataLoading || staleMetadataSegmentIds.length > 0)) return;
+    if (packageStatus === "bundling") return;
+    if (packageStatus === "ready" && folderMatchesSelection) return;
+    if (autoPackageKeyRef.current === selectedRenderKey) return;
+    autoPackageKeyRef.current = selectedRenderKey;
+    void runPackageDownload();
+  }, [
+    metadataResumeChecked,
+    agentRunning,
+    isProcessing,
+    allSelectedRenderedAndFresh,
+    metadataEnabled,
+    metadataLoading,
+    staleMetadataSegmentIds.length,
+    packageStatus,
+    folderMatchesSelection,
+    selectedRenderKey,
+    runPackageDownload,
+  ]);
+
   useEffect(() => {
     if (!jobId || status === "completed" || status === "failed") return;
 
@@ -864,7 +901,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     dispatch,
   ]);
 
-  const handleStartRender = useCallback(async () => {
+  const handleStartRender = useCallback(async (force = false) => {
     if (isProcessing) return; // Prevent concurrent renders
 
     setStatus("starting");
@@ -888,6 +925,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
         captionSettings,
         segments: segments.filter((segment) => selectedSegmentIds.has(segment.id)),
         globalFraming,
+        force,
       });
       if (
         result.renderPipelineVersion != null &&
@@ -1127,7 +1165,11 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                 <span className="text-muted-foreground">
                   {status === "starting"
                     ? "Preparing export…"
-                    : `Rendering ${completedCount} of ${renderingSegmentCount} scenes`}
+                    : `Rendering ${completedCount} of ${renderingSegmentCount} scenes${
+                        retryingCount > 0
+                          ? ` · retrying ${retryingCount} after an AWS capacity hiccup`
+                          : ""
+                      }`}
                 </span>
                 <span className="font-mono text-xs tabular-nums">
                   {progress}%
@@ -1686,13 +1728,15 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
               ? "Export in progress — you can leave and return later."
               : packageStatus === "bundling"
                 ? "Export complete. Packing videos, poster art, thumbnails, and metadata…"
-                : packageStatus === "failed"
-                  ? "Export complete, but the download folder could not be prepared."
-                  : hasAnySelection && selectedNeedingRenderCount > 0 && someRendered
-                    ? `${selectedNeedingRenderCount} of ${selectedSegmentIds.size} selected scene${selectedSegmentIds.size === 1 ? "" : "s"} need rendering. Up-to-date scenes are reused.`
-                    : packageStatus === "ready" && folderMatchesSelection
-                    ? "Export complete. Your organized download folder is ready."
-                    : hasAnySelection
+                : hasAnySelection && selectedEditedCount > 0
+                  ? `Download hidden: ${selectedEditedCount} scene${selectedEditedCount === 1 ? " has" : "s have"} changed since last rendered (edits or a renderer update)${selectedUnrenderedCount > 0 ? ` and ${selectedUnrenderedCount} ${selectedUnrenderedCount === 1 ? "hasn't" : "haven't"} been rendered` : ""}. Render ${selectedNeedingRenderCount === 1 ? "it" : "them"} to update the download; unchanged scenes are reused.`
+                  : hasAnySelection && selectedUnrenderedCount > 0 && someRendered
+                    ? `${selectedUnrenderedCount} selected scene${selectedUnrenderedCount === 1 ? " hasn't" : "s haven't"} been rendered yet. Rendered scenes are reused.`
+                    : packageStatus === "failed"
+                      ? "The download folder could not be prepared."
+                      : packageStatus === "ready" && folderMatchesSelection
+                        ? "Export complete. Your organized download folder is ready."
+                        : hasAnySelection
                       ? `${selectedSegmentIds.size} scene${selectedSegmentIds.size === 1 ? "" : "s"} selected`
                       : "Select at least one scene to export"}
           </p>
@@ -1756,31 +1800,34 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                     : "Prepare folder"}
                 </Button>
               )}
-            {!isProcessing &&
-              (status === "idle" ||
-                status === "failed" ||
-                !allSelectedRenderedAndFresh) && (
+            {!isProcessing && (
               <Button
                 size="sm"
-                onClick={handleStartRender}
+                variant={allSelectedRenderedAndFresh ? "outline" : "default"}
+                onClick={() => void handleStartRender(allSelectedRenderedAndFresh)}
                 disabled={!hasAnySelection || agentRunning}
                 className="w-full sm:w-auto sm:min-w-[120px]"
+                title={
+                  allSelectedRenderedAndFresh
+                    ? "Render every selected scene again from scratch"
+                    : undefined
+                }
               >
                 {agentRunning ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : allSelectedRenderedAndFresh ? (
+                  <RefreshCw className="h-4 w-4 mr-2" />
                 ) : (
                   <Save className="h-4 w-4 mr-2" />
                 )}
                 {agentRunning
                   ? "IQ is working"
-                  : someRendered &&
-                      selectedNeedingRenderCount > 0 &&
-                      selectedNeedingRenderCount < selectedSegmentIds.size
-                    ? `${status === "failed" ? "Retry" : "Render"} ${selectedNeedingRenderCount} scene${selectedNeedingRenderCount === 1 ? "" : "s"}`
-                    : status === "failed"
-                      ? "Retry"
-                      : someRendered && hasAnySelection
-                        ? "Re-export"
+                  : allSelectedRenderedAndFresh
+                    ? "Re-render all"
+                    : someRendered && selectedNeedingRenderCount < selectedSegmentIds.size
+                      ? `${status === "failed" ? "Retry" : "Render"} ${selectedNeedingRenderCount} scene${selectedNeedingRenderCount === 1 ? "" : "s"}`
+                      : status === "failed"
+                        ? "Retry"
                         : "Export"}
               </Button>
             )}

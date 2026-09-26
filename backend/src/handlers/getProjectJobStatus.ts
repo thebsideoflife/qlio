@@ -50,6 +50,7 @@ interface ProjectJobStatusResponse {
   activeRenderJobId: string | null;
   /** Null when no live agent run owns this project. Also null if the lookup failed. */
   agentRun: AgentRunStatus | null;
+  renderPipelineVersion: number;
 }
 
 /**

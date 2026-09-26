@@ -38,6 +38,8 @@ const STITCH_FUNCTION_NAME = process.env.STITCH_FUNCTION_NAME;
 // A scene waiting this long for cutSegments to hand back a render ID is lost.
 const PENDING_LAUNCH_TIMEOUT_MS = 20 * 60 * 1000;
 const lambdaClient = new LambdaClient({});
+// Wait before relaunching after an AWS capacity/throttle error: 45s, 90s, 135s.
+const RETRY_BACKOFF_MS = 45_000;
 const PROGRESS_CHECK_CONCURRENCY = 10;
 
 type RenderLocation = { bucket: string; key: string };
@@ -68,6 +70,7 @@ interface SegmentRender {
   launchRequestedAt?: string;
   /** Stored render reused as-is; already on the project. */
   reused?: boolean;
+  failedAt?: string;
 }
 
 interface SegmentDownload {
@@ -79,6 +82,8 @@ interface SegmentDownload {
   error?: string;
   /** Hash of the inputs captured when this render job started. */
   contentHash?: string;
+  /** Hit a temporary AWS error; will be relaunched automatically. */
+  retrying?: boolean;
 }
 
 /**
@@ -396,6 +401,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
               ...segment,
               status: "failed",
               error: "Timed out waiting for the scene to be cut",
+              failedAt: new Date(now).toISOString(),
             };
             needsUpdate = true;
           }
@@ -417,6 +423,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
               ...segment,
               status: "failed",
               error: rawError.slice(0, 2000),
+              failedAt: new Date(now).toISOString(),
             };
             needsUpdate = true;
             console.error(`Segment ${segment.segmentId} failed:`, rawError);
@@ -444,12 +451,17 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     // Relaunch scenes that hit a temporary AWS error instead of failing the
     // whole export.
     const retryIds: string[] = [];
+    const willRetry = (segment: SegmentRender) =>
+      Boolean(STITCH_FUNCTION_NAME) &&
+      segment.status === "failed" &&
+      (segment.attempts ?? 1) < MAX_SEGMENT_RENDER_ATTEMPTS &&
+      isTransientRenderError(segment.error);
     if (STITCH_FUNCTION_NAME) {
       segmentRenders.forEach((segment, i) => {
+        const failedAt = Date.parse(segment.failedAt || "") || 0;
         if (
-          segment.status === "failed" &&
-          (segment.attempts ?? 1) < MAX_SEGMENT_RENDER_ATTEMPTS &&
-          isTransientRenderError(segment.error)
+          willRetry(segment) &&
+          now - failedAt >= RETRY_BACKOFF_MS * (segment.attempts ?? 1)
         ) {
           retryIds.push(segment.segmentId);
           segmentRenders[i] = {
@@ -467,7 +479,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     }
 
     const completed = segmentRenders.filter((s) => s.status === "completed");
-    const failed = segmentRenders.filter((s) => s.status === "failed");
+    // Scenes waiting out a retry backoff still count as in progress.
+    const failed = segmentRenders.filter(
+      (s) => s.status === "failed" && !willRetry(s),
+    );
     const expected = Array.isArray(job.segments)
       ? job.segments.length
       : segmentRenders.length;
@@ -591,8 +606,18 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       download.downloadUrl = await generatePresignedUrl(segment);
     } else if (segment.status === "failed") {
       download.error = segment.error;
+      // Still in flight from the user's point of view: we'll relaunch it.
+      if (
+        job.status === "rendering" &&
+        (segment.attempts ?? 1) < MAX_SEGMENT_RENDER_ATTEMPTS &&
+        isTransientRenderError(segment.error)
+      ) {
+        download.status = "rendering";
+        download.retrying = true;
+      }
     } else {
       download.progress = progressById.get(segment.segmentId) ?? 0;
+      if ((segment.attempts ?? 1) > 1) download.retrying = true;
     }
     segmentDownloads.push(download);
   }

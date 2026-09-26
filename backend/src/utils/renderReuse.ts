@@ -53,7 +53,7 @@ export function shouldReplaceStoredRender(
   return existing.renderedAt <= jobCreatedAt;
 }
 
-export const MAX_SEGMENT_RENDER_ATTEMPTS = 3;
+export const MAX_SEGMENT_RENDER_ATTEMPTS = 4;
 
 /** AWS capacity, throttling and 5xx errors that succeed on a later attempt. */
 export function isTransientRenderError(message: string | undefined): boolean {
