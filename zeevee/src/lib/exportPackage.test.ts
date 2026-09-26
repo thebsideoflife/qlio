@@ -121,12 +121,12 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
   );
   assertEqual(
     layout.scenes[0].videoFilename,
-    "Juliette_Woos_Deacon.mp4",
-    "scene 1 video has no numeric prefix",
+    "scene_01_Juliette_Woos_Deacon.mp4",
+    "scene 1 video shares the thumbnail scene prefix",
   );
   assertEqual(
     layout.scenes[0].videoPath,
-    "Remembering Hayden Panettiere/Remembering Hayden Panettiere Video Scenes/Juliette_Woos_Deacon.mp4",
+    "Remembering Hayden Panettiere/Remembering Hayden Panettiere Video Scenes/scene_01_Juliette_Woos_Deacon.mp4",
     "scene 1 video path",
   );
   assertEqual(
@@ -154,10 +154,10 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
       { segmentId: "b", title: "Cold Open" },
     ],
   });
-  assertEqual(layout.scenes[0].videoFilename, "Cold_Open.mp4", "first duplicate");
+  assertEqual(layout.scenes[0].videoFilename, "scene_01_Cold_Open.mp4", "first duplicate");
   assertEqual(
     layout.scenes[1].videoFilename,
-    "Cold_Open_2.mp4",
+    "scene_02_Cold_Open_2.mp4",
     "second duplicate gets a suffix",
   );
 }

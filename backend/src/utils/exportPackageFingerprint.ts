@@ -70,7 +70,7 @@ export function computeExportPackageFingerprint(
     .sort((left, right) => left.segmentId.localeCompare(right.segmentId));
 
   const payload = JSON.stringify({
-    version: 3,
+    version: 4,
     ids,
     thumbs: input.includeThumbnails !== false,
     poster: input.includePoster !== false,
@@ -80,5 +80,5 @@ export function computeExportPackageFingerprint(
       : null,
     revisions,
   });
-  return `v3-${hashString(payload)}`;
+  return `v4-${hashString(payload)}`;
 }
