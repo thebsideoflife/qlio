@@ -55,15 +55,40 @@ export interface TranscribeSegment {
   compression_ratio: number;
   no_speech_prob: number;
   hallucination_flag: string | null;
+  /**
+   * SporeLabs' stock-phrase verdict, present only with `keep_suppressed: true` (the
+   * segment stays in `segments`; without that option it is removed and listed in
+   * `hallucination_flags` instead). Older responses never carry it.
+   */
+  stock_phrase?: StockPhraseVerdict | null;
   words: TranscribeWord[];
+}
+
+export interface StockPhraseVerdict {
+  reason?: string;
+  no_speech_prob?: number;
+  window_alone?: boolean;
+  mean_word_probability?: number | null;
+  note?: string;
 }
 
 export interface HallucinationFlag {
   start: number;
   end: number;
   segment_ids: number[];
+  /** "repeated_segment" | "repeated_phrase" | "stock_phrase" (SporeLabs PR #256). */
   kind: string;
   note: string;
+  // kind "stock_phrase" only:
+  text?: string;
+  no_speech_prob?: number;
+  avg_logprob?: number;
+  mean_word_probability?: number | null;
+  window_alone?: boolean;
+  reason?: string;
+  /** true: the segment was removed from `segments`; its words are only here. */
+  suppressed?: boolean;
+  words?: TranscribeWord[];
 }
 
 export interface TranscribeResult {
