@@ -19,7 +19,10 @@ import {
   submitReframe,
   type ReframeClientOptions,
 } from "./sporelabs-reframe";
-import { wordsFromSporeLabsResult } from "../utils/sporelabs-transcript";
+import {
+  isStockPhraseHallucination,
+  wordsFromSporeLabsResult,
+} from "../utils/sporelabs-transcript";
 import {
   selectSupersededTranscriptKeys,
   sporelabsJobStateKey,
@@ -415,6 +418,38 @@ async function main() {
       "submit record lives next to the job state",
     );
     assert(!stale.some((k) => keep.includes(k)), "keep keys survive");
+  }
+
+  // --- stock phrases over music: held out only when Whisper doubts speech AND they sit alone
+  {
+    const seg = (start: number, end: number, text: string, nsp: number, ws: string[]) => ({
+      id: 0, seek: 0, start, end, text, temperature: 0, avg_logprob: -0.5, compression_ratio: 1,
+      no_speech_prob: nsp, hallucination_flag: null,
+      words: ws.map((w, i) => ({ word: w, start: start + i * 0.2, end: start + i * 0.2 + 0.2, probability: 0.5 })),
+    });
+    const result: any = {
+      model: "large-v3", engine: "x", options: {}, language: "en", duration: 3000,
+      num_segments: 6, num_words: 0, hallucination_flags: [], text: "",
+      segments: [
+        seg(1000, 1003, "Get away from the car.", 0.1, ["Get", "away", "from", "the", "car."]),
+        seg(1003.2, 1003.8, "I'm sorry.", 0.02, ["I'm", "sorry."]),
+        seg(1751.3, 1752.5, "Thanks for watching!", 0.74, ["Thanks", "for", "watching!"]),
+        seg(2053.6, 2055, "© BF -WATCH TV 2021", 0.86, ["©", "BF", "-WATCH", "TV", "2021"]),
+        seg(2272, 2272.6, "Thank you.", 0.55, ["Thank", "you."]),
+        seg(2300, 2302, "Thank you, Rico.", 0.9, ["Thank", "you,", "Rico."]),
+      ],
+    };
+    const { words, hallucinations } = wordsFromSporeLabsResult(result, 0);
+    const text = words.map((w) => w.value).join(" ");
+    assert(text.includes("I'm sorry."), "a stock phrase inside dialogue is kept");
+    assert(!text.includes("watching") && !text.includes("WATCH"), "alone + doubted stock phrases are held out");
+    assert(text.includes("Thank you.") && text.includes("Rico."), "low no-speech or non-stock lines are kept");
+    assert(
+      hallucinations.length === 2 && hallucinations.every((h) => h.note.startsWith("stock phrase")),
+      "held-out stock phrases are listed with a note",
+    );
+    assert(isStockPhraseHallucination({ text: "Thank you. Thank you.", no_speech_prob: 0.9 }, 20), "repeated stock phrase matches");
+    assert(!isStockPhraseHallucination({ text: "Thank you.", no_speech_prob: 0.9 }, 1), "not alone: kept");
   }
 
   console.log(`sporelabs-transcribe: ${checks - failures}/${checks} checks passed`);
