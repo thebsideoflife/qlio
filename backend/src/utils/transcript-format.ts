@@ -158,6 +158,46 @@ export function selectSupersededTranscriptKeys(params: {
     .sort();
 }
 
+export type TranslationCarryOver = {
+  language: string;
+  fromUri: string;
+  toKey: string;
+};
+
+/**
+ * Translations to carry onto a replacement transcript. Retranscribing must never
+ * drop an asset's other-language captions: each linked translation is copied to
+ * the new version's key (caption lines are timed on the video clock, so they stay
+ * aligned). A translation into the new transcript's own language is skipped.
+ */
+export function planTranslationCarryOver(params: {
+  assetId: string;
+  translations: unknown;
+  newTranscriptionVersion: string;
+  newOriginalLanguage: string;
+}): TranslationCarryOver[] {
+  if (!params.translations || typeof params.translations !== "object") return [];
+  const original = normalizeLanguageCode(params.newOriginalLanguage);
+  const plan: TranslationCarryOver[] = [];
+  for (const [rawLanguage, uri] of Object.entries(
+    params.translations as Record<string, unknown>,
+  )) {
+    if (typeof uri !== "string" || !uri.startsWith("s3://")) continue;
+    const language = normalizeLanguageCode(rawLanguage);
+    if (language === "und" || language === original) continue;
+    plan.push({
+      language,
+      fromUri: uri,
+      toKey: translationTranscriptKey(
+        params.assetId,
+        params.newTranscriptionVersion,
+        language,
+      ),
+    });
+  }
+  return plan.sort((a, b) => a.language.localeCompare(b.language));
+}
+
 function asFiniteNumber(value: unknown, fallback = 0): number {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : fallback;

@@ -46,6 +46,7 @@ import {
   normalizeLanguageCode,
   originalTranscriptKey,
   parseTranscriptJson,
+  planTranslationCarryOver,
   selectSupersededTranscriptKeys,
   sporelabsJobStateKey,
   sporelabsRawResponseKey,
@@ -315,15 +316,19 @@ async function stageTranscriptionReplacement(
     transcriptionUrl: string;
     originalLanguage: string;
     transcriptionVersion: string;
+    translations: Record<string, string>;
   },
 ): Promise<void> {
+  const statuses = Object.fromEntries(
+    Object.keys(extra.translations).map((language) => [language, "ready"]),
+  );
   await docClient.send(
     new UpdateCommand({
       TableName: TABLE_NAME,
       Key: { assetId },
       UpdateExpression:
         "SET #ts = :pending, transcriptionUrl = :url, originalLanguage = :lang, " +
-        "transcriptionVersion = :version, translations = :empty, translationStatuses = :empty, " +
+        "transcriptionVersion = :version, translations = :translations, translationStatuses = :statuses, " +
         "translationErrors = :empty, translationStartedAt = :empty, updatedAt = :updatedAt",
       ConditionExpression:
         "pendingTranscriptionVersion = :version AND #ts = :pending",
@@ -333,11 +338,79 @@ async function stageTranscriptionReplacement(
         ":url": extra.transcriptionUrl,
         ":lang": extra.originalLanguage,
         ":version": extra.transcriptionVersion,
+        ":translations": extra.translations,
+        ":statuses": statuses,
         ":empty": {},
         ":updatedAt": new Date().toISOString(),
       },
     }),
   );
+}
+
+/**
+ * Copy the asset's translations onto the replacement transcript version. Returns
+ * the new language → URI map, plus the keys of any translation that could not be
+ * copied so cleanup leaves it in place instead of deleting the only copy.
+ */
+async function carryOverTranslations(params: {
+  assetId: string;
+  translations: unknown;
+  transcriptionVersion: string;
+  originalLanguage: string;
+}): Promise<{ translations: Record<string, string>; keepKeys: string[] }> {
+  const translations: Record<string, string> = {};
+  const copiedFrom = new Set<string>();
+  const keepKeys: string[] = [];
+  for (const item of planTranslationCarryOver({
+    assetId: params.assetId,
+    translations: params.translations,
+    newTranscriptionVersion: params.transcriptionVersion,
+    newOriginalLanguage: params.originalLanguage,
+  })) {
+    const from = parseS3Uri(item.fromUri);
+    try {
+      const res = await s3Client.send(
+        new GetObjectCommand({ Bucket: from.bucket, Key: from.key }),
+      );
+      const body = JSON.parse(await res.Body!.transformToString());
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: item.toKey,
+          Body: JSON.stringify({
+            ...body,
+            transcriptionVersion: params.transcriptionVersion,
+            carriedOverFrom: {
+              transcriptionVersion: body.transcriptionVersion ?? null,
+              uri: item.fromUri,
+              at: new Date().toISOString(),
+            },
+          }),
+          ContentType: "application/json",
+        }),
+      );
+      translations[item.language] = `s3://${BUCKET_NAME}/${item.toKey}`;
+      copiedFrom.add(item.fromUri);
+      console.log(`[transcribe] carried ${item.language} translation to ${item.toKey}`);
+    } catch (err) {
+      console.error(
+        `[transcribe] could not carry ${item.language} translation from ${item.fromUri}; keeping the original file`,
+        err,
+      );
+      if (from.bucket === BUCKET_NAME) keepKeys.push(from.key);
+    }
+  }
+  // Never delete a translation that was not carried over (e.g. one into the new
+  // transcript's own language); cleanup only removes files that now have a copy.
+  if (params.translations && typeof params.translations === "object") {
+    for (const uri of Object.values(params.translations as Record<string, unknown>)) {
+      if (typeof uri !== "string" || !uri.startsWith("s3://")) continue;
+      if (copiedFrom.has(uri)) continue;
+      const { bucket, key } = parseS3Uri(uri);
+      if (bucket === BUCKET_NAME && !keepKeys.includes(key)) keepKeys.push(key);
+    }
+  }
+  return { translations, keepKeys };
 }
 
 async function setTranscriptionReady(
@@ -898,10 +971,17 @@ export const handler: Handler<TranscribeAssetEvent> = async (event, context) => 
             return null;
           })
         : null;
+    const carried = await carryOverTranslations({
+      assetId,
+      translations: asset.translations,
+      transcriptionVersion,
+      originalLanguage: language,
+    });
     await stageTranscriptionReplacement(assetId, {
       transcriptionUrl,
       originalLanguage: language,
       transcriptionVersion,
+      translations: carried.translations,
     });
     if (asset.transcriptionUrl && asset.transcriptionUrl !== transcriptionUrl) {
       await migrateProjectWordEdits({
@@ -912,7 +992,12 @@ export const handler: Handler<TranscribeAssetEvent> = async (event, context) => 
         toVersion: transcriptionVersion,
       });
     }
-    await cleanupSupersededTranscripts(assetId, [s3Key, rawKey]);
+    await cleanupSupersededTranscripts(assetId, [
+      s3Key,
+      rawKey,
+      ...Object.values(carried.translations).map((uri) => parseS3Uri(uri).key),
+      ...carried.keepKeys,
+    ]);
     await setTranscriptionReady(assetId, transcriptionVersion);
     await s3Client
       .send(new DeleteObjectCommand({ Bucket: BUCKET_NAME, Key: state.audioKey }))
