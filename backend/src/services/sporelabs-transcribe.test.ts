@@ -541,6 +541,27 @@ async function main() {
     // A kept (suppressed: false) flag without a stock_phrase field is not ingested on its own.
     const stray: any = { ...defaultResult, hallucination_flags: [{ ...suppressedFlag, suppressed: false }] };
     assert(wordsFromSporeLabsResult(stray, 0).hallucinations.length === 1, "unsuppressed flag alone: not ingested");
+
+    // Two suppressed lines with the same start (e.g. a zero-length line): both are listed.
+    const sameStart: any = {
+      ...defaultResult,
+      hallucination_flags: [
+        { ...suppressedFlag, start: 20, end: 20, text: "Thank you.", words: [w("Thank", 20, 20), w("you.", 20, 20)] },
+        { ...suppressedFlag, start: 20, end: 21, text: "Bye.", words: [w("Bye.", 20, 21)] },
+      ],
+    };
+    const both2 = wordsFromSporeLabsResult(sameStart, 0).hallucinations.filter((h) => h.note.startsWith("stock phrase"));
+    assert(both2.length === 2, "same-start suppressed flags: neither overwrites the other");
+    assert(
+      both2.map((h) => h.words.map((x) => x.value).join(" ")).sort().join("|") === "Bye.|Thank you.",
+      "same-start suppressed flags: both keep their words",
+    );
+    // A flag without a numeric start is skipped, not placed at 0 s.
+    const nullStart: any = { ...defaultResult, hallucination_flags: [{ ...suppressedFlag, start: null }] };
+    assert(
+      !wordsFromSporeLabsResult(nullStart, 0).hallucinations.some((h) => h.start === 0),
+      "flag with null start is not ingested at 0 s",
+    );
   }
 
   console.log(`sporelabs-transcribe: ${checks - failures}/${checks} checks passed`);

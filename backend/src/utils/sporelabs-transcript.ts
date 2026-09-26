@@ -99,11 +99,14 @@ export function wordsFromSporeLabsResult(
   const words: CaptionWord[] = [];
   // SporeLabs-suppressed stock lines, keyed by their start on the video clock.
   const stockKey = (start: unknown) => `stock@${round3(Number(start) + offset)}`;
-  const suppressed = new Map<string, HallucinationFlag>();
+  // Several flags can share a start (e.g. a zero-length line); keep every one.
+  const suppressed = new Map<string, HallucinationFlag[]>();
   for (const flag of result.hallucination_flags ?? []) {
     if (!isSuppressedStockFlag(flag)) continue;
-    if (!Number.isFinite(Number(flag.start)) || !Number.isFinite(Number(flag.end))) continue;
-    suppressed.set(stockKey(flag.start), flag);
+    if (typeof flag.start !== "number" || typeof flag.end !== "number") continue;
+    if (!Number.isFinite(flag.start) || !Number.isFinite(flag.end)) continue;
+    const key = stockKey(flag.start);
+    suppressed.set(key, [...(suppressed.get(key) ?? []), flag]);
   }
   // Loops share one note across their segments; stock lines are one stretch each.
   const byNote = new Map<string, FlaggedStretch>();
@@ -131,10 +134,13 @@ export function wordsFromSporeLabsResult(
       seg.stock_phrase ??
       (() => {
         // A suppressed flag whose segment was still returned: hold it out once.
-        const flag = suppressed.get(stockKey(seg.start));
-        return flag && String(flag.text ?? "").trim() === String(seg.text ?? "").trim()
-          ? flag
-          : undefined;
+        const flags = suppressed.get(stockKey(seg.start)) ?? [];
+        const i = flags.findIndex(
+          (flag) => String(flag.text ?? "").trim() === String(seg.text ?? "").trim(),
+        );
+        if (i < 0) return undefined;
+        const [flag] = flags.splice(i, 1);
+        return flag;
       })();
     if (!note && serverStock) {
       // SporeLabs' verdict wins over our own filter, so the stretch is listed once.
@@ -169,16 +175,18 @@ export function wordsFromSporeLabsResult(
     byNote.set(stretchKey, stretch);
   }
   // Stock lines SporeLabs removed from `segments`: their words ride on the flag.
-  for (const [key, flag] of suppressed) {
-    if (byNote.has(key)) continue; // its segment was returned too and is already held out
-    const start = round3(Number(flag.start) + offset);
-    byNote.set(key, {
-      start,
-      end: round3(Math.max(Number(flag.end), Number(flag.start)) + offset),
-      note: stockNote(start, String(flag.text ?? "").trim(), flag.reason),
-      words: (flag.words ?? [])
-        .map((w) => toCaptionWord(w, offset))
-        .filter((w): w is CaptionWord => w !== null),
+  // Flags claimed by a returned segment were spliced out above; each one left is its own stretch.
+  for (const [key, flags] of suppressed) {
+    flags.forEach((flag, i) => {
+      const start = round3(Number(flag.start) + offset);
+      byNote.set(`${key}#flag${i}`, {
+        start,
+        end: round3(Math.max(Number(flag.end), Number(flag.start)) + offset),
+        note: stockNote(start, String(flag.text ?? "").trim(), flag.reason),
+        words: (flag.words ?? [])
+          .map((w) => toCaptionWord(w, offset))
+          .filter((w): w is CaptionWord => w !== null),
+      });
     });
   }
   words.sort((a, b) => a.start - b.start || a.end - b.end);
