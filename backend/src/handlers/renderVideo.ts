@@ -21,7 +21,11 @@ import {
   computeSegmentRenderFingerprint,
   RENDER_PIPELINE_VERSION,
 } from "../utils/segmentRenderFingerprint";
-import { planSegmentReuse, type StoredRender } from "../utils/renderReuse";
+import {
+  isRenderJobExpired,
+  planSegmentReuse,
+  type StoredRender,
+} from "../utils/renderReuse";
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client, {
@@ -85,6 +89,56 @@ function getCompositionId(
     default:
       return "CaptionedVideoPortrait";
   }
+}
+
+/**
+ * The project's in-flight export, if any. A project runs at most one export at
+ * a time and `activeRenderJobId` always names it, so every running job is one
+ * the export page can find and poll to completion.
+ */
+async function findRunningJob(
+  activeRenderJobId: unknown,
+): Promise<{ jobId: string; segmentCount: number } | null> {
+  if (typeof activeRenderJobId !== "string" || !activeRenderJobId) return null;
+  const result = await docClient.send(
+    new GetCommand({
+      TableName: RENDER_JOBS_TABLE,
+      Key: { jobId: activeRenderJobId },
+      ProjectionExpression: "jobId, #status, createdAt, segmentRenders",
+      ExpressionAttributeNames: { "#status": "status" },
+    }),
+  );
+  const job = result.Item;
+  if (!job || job.status !== "rendering") return null;
+  // Past the ceiling it's failed on its next poll; never let it block.
+  if (isRenderJobExpired(job.createdAt)) return null;
+  return {
+    jobId: activeRenderJobId,
+    segmentCount: Array.isArray(job.segmentRenders)
+      ? job.segmentRenders.length
+      : 0,
+  };
+}
+
+function exportInProgressResponse(running: {
+  jobId: string;
+  segmentCount: number;
+}) {
+  return {
+    statusCode: 409,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    },
+    body: JSON.stringify({
+      error: "An export is already running for this project",
+      code: "EXPORT_IN_PROGRESS",
+      jobId: running.jobId,
+      status: "rendering",
+      segmentCount: running.segmentCount,
+      renderPipelineVersion: RENDER_PIPELINE_VERSION,
+    }),
+  };
 }
 
 export const handler: APIGatewayProxyHandler = async (event) => {
@@ -252,6 +306,14 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     `Render plan: reuse ${reused.length}, render ${segmentsToRender.length}`,
   );
 
+  // Hand back the running export instead of starting a second one (another
+  // tab, a double click, or a scene re-render while an export is running).
+  // A request that renders nothing needs no slot, so it is never blocked.
+  if (segmentsToRender.length > 0) {
+    const running = await findRunningJob(project.activeRenderJobId);
+    if (running) return exportInProgressResponse(running);
+  }
+
   // Validate limits
   const totalDuration = segmentsToRender.reduce(
     (sum, s) => sum + (s.endTime - s.startTime),
@@ -396,18 +458,69 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     };
   }
 
-  // Track active render job on project for refresh recovery
-  await docClient.send(
-    new UpdateCommand({
-      TableName: PROJECTS_TABLE,
-      Key: { projectId },
-      UpdateExpression: "SET activeRenderJobId = :jobId, updatedAt = :now",
-      ExpressionAttributeValues: {
-        ":jobId": jobId,
-        ":now": new Date().toISOString(),
+  // Claim the project's single export slot. The condition makes the check
+  // above atomic: if another request claimed it since we read the project,
+  // this job never launches and the caller attaches to the winner.
+  const previousActiveJobId =
+    typeof project.activeRenderJobId === "string"
+      ? project.activeRenderJobId
+      : null;
+  try {
+    await docClient.send(
+      new UpdateCommand({
+        TableName: PROJECTS_TABLE,
+        Key: { projectId },
+        UpdateExpression: "SET activeRenderJobId = :jobId, updatedAt = :now",
+        // An empty slot is always claimable: the previous job may have
+        // finished and released it since we read the project.
+        ConditionExpression: previousActiveJobId
+          ? "attribute_not_exists(activeRenderJobId) OR activeRenderJobId = :previous"
+          : "attribute_not_exists(activeRenderJobId)",
+        ExpressionAttributeValues: {
+          ":jobId": jobId,
+          ":now": new Date().toISOString(),
+          ...(previousActiveJobId ? { ":previous": previousActiveJobId } : {}),
+        },
+      }),
+    );
+  } catch (error) {
+    if ((error as { name?: string }).name !== "ConditionalCheckFailedException") {
+      throw error;
+    }
+    await docClient.send(
+      new UpdateCommand({
+        TableName: RENDER_JOBS_TABLE,
+        Key: { jobId },
+        UpdateExpression:
+          "SET #status = :failed, #error = :error, updatedAt = :now",
+        ExpressionAttributeNames: { "#status": "status", "#error": "error" },
+        ExpressionAttributeValues: {
+          ":failed": "failed",
+          ":error": "Superseded by a concurrent export",
+          ":now": new Date().toISOString(),
+        },
+      }),
+    );
+    const latest = await docClient.send(
+      new GetCommand({
+        TableName: PROJECTS_TABLE,
+        Key: { projectId },
+        ProjectionExpression: "activeRenderJobId",
+      }),
+    );
+    const winner = await findRunningJob(latest.Item?.activeRenderJobId);
+    if (winner) return exportInProgressResponse(winner);
+    return {
+      statusCode: 409,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
       },
-    }),
-  );
+      body: JSON.stringify({
+        error: "Another export just started for this project. Try again.",
+      }),
+    };
+  }
 
   // Invoke FFmpeg Lambda to cut clips and start Remotion renders
   console.log(

@@ -323,6 +323,11 @@ export const handler: Handler<
   );
   const job = jobResult.Item;
   if (!job) throw new Error(`Job ${jobId} not found`);
+  // A cancelled, timed-out or finished job must never be revived.
+  if (job.status !== "rendering") {
+    console.log(`cutSegments: job ${jobId} is ${job.status}; nothing to do`);
+    return event.worker ? [] : undefined;
+  }
 
   const {
     sourceS3Uri,
@@ -498,6 +503,13 @@ export const handler: Handler<
       await fs.unlink(clipPath);
     }
 
+    // Cutting takes minutes; the user may have cancelled meanwhile. Don't
+    // spend Remotion capacity on a job nobody is waiting for.
+    if (!(await jobIsRendering(jobId))) {
+      console.log(`cutSegments: job ${jobId} ended while cutting; not launching`);
+      return event.worker ? [] : undefined;
+    }
+
     // 4. Kick off Remotion renders per clip
     console.log(`Starting ${segments.length} Remotion renders`);
     const segmentRenders: SegmentRender[] = await Promise.all(
@@ -618,7 +630,7 @@ export const handler: Handler<
  * (reused renders, other workers, earlier retries). Versioned so it never
  * overwrites a concurrent status-poll write.
  */
-async function mergeJobRenders(
+export async function mergeJobRenders(
   jobId: string,
   renders: SegmentRender[],
 ): Promise<void> {
@@ -628,6 +640,11 @@ async function mergeJobRenders(
       new GetCommand({ TableName: RENDER_JOBS_TABLE, Key: { jobId } }),
     );
     if (!job) throw new Error(`Job ${jobId} not found`);
+    // Never write a cancelled/timed-out/finished job back to "rendering".
+    if (job.status !== "rendering") {
+      console.log(`cutSegments: job ${jobId} is ${job.status}; dropping renders`);
+      return;
+    }
     const byId = new Map<string, Record<string, unknown>>(
       ((job.segmentRenders || []) as Array<Record<string, unknown>>).map(
         (entry) => [entry.segmentId as string, entry],
@@ -649,8 +666,9 @@ async function mergeJobRenders(
           Key: { jobId },
           UpdateExpression:
             "SET segmentRenders = :segmentRenders, #status = :status, updatedAt = :updatedAt, rev = :nextRev",
-          ConditionExpression:
-            rev === null ? "attribute_not_exists(rev)" : "rev = :rev",
+          ConditionExpression: `${
+            rev === null ? "attribute_not_exists(rev)" : "rev = :rev"
+          } AND #status = :status`,
           ExpressionAttributeNames: { "#status": "status" },
           ExpressionAttributeValues: {
             ":segmentRenders": Array.from(byId.values()),
@@ -669,6 +687,18 @@ async function mergeJobRenders(
     }
   }
   throw new Error(`Could not record renders for job ${jobId}`);
+}
+
+async function jobIsRendering(jobId: string): Promise<boolean> {
+  const { Item } = await docClient.send(
+    new GetCommand({
+      TableName: RENDER_JOBS_TABLE,
+      Key: { jobId },
+      ProjectionExpression: "#status",
+      ExpressionAttributeNames: { "#status": "status" },
+    }),
+  );
+  return Item?.status === "rendering";
 }
 
 function parseS3Uri(uri: string): { bucket: string; key: string } {

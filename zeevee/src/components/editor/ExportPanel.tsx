@@ -27,6 +27,7 @@ import { Separator } from "@/components/ui/separator";
 import {
   startRender,
   getRenderStatus,
+  cancelRender,
   getProject,
   getProjectJobStatus,
   generateExportMetadata,
@@ -134,6 +135,10 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   );
 
   const [status, setStatus] = useState<RenderStatus>("idle");
+  // Read by async callbacks that must not act on a stale status.
+  const statusRef = useRef(status);
+  statusRef.current = status;
+  const [cancelling, setCancelling] = useState(false);
   const [progress, setProgress] = useState(0);
   const [jobId, setJobId] = useState<string | null>(null);
   // Set when the backend renders with a newer pipeline than this tab knows;
@@ -624,7 +629,9 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
           setClientOutdated(true);
         }
 
-        if (jobStatus.activeRenderJobId) {
+        // Only resume into an idle panel: if the user already started an
+        // export, that start (or its 409 attach) is the current truth.
+        if (jobStatus.activeRenderJobId && statusRef.current === "idle") {
           setJobId(jobStatus.activeRenderJobId);
           setStatus("rendering");
         }
@@ -768,15 +775,58 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     runPackageDownload,
   ]);
 
-  useEffect(() => {
-    if (!jobId || status === "completed" || status === "failed") return;
+  // Polls one job to completion. Keyed on the job alone: editor state is read
+  // through a ref so edits don't restart the loop, and `cancelled` stops a
+  // superseded loop even mid-request, so a finished older job can never flip
+  // the panel out of "rendering" while a newer one is still running.
+  const pollContextRef = useRef({
+    lastSegmentRenders,
+    segments,
+    selectedSegmentIds,
+    captionSettings,
+    globalFraming,
+    transcriptionVersion,
+    runPackageDownload,
+  });
+  pollContextRef.current = {
+    lastSegmentRenders,
+    segments,
+    selectedSegmentIds,
+    captionSettings,
+    globalFraming,
+    transcriptionVersion,
+    runPackageDownload,
+  };
+  const pollingJobId = status === "rendering" ? jobId : null;
 
+  useEffect(() => {
+    if (!pollingJobId) return;
+    const jobId = pollingJobId;
+
+    let cancelled = false;
     let pollCount = 0;
-    let timeoutId: ReturnType<typeof setTimeout>;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    const scheduleNext = () => {
+      if (cancelled) return;
+      pollCount++;
+      const nextDelay = Math.min(2000 * Math.pow(1.5, pollCount), 10000);
+      timeoutId = setTimeout(poll, nextDelay);
+    };
 
     const poll = async () => {
       try {
         const result = await getRenderStatus(jobId);
+        if (cancelled) return;
+        const {
+          lastSegmentRenders,
+          segments,
+          selectedSegmentIds,
+          captionSettings,
+          globalFraming,
+          transcriptionVersion,
+          runPackageDownload,
+        } = pollContextRef.current;
         setProgress(result.progress);
         setCompletedCount(result.completedCount || 0);
 
@@ -845,33 +895,29 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
           return;
         }
 
-        pollCount++;
-        const nextDelay = Math.min(2000 * Math.pow(1.5, pollCount), 10000);
-        timeoutId = setTimeout(poll, nextDelay);
-      } catch {
-        pollCount++;
-        const nextDelay = Math.min(2000 * Math.pow(1.5, pollCount), 10000);
-        timeoutId = setTimeout(poll, nextDelay);
+        scheduleNext();
+      } catch (err) {
+        if (cancelled) return;
+        // The job no longer exists (expired away): nothing will ever answer,
+        // so stop instead of spinning.
+        if ((err as { response?: { status?: number } }).response?.status === 404) {
+          setStatus("idle");
+          setJobId(null);
+          setProgress(0);
+          setSegmentDownloads([]);
+          return;
+        }
+        scheduleNext();
       }
     };
 
     poll();
 
     return () => {
+      cancelled = true;
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [
-    jobId,
-    status,
-    dispatch,
-    lastSegmentRenders,
-    segments,
-    selectedSegmentIds,
-    captionSettings,
-    globalFraming,
-    transcriptionVersion,
-    runPackageDownload,
-  ]);
+  }, [pollingJobId, dispatch]);
 
   useEffect(() => {
     return () => {
@@ -900,6 +946,33 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     syncedVersion,
     dispatch,
   ]);
+
+  // The server runs one export per project and answers a second start with the
+  // one already running (another tab, or a start this panel lost track of).
+  // Follow that job rather than reporting a failure.
+  const attachToRunningExport = useCallback((err: unknown): boolean => {
+    const response = (
+      err as {
+        response?: {
+          status?: number;
+          data?: { code?: string; jobId?: string; segmentCount?: number };
+        };
+      }
+    ).response;
+    if (
+      response?.status !== 409 ||
+      response.data?.code !== "EXPORT_IN_PROGRESS" ||
+      !response.data.jobId
+    ) {
+      return false;
+    }
+    if (response.data.segmentCount) {
+      setRenderingSegmentCount(response.data.segmentCount);
+    }
+    setJobId(response.data.jobId);
+    setStatus("rendering");
+    return true;
+  }, []);
 
   const handleStartRender = useCallback(async (force = false) => {
     if (isProcessing) return; // Prevent concurrent renders
@@ -936,6 +1009,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       setJobId(result.jobId);
       setStatus("rendering");
     } catch (err: unknown) {
+      if (attachToRunningExport(err)) return;
       setStatus("failed");
       const apiError = err as { response?: { data?: { error?: string } } };
       setError(apiError.response?.data?.error || "Failed to start render");
@@ -948,6 +1022,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     captionSettings,
     segments,
     globalFraming,
+    attachToRunningExport,
   ]);
 
   const handleRerenderSegment = useCallback(
@@ -986,12 +1061,21 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
         setJobId(result.jobId);
         setStatus("rendering");
       } catch (err: unknown) {
+        if (attachToRunningExport(err)) return;
         setStatus("failed");
         const apiError = err as { response?: { data?: { error?: string } } };
         setError(apiError.response?.data?.error || "Failed to start render");
       }
     },
-    [projectId, isProcessing, flushProjectForExport, captionSettings, segments, globalFraming],
+    [
+      projectId,
+      isProcessing,
+      flushProjectForExport,
+      captionSettings,
+      segments,
+      globalFraming,
+      attachToRunningExport,
+    ],
   );
 
   const handleDownload = useCallback((url: string, title: string) => {
@@ -1001,6 +1085,36 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     a.target = "_blank";
     a.click();
   }, []);
+
+  // The user's way out of any export, stuck or not: ends it on the server and
+  // frees the project, so the next Export starts fresh.
+  const handleCancelExport = useCallback(async () => {
+    if (!jobId || cancelling) return;
+    setCancelling(true);
+    const reset = () => {
+      // It may have finished while the cancel was in flight; keep that.
+      if (statusRef.current === "completed") return;
+      setStatus("idle");
+      setProgress(0);
+      setJobId(null);
+      setSegmentDownloads([]);
+      setCompletedCount(0);
+      setError(null);
+    };
+    try {
+      await cancelRender(jobId);
+      reset();
+    } catch (err) {
+      // Already gone on the server: that's the outcome the user asked for.
+      if ((err as { response?: { status?: number } }).response?.status === 404) {
+        reset();
+      } else {
+        setError("Couldn't cancel the export. Check your connection and try again.");
+      }
+    } finally {
+      setCancelling(false);
+    }
+  }, [jobId, cancelling]);
 
   const handleDone = useCallback(() => {
     packageAbortRef.current?.abort();
@@ -1176,6 +1290,9 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                 </span>
               </div>
               <Progress value={progress} className="h-1.5" />
+              {error && (
+                <p className="text-xs text-destructive">{error}</p>
+              )}
             </>
           )}
           {packageStatus === "bundling" && !isProcessing && (
@@ -1747,8 +1864,29 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
               onClick={handleDone}
               className="w-full sm:w-auto"
             >
-              {status === "completed" || someRendered ? "Done" : "Cancel"}
+              {/* Leaving doesn't stop a running export; it resumes on return. */}
+              {isProcessing
+                ? "Close"
+                : status === "completed" || someRendered
+                  ? "Done"
+                  : "Cancel"}
             </Button>
+            {status === "rendering" && jobId && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleCancelExport()}
+                disabled={cancelling}
+                className="w-full sm:w-auto"
+              >
+                {cancelling ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <XCircle className="h-4 w-4 mr-2" />
+                )}
+                Cancel export
+              </Button>
+            )}
             {metadataEnabled &&
               hasAnySelection &&
               (status === "completed" || someRendered) && (

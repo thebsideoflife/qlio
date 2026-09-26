@@ -21,8 +21,11 @@ import {
   MAX_SEGMENT_RENDER_ATTEMPTS,
   shouldReplaceStoredRender,
 } from "../utils/renderReuse";
+import {
+  advanceRenderJob,
+  type SegmentRender,
+} from "../utils/renderJobProgress";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
-import { mapWithConcurrency } from "../utils/concurrency";
 import { getRenderProgress } from "@remotion/lambda/client";
 import type { AwsRegion } from "@remotion/lambda";
 
@@ -35,11 +38,7 @@ const RENDERS_BUCKET = process.env.RENDERS_BUCKET;
 const REMOTION_FUNCTION_NAME = process.env.REMOTION_FUNCTION_NAME;
 const AWS_REGION_NAME = process.env.AWS_REGION_NAME;
 const STITCH_FUNCTION_NAME = process.env.STITCH_FUNCTION_NAME;
-// A scene waiting this long for cutSegments to hand back a render ID is lost.
-const PENDING_LAUNCH_TIMEOUT_MS = 20 * 60 * 1000;
 const lambdaClient = new LambdaClient({});
-// Wait before relaunching after an AWS capacity/throttle error: 45s, 90s, 135s.
-const RETRY_BACKOFF_MS = 45_000;
 const PROGRESS_CHECK_CONCURRENCY = 10;
 
 type RenderLocation = { bucket: string; key: string };
@@ -56,21 +55,25 @@ interface StoredSegmentRender {
   sourceKey?: string;
 }
 
-interface SegmentRender {
-  segmentId: string;
-  title: string;
-  /** Empty while cutSegments is still cutting/launching this scene. */
-  renderId: string;
-  bucketName: string;
-  outputKey: string; // Exact S3 key - stored at render start
-  status: "rendering" | "completed" | "failed";
-  error?: string;
-  /** Launches so far (first render + automatic retries). */
-  attempts?: number;
-  launchRequestedAt?: string;
-  /** Stored render reused as-is; already on the project. */
-  reused?: boolean;
-  failedAt?: string;
+
+/** Free the project's export slot if this job still holds it. */
+async function releaseExportSlot(projectId: string, jobId: string) {
+  await docClient
+    .send(
+      new UpdateCommand({
+        TableName: PROJECTS_TABLE,
+        Key: { projectId },
+        UpdateExpression: "REMOVE activeRenderJobId SET updatedAt = :now",
+        ConditionExpression: "activeRenderJobId = :jobId",
+        ExpressionAttributeValues: {
+          ":now": new Date().toISOString(),
+          ":jobId": jobId,
+        },
+      }),
+    )
+    .catch((error: { name?: string }) => {
+      if (error.name !== "ConditionalCheckFailedException") throw error;
+    });
 }
 
 interface SegmentDownload {
@@ -315,7 +318,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   }
 
   const job = result.Item;
-  const segmentRenders: SegmentRender[] = job.segmentRenders || [];
+  let segmentRenders: SegmentRender[] = job.segmentRenders || [];
   const renderContentHash = (segmentId: string): string | undefined => {
     const source = job.segments?.find((s: { id: string }) => s.id === segmentId);
     return source
@@ -334,31 +337,6 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     segmentCount: segmentRenders.length,
   });
 
-  // Check if render is stuck (> 6 hours)
-  const MAX_RENDER_TIME = 6 * 60 * 60 * 1000;
-  if (job.status === "rendering") {
-    const renderStartTime = new Date(job.createdAt).getTime();
-    if (Date.now() - renderStartTime > MAX_RENDER_TIME) {
-      console.error(`Render timeout for job ${jobId} - exceeded 6 hours`);
-      await docClient.send(
-        new UpdateCommand({
-          TableName: RENDER_JOBS_TABLE,
-          Key: { jobId },
-          UpdateExpression:
-            "SET #status = :status, #error = :error, updatedAt = :updatedAt",
-          ExpressionAttributeNames: { "#status": "status", "#error": "error" },
-          ExpressionAttributeValues: {
-            ":status": "failed",
-            ":error": "Render timeout - exceeded 6 hours",
-            ":updatedAt": new Date().toISOString(),
-          },
-        }),
-      );
-      job.status = "failed";
-      job.error = "Render timeout";
-    }
-  }
-
   // Helper to generate presigned URL using stored bucket/key
   async function generatePresignedUrl(
     segment: SegmentRender,
@@ -376,132 +354,42 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
   const segmentDownloads: SegmentDownload[] = [];
   let completedCount = 0;
-  const progressById = new Map<string, number>();
+  let progressById = new Map<string, number>();
   // Downloads must come from the CORS-enabled copies the editor can fetch().
   let persistedLocations = new Map<string, RenderLocation>();
 
   if (job.status === "rendering" && REMOTION_FUNCTION_NAME && AWS_REGION_NAME) {
-    let needsUpdate = false;
-    const now = Date.now();
-
-    // Each getRenderProgress call invokes the Remotion Lambda. Checking them
-    // one by one pushes large exports past API Gateway's 29s limit.
-    await mapWithConcurrency(
+    const functionName = REMOTION_FUNCTION_NAME;
+    const region = AWS_REGION_NAME as AwsRegion;
+    const advance = await advanceRenderJob({
+      job,
       segmentRenders,
-      PROGRESS_CHECK_CONCURRENCY,
-      async (segment, i) => {
-        if (segment.status !== "rendering") return;
-
-        if (!segment.renderId) {
-          const requestedAt = Date.parse(
-            segment.launchRequestedAt || job.createdAt,
-          );
-          if (now - requestedAt > PENDING_LAUNCH_TIMEOUT_MS) {
-            segmentRenders[i] = {
-              ...segment,
-              status: "failed",
-              error: "Timed out waiting for the scene to be cut",
-              failedAt: new Date(now).toISOString(),
-            };
-            needsUpdate = true;
-          }
-          return;
-        }
-
-        try {
-          const renderProgress = await getRenderProgress({
-            bucketName: segment.bucketName,
-            renderId: segment.renderId,
-            functionName: REMOTION_FUNCTION_NAME,
-            region: AWS_REGION_NAME as AwsRegion,
-          });
-
-          if (renderProgress.fatalErrorEncountered) {
-            const rawError =
-              renderProgress.errors?.[0]?.message || "Render failed";
-            segmentRenders[i] = {
-              ...segment,
-              status: "failed",
-              error: rawError.slice(0, 2000),
-              failedAt: new Date(now).toISOString(),
-            };
-            needsUpdate = true;
-            console.error(`Segment ${segment.segmentId} failed:`, rawError);
-          } else if (renderProgress.done) {
-            segmentRenders[i] = { ...segment, status: "completed" };
-            needsUpdate = true;
-            console.log(
-              `Segment ${segment.segmentId} completed! Key: ${segment.outputKey}`,
-            );
-          } else {
-            progressById.set(
-              segment.segmentId,
-              Math.round(renderProgress.overallProgress * 100),
-            );
-          }
-        } catch (error) {
-          console.error(
-            `Error checking progress for segment ${segment.segmentId}:`,
-            error,
-          );
-        }
+      now: Date.now(),
+      canRetry: Boolean(STITCH_FUNCTION_NAME),
+      concurrency: PROGRESS_CHECK_CONCURRENCY,
+      probe: async (scene) => {
+        const progress = await getRenderProgress({
+          bucketName: scene.bucketName,
+          renderId: scene.renderId,
+          functionName,
+          region,
+        });
+        return {
+          done: progress.done,
+          fatalError: progress.fatalErrorEncountered
+            ? progress.errors?.[0]?.message || "Render failed"
+            : undefined,
+          overallProgress: progress.overallProgress,
+        };
       },
-    );
+    });
+    segmentRenders = advance.segmentRenders;
+    progressById = advance.progressById;
+    const retryIds = advance.retryIds;
 
-    // Relaunch scenes that hit a temporary AWS error instead of failing the
-    // whole export.
-    const retryIds: string[] = [];
-    const willRetry = (segment: SegmentRender) =>
-      Boolean(STITCH_FUNCTION_NAME) &&
-      segment.status === "failed" &&
-      (segment.attempts ?? 1) < MAX_SEGMENT_RENDER_ATTEMPTS &&
-      isTransientRenderError(segment.error);
-    if (STITCH_FUNCTION_NAME) {
-      segmentRenders.forEach((segment, i) => {
-        const failedAt = Date.parse(segment.failedAt || "") || 0;
-        if (
-          willRetry(segment) &&
-          now - failedAt >= RETRY_BACKOFF_MS * (segment.attempts ?? 1)
-        ) {
-          retryIds.push(segment.segmentId);
-          segmentRenders[i] = {
-            ...segment,
-            status: "rendering",
-            renderId: "",
-            bucketName: "",
-            outputKey: "",
-            attempts: (segment.attempts ?? 1) + 1,
-            launchRequestedAt: new Date(now).toISOString(),
-          };
-          needsUpdate = true;
-        }
-      });
-    }
-
-    const completed = segmentRenders.filter((s) => s.status === "completed");
-    // Scenes waiting out a retry backoff still count as in progress.
-    const failed = segmentRenders.filter(
-      (s) => s.status === "failed" && !willRetry(s),
-    );
-    const expected = Array.isArray(job.segments)
-      ? job.segments.length
-      : segmentRenders.length;
-    const newStatus =
-      segmentRenders.length >= expected && completed.length === segmentRenders.length
-        ? "completed"
-        : segmentRenders.length >= expected &&
-            completed.length + failed.length === segmentRenders.length
-          ? "failed"
-          : "rendering";
-    const jobError =
-      newStatus === "failed"
-        ? `${failed.length} of ${segmentRenders.length} scenes failed (${failed
-            .map((s) => s.title)
-            .join(", ")}): ${failed[0]?.error ?? "Render failed"}`.slice(0, 4000)
-        : undefined;
-
-    if (needsUpdate || newStatus !== job.status) {
+    if (advance.changed || advance.status !== job.status) {
       const rev = typeof job.rev === "number" ? job.rev : null;
+      const jobError = advance.error;
       try {
         await docClient.send(
           new UpdateCommand({
@@ -517,10 +405,11 @@ export const handler: APIGatewayProxyHandler = async (event) => {
               ...(jobError ? { "#error": "error" } : {}),
             },
             ExpressionAttributeValues: {
-              ":status": newStatus,
+              ":status": advance.status,
               ":segmentRenders": segmentRenders,
               ":progress": Math.round(
-                (completed.length / Math.max(expected, 1)) * 100,
+                (advance.completedCount / Math.max(advance.expectedCount, 1)) *
+                  100,
               ),
               ":updatedAt": new Date().toISOString(),
               ":nextRev": (rev ?? 0) + 1,
@@ -529,17 +418,17 @@ export const handler: APIGatewayProxyHandler = async (event) => {
             },
           }),
         );
-        job.status = newStatus;
+        job.status = advance.status;
         job.error = jobError;
       } catch (error) {
         if ((error as { name?: string }).name !== "ConditionalCheckFailedException") {
           throw error;
         }
-        // Another writer (cut worker or concurrent poll) got there first;
-        // report without side effects and let the next poll decide.
+        // Another writer (cut worker, cancel or concurrent poll) got there
+        // first; report without side effects and let the next poll decide.
         console.log(`Render job ${jobId} changed concurrently; skipping update`);
         retryIds.length = 0;
-        job.status = "rendering";
+        segmentRenders = job.segmentRenders || [];
       }
 
       if (retryIds.length > 0) {
@@ -564,20 +453,6 @@ export const handler: APIGatewayProxyHandler = async (event) => {
           segmentRenders,
           job,
         );
-        await docClient.send(
-          new UpdateCommand({
-            TableName: PROJECTS_TABLE,
-            Key: { projectId: job.projectId },
-            UpdateExpression: "REMOVE activeRenderJobId SET updatedAt = :now",
-            ConditionExpression: "activeRenderJobId = :jobId",
-            ExpressionAttributeValues: {
-              ":now": new Date().toISOString(),
-              ":jobId": jobId,
-            },
-          }),
-        ).catch((error: { name?: string }) => {
-          if (error.name !== "ConditionalCheckFailedException") throw error;
-        });
       }
     }
   } else if (
@@ -592,6 +467,15 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       segmentRenders,
       job,
     );
+  }
+
+  // Idempotent: a finished job must never keep holding the export slot (e.g.
+  // an earlier release that failed, or a job cancelled mid-poll).
+  if (
+    (job.status === "completed" || job.status === "failed") &&
+    job.projectId
+  ) {
+    await releaseExportSlot(job.projectId, jobId);
   }
 
   for (const segment of segmentRenders) {

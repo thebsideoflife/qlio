@@ -235,6 +235,8 @@ export const updateProject = async (
 ) => {
   const response = await axios.patch(`${API_URL}/projects/${projectId}`, data, {
     headers: getAuthHeaders(),
+    // API Gateway gives up at 29s; a hung save must never hang Export.
+    timeout: 35_000,
   });
   return response.data;
 };
@@ -687,7 +689,21 @@ export const startRender = async (
     request,
     {
       headers: getAuthHeaders(),
+      // API Gateway gives up at 29s; never leave the panel stuck "Preparing".
+      timeout: 35_000,
     },
+  );
+  return response.data;
+};
+
+/** Ends an export and frees the project for a new one. Idempotent. */
+export const cancelRender = async (
+  jobId: string,
+): Promise<{ jobId: string; cancelled: boolean }> => {
+  const response = await axios.post(
+    `${API_URL}/renders/${jobId}/cancel`,
+    {},
+    { headers: getAuthHeaders(), timeout: 15_000 },
   );
   return response.data;
 };

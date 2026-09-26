@@ -22,6 +22,28 @@ resource "aws_lambda_permission" "api_gw_render_video" {
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/projects/*/render"
 }
 
+# Cancel Render
+resource "aws_apigatewayv2_integration" "cancel_render" {
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.cancel_render.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "cancel_render" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "POST /renders/{jobId}/cancel"
+  target    = "integrations/${aws_apigatewayv2_integration.cancel_render.id}"
+}
+
+resource "aws_lambda_permission" "api_gw_cancel_render" {
+  statement_id  = "AllowExecutionFromAPIGatewayCancelRender"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.cancel_render.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/renders/*/cancel"
+}
+
 # Get Render Status
 resource "aws_apigatewayv2_integration" "get_render_status" {
   api_id                 = aws_apigatewayv2_api.main.id
