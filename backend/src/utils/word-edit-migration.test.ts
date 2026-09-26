@@ -31,15 +31,15 @@ assert(a.wordEdits[wordEditKey(next[1])] === "need", "text change follows");
 assert(a.wordEdits[wordEditKey(next[2])] === "mouth.", "punctuation differences still match");
 assert(a.wordEdits[wordEditKey(next[3])] === "❤️", "emoji edit follows");
 
-// Different word at the same time: a text change moves by overlap, a deletion does not.
+// A different word at the same time is never edited (the Murdoch case: the old
+// transcript misheard "Mere" as "Mayor", the user fixed it, the new one hears it).
 const b = migrateWordEdits(
-  [w(10, 10.4, "Mayor"), w(11, 11.3, "hello")],
-  [w(10.02, 10.4, "Mere"), w(11.0, 11.3, "yellow")],
-  { [wordEditKey(w(10, 10.4, "Mayor"))]: "Mayor", [wordEditKey(w(11, 11.3, "hello"))]: "" },
+  [w(33.36, 33.52, "Mayor"), w(11, 11.3, "hello")],
+  [w(33.2, 33.6, "capacity."), w(33.7, 33.9, "Mere"), w(11.0, 11.3, "yellow")],
+  { [wordEditKey(w(33.36, 33.52, "Mayor"))]: "Mere", [wordEditKey(w(11, 11.3, "hello"))]: "" },
 );
-assert(b.wordEdits["10.02-10.4"] === "Mayor", "text change placed on the overlapping word");
-assert(!("11-11.3" in b.wordEdits), "a deletion never removes a different word");
-assert(b.dropped.length === 1 && b.dropped[0].reason === "no-matching-word", "unplaced deletion is reported");
+assert(b.migrated === 0, `nothing placed on a different word (${JSON.stringify(b.wordEdits)})`);
+assert(b.dropped.length === 2 && b.dropped.every((d) => d.reason === "no-matching-word"), "both kept for review");
 
 // Doubled words in the old transcript collapse to one: the closer edit wins.
 const c = migrateWordEdits(
