@@ -12,6 +12,7 @@ import {
   originalTranscriptKey,
   parseTranscriptJson,
   pickTranslationUri,
+  planTranslationCarryOver,
   selectSupersededTranscriptKeys,
   shiftCaptionsBy,
   transcriptVersionMatches,
@@ -153,6 +154,42 @@ assert(!staleKeys.includes(originalKey), "cleanup keeps the replacement original
 assert(
   !staleKeys.includes("scene-cache/asset-1/result.json"),
   "cleanup leaves unrelated video-analysis data alone",
+);
+
+const carryPlan = planTranslationCarryOver({
+  assetId: "asset-1",
+  translations: {
+    es: "s3://bucket/transcriptions/asset-1/versions/legacy-v1/translations/es.json",
+    French: "s3://bucket/transcriptions/asset-1/versions/old/translations/fr.json",
+    en: "s3://bucket/transcriptions/asset-1/versions/old/translations/en.json",
+    de: "https://example.com/not-s3.json",
+  },
+  newTranscriptionVersion: "new-v",
+  newOriginalLanguage: "English",
+});
+assert(
+  carryPlan.map((item) => item.language).join(",") === "es,fr",
+  "retranscription carries every other-language translation, skipping the new original language",
+);
+assert(
+  carryPlan[0].toKey === translationTranscriptKey("asset-1", "new-v", "es") &&
+    carryPlan[0].fromUri.endsWith("/legacy-v1/translations/es.json"),
+  "carried translation is copied from its linked file to the new version's key",
+);
+assert(
+  planTranslationCarryOver({
+    assetId: "asset-1",
+    translations: {},
+    newTranscriptionVersion: "new-v",
+    newOriginalLanguage: "en",
+  }).length === 0 &&
+    planTranslationCarryOver({
+      assetId: "asset-1",
+      translations: undefined,
+      newTranscriptionVersion: "new-v",
+      newOriginalLanguage: "en",
+    }).length === 0,
+  "assets without translations carry nothing",
 );
 assert(
   classifyTranscriptionRun(
