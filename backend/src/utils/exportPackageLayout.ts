@@ -25,6 +25,11 @@ export function padSceneNumber(sceneNumber: number): string {
   return String(Math.max(1, sceneNumber)).padStart(2, "0");
 }
 
+/** Filename a single scene video downloads as, matching the package layout. */
+export function sceneVideoFilename(sceneNumber: number, title: string): string {
+  return `scene_${padSceneNumber(sceneNumber)}_${sceneAssetSlug(title)}.mp4`;
+}
+
 export function safeExportFilenameBase(title: string): string {
   const slug = title
     .replace(/[^\w\s-]/g, "")

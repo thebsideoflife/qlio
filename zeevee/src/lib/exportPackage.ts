@@ -3,6 +3,9 @@ import {
   safeExportFilenameBase,
   type ExportMetadataDocument,
 } from "./exportMetadataJson";
+import { padSceneNumber, sceneAssetSlug } from "./sceneNaming";
+
+export { padSceneNumber, sceneAssetSlug, sceneVideoFilename } from "./sceneNaming";
 
 const ILLEGAL_FS_CHARS = new Set('<>:"/\\|?*');
 // JSZip keeps source blobs and the generated archive in browser memory.
@@ -53,20 +56,6 @@ export interface ExportPackageLayout {
     videoFilename: string;
     videoPath: string;
   }>;
-}
-
-export function sceneAssetSlug(title: string): string {
-  const clean = title.replace(/^\d+\.\s*/, "").trim();
-  const slug = clean
-    .replace(/[^a-zA-Z0-9\s-_]/g, "")
-    .replace(/\s+/g, "_")
-    .slice(0, 80)
-    .replace(/^_+|_+$/g, "");
-  return slug || "scene";
-}
-
-export function padSceneNumber(sceneNumber: number): string {
-  return String(Math.max(1, sceneNumber)).padStart(2, "0");
 }
 
 function uniqueSlug(base: string, used: Set<string>): string {

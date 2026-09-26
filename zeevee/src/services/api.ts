@@ -645,6 +645,28 @@ export const startExportPackage = async (
   return response.data;
 };
 
+/**
+ * Presigned link to one scene's latest render that downloads as
+ * scene_NN_Title.mp4 (NN = the scene's position in the project).
+ */
+export const getSceneVideoDownload = async (
+  projectId: string,
+  params: { segmentId: string; sceneNumber: number; title: string },
+): Promise<{ filename: string; downloadUrl: string; contentHash?: string }> => {
+  const response = await axios.get(
+    `${API_URL}/projects/${projectId}/export-package`,
+    {
+      headers: getAuthHeaders(),
+      params: {
+        sceneVideo: params.segmentId,
+        sceneNumber: params.sceneNumber,
+        title: params.title,
+      },
+    },
+  );
+  return response.data;
+};
+
 export const getExportPackage = async (
   projectId: string,
 ): Promise<ExportPackageResponse> => {

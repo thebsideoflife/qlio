@@ -387,6 +387,18 @@ function ensureMaterializedKeyframes(
   return framing.keyframes;
 }
 
+/**
+ * Scenes are always chronological: a scene's number is its 1-based position
+ * in this order, so inserting or deleting a scene renumbers the ones after it.
+ */
+function sortSegmentsChronologically<T extends { startTime: number; endTime: number }>(
+  segments: T[],
+): T[] {
+  return segments.sort(
+    (a, b) => a.startTime - b.startTime || a.endTime - b.endTime,
+  );
+}
+
 export const editorSlice = createSlice({
   name: "editor",
   initialState,
@@ -400,7 +412,7 @@ export const editorSlice = createSlice({
       state.isSyncing = false;
     },
     setSegments: (state, action: PayloadAction<Segment[]>) => {
-      state.segments = action.payload;
+      state.segments = sortSegmentsChronologically([...action.payload]);
       // Note: setSegments from API load should NOT set dirty
     },
     setProjectMetadata: (
@@ -413,9 +425,9 @@ export const editorSlice = createSlice({
         state.assetId = action.payload.assetId;
       }
     },
+    // Saved immediately via saveProjectTitle, not the autosave, so no markEdited.
     updateProjectTitle: (state, action: PayloadAction<string>) => {
       state.projectTitle = action.payload;
-      markEdited(state);
     },
     setProjectTitleFromServer: (state, action: PayloadAction<string>) => {
       state.projectTitle = action.payload;
@@ -524,8 +536,10 @@ export const editorSlice = createSlice({
 
     // Called on mouse release — clean up keyframes after resize
     finalizeSegmentEdit: (state) => {
-      state.segments = state.segments.filter(
-        (s) => s.endTime - s.startTime >= MIN_SEGMENT_DURATION,
+      state.segments = sortSegmentsChronologically(
+        state.segments.filter(
+          (s) => s.endTime - s.startTime >= MIN_SEGMENT_DURATION,
+        ),
       );
       // Drop keyframes that fell outside during a live drag (idempotent
       // if updateSegmentTime already reanchored).
@@ -585,6 +599,7 @@ export const editorSlice = createSlice({
         };
 
         state.segments.splice(index, 1, newSegment1, newSegment2);
+        sortSegmentsChronologically(state.segments);
         // Select the first half so the user stays oriented
         state.selectedSegmentId = newSegment1.id;
         state.selectedKeyframeId = null;
@@ -646,6 +661,7 @@ export const editorSlice = createSlice({
       };
 
       state.segments.push(newSegment);
+      sortSegmentsChronologically(state.segments);
       state.selectedSegmentId = newSegment.id;
       markEdited(state);
     },

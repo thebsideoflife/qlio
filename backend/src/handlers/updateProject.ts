@@ -76,7 +76,14 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     if (segments) {
       updateParts.push("#segments = :s");
       exprNames["#segments"] = "segments";
-      exprValues[":s"] = segments;
+      // Scenes are always stored chronologically; scene numbers are positions.
+      exprValues[":s"] = Array.isArray(segments)
+        ? [...segments].sort(
+            (a: any, b: any) =>
+              (a?.startTime ?? 0) - (b?.startTime ?? 0) ||
+              (a?.endTime ?? 0) - (b?.endTime ?? 0),
+          )
+        : segments;
     }
 
     const wantsMetadataMerge = Boolean(metadata && typeof metadata === "object");

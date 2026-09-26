@@ -18,10 +18,6 @@ import {
 } from "@aws-sdk/client-secrets-manager";
 import { TwelveLabs } from "twelvelabs-js";
 import type { ChunkInfo } from "../twelvelabs";
-import {
-  deriveProjectTitleFromSegments,
-  isDefaultProjectTitle,
-} from "../../utils/projectTitle";
 import { buildChunkFacts } from "./chunks";
 import type { StoredSegmentMetadata } from "../../types/segment-metadata";
 import type { AgentSegment, Brief, VideoFacts } from "./types";
@@ -320,19 +316,16 @@ export async function commitSegments(params: {
   segments: AgentSegment[];
   changedIds?: string[];
   brief?: Brief;
-  currentTitle: string;
 }): Promise<void> {
   const changed = new Set(params.changedIds ?? []);
-  const segments = params.segments.map((seg) =>
-    changed.has(seg.id) && seg.framing
-      ? { ...seg, framing: undefined }
-      : seg,
-  );
-
-  const autoTitle = deriveProjectTitleFromSegments(
-    segments.map((s) => ({ title: s.title, startTime: s.startTime })),
-  );
-  const shouldRename = autoTitle != null && isDefaultProjectTitle(params.currentTitle);
+  // Scenes are stored chronologically; a scene's number is its position.
+  const segments = params.segments
+    .map((seg) =>
+      changed.has(seg.id) && seg.framing
+        ? { ...seg, framing: undefined }
+        : seg,
+    )
+    .sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
 
   const names: Record<string, string> = { "#seg": "segments" };
   const values: Record<string, unknown> = {
@@ -340,12 +333,6 @@ export async function commitSegments(params: {
     ":now": new Date().toISOString(),
   };
   const sets = ["#seg = :segments", "updatedAt = :now"];
-
-  if (shouldRename) {
-    names["#title"] = "title";
-    sets.push("#title = :title");
-    values[":title"] = autoTitle;
-  }
 
   await docClient.send(
     new UpdateCommand({

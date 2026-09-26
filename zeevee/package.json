@@ -18,7 +18,8 @@
     "test:framing": "npx tsx --tsconfig tsconfig.app.json src/remotion/framingInterpolation.test.ts",
     "test:timeline-keyframes": "npx tsx --tsconfig tsconfig.app.json src/lib/timelineKeyframes.test.ts",
     "test:frame-cuts": "npx tsx --tsconfig tsconfig.app.json src/store/editorFrameCuts.test.ts",
-    "test": "npm run test:fingerprint && npm run test:agent-thread && npm run test:zoom-math && npm run test:export-package && npm run test:transcript && npm run test:caption-content && npm run test:caption-fonts && npm run test:caption-grouping && npm run test:framing && npm run test:timeline-keyframes && npm run test:frame-cuts",
+    "test:scene-order": "npx tsx --tsconfig tsconfig.app.json src/store/editorSceneOrder.test.ts",
+    "test": "npm run test:fingerprint && npm run test:agent-thread && npm run test:zoom-math && npm run test:export-package && npm run test:transcript && npm run test:caption-content && npm run test:caption-fonts && npm run test:caption-grouping && npm run test:framing && npm run test:timeline-keyframes && npm run test:frame-cuts && npm run test:scene-order",
     "preview": "vite preview"
   },
   "dependencies": {

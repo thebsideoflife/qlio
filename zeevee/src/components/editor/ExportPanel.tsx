@@ -35,6 +35,7 @@ import {
   updateProject,
   startExportPackage,
   pollExportPackage,
+  getSceneVideoDownload,
   type GenerateExportMetadataResponse,
   type SegmentDownload,
 } from "@/services/api";
@@ -71,6 +72,7 @@ import {
   normalizeContentAdvisory,
 } from "@/lib/exportMetadataJson";
 import type { ExportPackageProgress } from "@/lib/exportPackage";
+import { sceneVideoFilename } from "@/lib/sceneNaming";
 
 interface ExportPanelProps {
   projectId: string;
@@ -1078,13 +1080,31 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     ],
   );
 
-  const handleDownload = useCallback((url: string, title: string) => {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${title}.mp4`;
-    a.target = "_blank";
-    a.click();
-  }, []);
+  // Browsers ignore `download` on cross-origin S3 links, so ask the server for
+  // a link that names the file scene_NN_Title.mp4 (NN = project scene number).
+  const handleDownload = useCallback(
+    async (url: string, segmentId: string, sceneNumber: number, title: string) => {
+      let href = url;
+      let filename = sceneVideoFilename(sceneNumber, title);
+      try {
+        const named = await getSceneVideoDownload(projectId, {
+          segmentId,
+          sceneNumber,
+          title,
+        });
+        href = named.downloadUrl;
+        filename = named.filename;
+      } catch (err) {
+        console.warn("Falling back to unnamed scene download", err);
+      }
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = filename;
+      a.rel = "noopener";
+      a.click();
+    },
+    [projectId],
+  );
 
   // The user's way out of any export, stuck or not: ends it on the server and
   // frees the project, so the next Export starts fresh.
@@ -1457,9 +1477,11 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                             className="shrink-0 h-8 w-8 text-muted-foreground hover:text-foreground"
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleDownload(
+                              void handleDownload(
                                 row.downloadUrl!,
-                                formatSegmentLabel(row.index, row.label),
+                                row.id,
+                                row.index,
+                                row.label,
                               );
                             }}
                             aria-label={`Download ${row.label}`}

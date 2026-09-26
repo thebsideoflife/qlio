@@ -21,6 +21,7 @@ import {
   buildExportPackageLayout,
   exportPackageObjectKey,
   localizeExportMetadataDocument,
+  sceneVideoFilename,
 } from "../utils/exportPackageLayout";
 import { computeExportPackageFingerprint } from "../utils/exportPackageFingerprint";
 
@@ -192,6 +193,46 @@ async function handleGet(
   return json(200, await jobResponse(job));
 }
 
+/**
+ * GET ?sceneVideo=<segmentId>&sceneNumber=<n>&title=<t>: a presigned link to
+ * one scene's latest render that downloads as scene_NN_Title.mp4, so a scene
+ * keeps its project number when downloaded on its own.
+ */
+async function handleSceneVideoDownload(
+  projectId: string,
+  query: Record<string, string | undefined>,
+): Promise<APIGatewayProxyResult> {
+  const segmentId = query.sceneVideo;
+  const sceneNumber = Number(query.sceneNumber);
+  if (!segmentId || !Number.isInteger(sceneNumber) || sceneNumber < 1) {
+    return json(400, { error: "sceneVideo and a positive sceneNumber are required" });
+  }
+  const project = (
+    await dynamo.send(
+      new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
+    )
+  ).Item;
+  if (!project) return json(404, { error: "Project not found" });
+
+  const render = ((project.segmentRenders || []) as StoredSegmentRender[]).find(
+    (r) => r.segmentId === segmentId,
+  );
+  if (!render?.bucket || !render.key) {
+    return json(404, { error: "No rendered video for this scene" });
+  }
+  const segment = ((project.segments || []) as Array<{ id: string; title?: string }>)
+    .find((s) => s.id === segmentId);
+  const filename = sceneVideoFilename(
+    sceneNumber,
+    query.title || segment?.title || render.title || "scene",
+  );
+  return json(200, {
+    filename,
+    downloadUrl: await presignPackage(render.bucket, render.key, filename),
+    contentHash: render.contentHash,
+  });
+}
+
 async function handleStart(
   projectId: string,
   body: RequestBody,
@@ -321,10 +362,20 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
       return;
     }
 
-    const segments = (project.segments || []) as Array<{
-      id: string;
-      title?: string;
-    }>;
+    // Chronological order defines scene numbers (older projects may have
+    // been stored out of order).
+    const segments = [
+      ...((project.segments || []) as Array<{
+        id: string;
+        title?: string;
+        startTime?: number;
+        endTime?: number;
+      }>),
+    ].sort(
+      (a, b) =>
+        (a.startTime ?? 0) - (b.startTime ?? 0) ||
+        (a.endTime ?? 0) - (b.endTime ?? 0),
+    );
     const requested = new Set(
       (body.segmentIds?.length ? body.segmentIds : segments.map((s) => s.id)),
     );
@@ -500,7 +551,11 @@ async function handleApi(
   if (!projectId) return json(400, { error: "Missing projectId" });
 
   const method = event.requestContext?.http?.method || event.httpMethod;
-  if (method === "GET") return handleGet(projectId);
+  if (method === "GET") {
+    const query = event.queryStringParameters || {};
+    if (query.sceneVideo) return handleSceneVideoDownload(projectId, query);
+    return handleGet(projectId);
+  }
 
   let body: RequestBody = {};
   try {

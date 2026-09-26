@@ -532,7 +532,6 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
             segments: ctx.segments,
             changedIds: outcome.changedIds,
             brief,
-            currentTitle: project.projectTitle,
           });
         }
 
