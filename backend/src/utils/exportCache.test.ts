@@ -169,3 +169,18 @@ assert(
     ),
   "real metadata edits still change the package",
 );
+
+// Key order (DynamoDB maps, default merges) must not change a render's identity.
+assert(
+  computeSegmentRenderFingerprint(
+    renderInputs,
+    { ...captionInputs, style: { b: 1, a: { y: 2, x: 1 } } },
+    framingInputs,
+  ) ===
+    computeSegmentRenderFingerprint(
+      renderInputs,
+      { ...captionInputs, style: { a: { x: 1, y: 2 }, b: 1 } },
+      framingInputs,
+    ),
+  "caption style key order does not change the render fingerprint",
+);
