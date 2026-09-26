@@ -292,6 +292,42 @@ export function parseTranscribeHop(raw: unknown): number {
   return Math.floor(n);
 }
 
+// ----------------------------------------------------------------------------
+// SporeLabs polling budget (transcribeAsset)
+// ----------------------------------------------------------------------------
+
+/** transcribeAsset Lambda timeout (infrastructure/compute_captions.tf `timeout = 900`). */
+export const TRANSCRIBE_LAMBDA_TIMEOUT_MS = 900_000;
+export const SPORELABS_POLL_INTERVAL_MS = 10_000;
+/** Time kept back in each invocation for fetching the result and committing the transcript. */
+export const SPORELABS_FINISH_RESERVE_MS = 90_000;
+/** Allowance per hop for Lambda cold start, the DynamoDB read and S3 job-state load. */
+export const SPORELABS_HOP_OVERHEAD_MS = 30_000;
+/**
+ * Invocations allowed for one SporeLabs job (hop 0 plus 19 continuations).
+ * Hop 0 may spend most of its time downloading the source and extracting PCM,
+ * so only hops 1..N-1 count toward the polling window: 19 x ~13 min ≈ 4.1 h.
+ * The longest asset we accept is 3 h of audio; SporeLabs runs full large-v3 at
+ * ~2.5x realtime (~72 min) plus GPU cold start / queueing, so ~1.5 h. The cap
+ * leaves well over 2x headroom while still stopping a stuck job the same day.
+ */
+export const MAX_SPORELABS_HOPS = 20;
+
+/** Polling time one continuation hop can spend before handing off. */
+export function sporelabsPollWindowPerHopMs(): number {
+  return (
+    TRANSCRIBE_LAMBDA_TIMEOUT_MS -
+    SPORELABS_FINISH_RESERVE_MS -
+    SPORELABS_POLL_INTERVAL_MS -
+    SPORELABS_HOP_OVERHEAD_MS
+  );
+}
+
+/** Guaranteed polling time across all hops, not counting hop 0. */
+export function sporelabsPollingBudgetMs(maxHops = MAX_SPORELABS_HOPS): number {
+  return Math.max(0, maxHops - 1) * sporelabsPollWindowPerHopMs();
+}
+
 /**
  * Decide whether to transcribe the next missing chunk, Event-invoke a
  * continuation, or fail closed. Continuations are allowed only after this

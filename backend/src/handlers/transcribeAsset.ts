@@ -3,7 +3,11 @@
  * recovery passes over audible gaps on the same model.
  *
  *   hop 0   download the source, extract 16 kHz mono PCM (sample 0 = first presented
- *           audio sample), stage it in S3, submit one SporeLabs job, record the job.
+ *           audio sample), stage it in S3, record the exact submit request, submit
+ *           one SporeLabs job with Idempotency-Key zeevee-transcribe:<asset>:<version>,
+ *           record the job. A retry that finds the recorded request but no job
+ *           resubmits that same request with the same key (SporeLabs returns the
+ *           original job; nothing new is billed).
  *   any hop poll the job; when this invocation runs low on time, Event-invoke a
  *           continuation that resumes polling the recorded job (never resubmits).
  *   done    save the raw job response next to original.json, map words onto the
@@ -37,11 +41,14 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import {
+  buildTranscribeRequestBody,
   getTranscription,
-  submitTranscription,
+  submitTranscriptionBody,
+  transcribeIdempotencyKey,
   TRANSCRIBE_MODEL_ID,
   type TranscribeJob,
 } from "../services/sporelabs-transcribe";
+import { isIdempotencyConflict } from "../services/sporelabs-reframe";
 import {
   normalizeLanguageCode,
   originalTranscriptKey,
@@ -50,12 +57,16 @@ import {
   selectSupersededTranscriptKeys,
   sporelabsJobStateKey,
   sporelabsRawResponseKey,
+  sporelabsSubmitIntentKey,
   transcriptionAudioKey,
 } from "../utils/transcript-format";
 import {
+  MAX_SPORELABS_HOPS,
   parseFfmpegStreamProbe,
   parseFfprobeStreamProbe,
   parseTranscribeHop,
+  SPORELABS_FINISH_RESERVE_MS,
+  SPORELABS_POLL_INTERVAL_MS,
   WHISPER_SAMPLE_RATE,
 } from "../utils/transcript-timing";
 import { wordsFromSporeLabsResult } from "../utils/sporelabs-transcript";
@@ -71,6 +82,9 @@ import {
 } from "../utils/wav";
 import {
   classifyTranscriptionRun,
+  parseSporeLabsSubmitIntent,
+  type SporeLabsRunAudio,
+  type SporeLabsSubmitIntent,
   type TranscriptionRunState,
 } from "../utils/transcription-run";
 
@@ -88,11 +102,10 @@ const PROJECTS_TABLE = process.env.PROJECTS_TABLE;
 const FFMPEG_PATH = process.env.FFMPEG_PATH || "/opt/bin/ffmpeg";
 const FFPROBE_PATH = process.env.FFPROBE_PATH || "/opt/bin/ffprobe";
 
-const POLL_INTERVAL_MS = 10_000;
-/** Time kept back for fetching the result and committing the transcript. */
-const FINISH_RESERVE_MS = 90_000;
-/** SporeLabs allows four hours for a long full-model job; 20 hops cover that. */
-const MAX_SPORELABS_HOPS = 20;
+const POLL_INTERVAL_MS = SPORELABS_POLL_INTERVAL_MS;
+const FINISH_RESERVE_MS = SPORELABS_FINISH_RESERVE_MS;
+// MAX_SPORELABS_HOPS (utils/transcript-timing.ts): 20 invocations give ~4 h of
+// polling, over 2x what 3 h of audio needs at ~2.5x realtime plus cold start.
 /** The presigned WAV is fetched once, right after the GPU picks the job up. */
 const AUDIO_URL_TTL_SECONDS = 2 * 60 * 60;
 
@@ -115,13 +128,10 @@ type SporeLabsJobState = {
   jobId: string;
   submittedAt: string;
   audioKey: string;
-  audio: {
-    startInVideo: number;
-    sampleRate: number;
-    samples: number;
-    duration: number;
-  };
+  audio: SporeLabsRunAudio;
   level: PcmAudioLevel;
+  /** Absent in state files written before idempotent submits. */
+  idempotencyKey?: string;
 };
 
 function parseS3Uri(uri: string): { bucket: string; key: string } {
@@ -151,13 +161,23 @@ async function downloadS3ToFile(
   await pipeline(obj.Body as Readable, createWriteStream(dest));
 }
 
-async function putJson(key: string, body: unknown): Promise<void> {
+function isS3PreconditionFailed(err: unknown): boolean {
+  const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+  return e.name === "PreconditionFailed" || e.$metadata?.httpStatusCode === 412;
+}
+
+async function putJson(
+  key: string,
+  body: unknown,
+  opts: { ifAbsent?: boolean } = {},
+): Promise<void> {
   await s3Client.send(
     new PutObjectCommand({
       Bucket: BUCKET_NAME,
       Key: key,
       Body: JSON.stringify(body),
       ContentType: "application/json",
+      ...(opts.ifAbsent ? { IfNoneMatch: "*" } : {}),
     }),
   );
 }
@@ -194,6 +214,7 @@ async function putJsonForRun(
   transcriptionVersion: string,
   key: string,
   body: unknown,
+  opts: { ifAbsent?: boolean } = {},
 ): Promise<void> {
   const before = classifyTranscriptionRun(
     await getTranscriptionRunState(assetId),
@@ -210,7 +231,7 @@ async function putJsonForRun(
     );
   }
 
-  await putJson(key, body);
+  await putJson(key, body, opts);
 
   const state = await getTranscriptionRunState(assetId);
   const after = classifyTranscriptionRun(state, transcriptionVersion);
@@ -685,6 +706,61 @@ async function loadJobState(
   }
 }
 
+async function loadSubmitIntent(
+  assetId: string,
+  transcriptionVersion: string,
+): Promise<SporeLabsSubmitIntent | null> {
+  const key = sporelabsSubmitIntentKey(assetId, transcriptionVersion);
+  let text: string | undefined;
+  try {
+    const obj = await s3Client.send(
+      new GetObjectCommand({ Bucket: BUCKET_NAME, Key: key }),
+    );
+    text = await obj.Body?.transformToString();
+  } catch (err) {
+    if (isS3NotFound(err)) return null;
+    throw err;
+  }
+  const intent = text ? parseSporeLabsSubmitIntent(JSON.parse(text)) : null;
+  if (!intent) {
+    // Never fall back to a fresh submit here: that is exactly the duplicate
+    // this file exists to prevent.
+    throw new Error(`Unreadable SporeLabs submit record s3://${BUCKET_NAME}/${key}`);
+  }
+  return intent;
+}
+
+/**
+ * Record the request before the first POST. First writer wins: a concurrent
+ * invocation of the same run adopts the recorded request, so both send the same
+ * key with the same body and SporeLabs keeps a single job.
+ */
+async function recordSubmitIntent(
+  assetId: string,
+  transcriptionVersion: string,
+  intent: SporeLabsSubmitIntent,
+): Promise<SporeLabsSubmitIntent> {
+  try {
+    await putJsonForRun(
+      assetId,
+      transcriptionVersion,
+      sporelabsSubmitIntentKey(assetId, transcriptionVersion),
+      intent,
+      { ifAbsent: true },
+    );
+    return intent;
+  } catch (err) {
+    if (!isS3PreconditionFailed(err)) throw err;
+    const existing = await loadSubmitIntent(assetId, transcriptionVersion);
+    if (!existing) throw err;
+    console.log(
+      `[transcribe] another invocation already recorded the SporeLabs submit for run ` +
+        `${transcriptionVersion}; using its request`,
+    );
+    return existing;
+  }
+}
+
 async function invokeContinuation(
   context: { invokedFunctionArn?: string },
   payload: {
@@ -714,18 +790,20 @@ async function invokeContinuation(
 }
 
 /**
- * Download, extract PCM, stage it, submit. Returns the recorded job state.
+ * Download, extract PCM, stage it in S3 and build the submit request.
  * Honor edit lists / audio delay: do not pass -ignore_editlist or -ss.
  */
-async function submitSporeLabsJob(params: {
+async function prepareSubmitIntent(params: {
   assetId: string;
   transcriptionVersion: string;
+  idempotencyKey: string;
   bucket: string;
   key: string;
   workDir: string;
   language: string | null;
-}): Promise<SporeLabsJobState> {
-  const { assetId, transcriptionVersion, bucket, key, workDir, language } = params;
+}): Promise<SporeLabsSubmitIntent> {
+  const { assetId, transcriptionVersion, idempotencyKey, bucket, key, workDir, language } =
+    params;
   const sourcePath = path.join(workDir, "source");
   const audioPath = path.join(workDir, "audio.wav");
   console.log(`[transcribe] downloading s3://${bucket}/${key}`);
@@ -790,19 +868,9 @@ async function submitSporeLabsJob(params: {
     { expiresIn: AUDIO_URL_TTL_SECONDS },
   );
 
-  const job = await submitTranscription({
-    audio_url: audioUrl,
-    duration_seconds: wav.durationSec,
-    language,
-  });
-  console.log(
-    `[transcribe] submitted SporeLabs job ${job.id} ` +
-      `(${wav.durationSec.toFixed(1)}s of audio, language=${language ?? "detect"})`,
-  );
-
-  const state: SporeLabsJobState = {
-    jobId: job.id,
-    submittedAt: new Date().toISOString(),
+  return {
+    idempotencyKey,
+    createdAt: new Date().toISOString(),
     audioKey,
     audio: {
       startInVideo: audioStartInVideoSec,
@@ -811,6 +879,65 @@ async function submitSporeLabsJob(params: {
       duration: wav.durationSec,
     },
     level,
+    request: buildTranscribeRequestBody({
+      audio_url: audioUrl,
+      duration_seconds: wav.durationSec,
+      language,
+    }),
+  };
+}
+
+/**
+ * Submit the run's SporeLabs job and record it. Every POST for a run carries
+ * the same Idempotency-Key and the same recorded body, whether it is the first
+ * attempt, an HTTP retry, or a resubmit after a crash before the job was recorded.
+ */
+async function submitSporeLabsJob(params: {
+  assetId: string;
+  transcriptionVersion: string;
+  bucket: string;
+  key: string;
+  workDir: string;
+  language: string | null;
+}): Promise<SporeLabsJobState> {
+  const { assetId, transcriptionVersion } = params;
+  const idempotencyKey = transcribeIdempotencyKey(assetId, transcriptionVersion);
+
+  let intent = await loadSubmitIntent(assetId, transcriptionVersion);
+  if (intent) {
+    const ageSec = (Date.now() - Date.parse(intent.createdAt)) / 1000;
+    console.warn(
+      `[transcribe] found a recorded SporeLabs submit (${Math.round(ageSec)}s old) with no ` +
+        `recorded job; resubmitting the same request with Idempotency-Key ${idempotencyKey}`,
+    );
+    if (ageSec > AUDIO_URL_TTL_SECONDS) {
+      console.warn(
+        "[transcribe] the recorded audio URL has expired; SporeLabs returns the original job " +
+          "for this key, but a new job would be unable to fetch the audio",
+      );
+    }
+  } else {
+    intent = await recordSubmitIntent(
+      assetId,
+      transcriptionVersion,
+      await prepareSubmitIntent({ ...params, idempotencyKey }),
+    );
+  }
+
+  const job = await submitTranscriptionBody(intent.request, idempotencyKey);
+  console.log(
+    `[transcribe] submitted SporeLabs job ${job.id} ` +
+      `(${intent.audio.duration.toFixed(1)}s of audio, ` +
+      `language=${intent.request.options.language ?? "detect"}, key=${idempotencyKey})`,
+  );
+
+  const state: SporeLabsJobState = {
+    jobId: job.id,
+    submittedAt: new Date().toISOString(),
+    audioKey: intent.audioKey,
+    audio: intent.audio,
+    level: intent.level,
+    idempotencyKey,
   };
   await putJsonForRun(
     assetId,
@@ -1041,6 +1168,21 @@ export const handler: Handler<TranscribeAssetEvent> = async (event, context) => 
         (statusErr) =>
           console.error("[transcribe] failed to mark status:", statusErr),
       );
+    }
+    if (isIdempotencyConflict(err)) {
+      // Every retry would send the same key and body and get the same 409.
+      // Return instead of throwing so Lambda's async retries do not repeat it.
+      console.error(
+        `[transcribe] IDEMPOTENCY CONFLICT for asset ${assetId} run ${transcriptionVersion}: ` +
+          "SporeLabs already has a job under this run's key with a different request. " +
+          "Run marked failed; not resubmitting. Start a new run (retry transcription) to recover.",
+      );
+      return {
+        assetId,
+        transcriptionVersion,
+        failed: true,
+        error: "sporelabs_idempotency_conflict",
+      };
     }
     throw err;
   } finally {

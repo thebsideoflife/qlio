@@ -6,18 +6,33 @@
  */
 import {
   REFERENCE_WHISPER_OPTIONS,
+  buildTranscribeRequestBody,
   getTranscription,
   submitTranscription,
+  submitTranscriptionBody,
+  transcribeIdempotencyKey,
   type TranscribeResult,
 } from "./sporelabs-transcribe";
-import { SporeLabsError, type ReframeClientOptions } from "./sporelabs-reframe";
+import {
+  SporeLabsError,
+  isIdempotencyConflict,
+  submitReframe,
+  type ReframeClientOptions,
+} from "./sporelabs-reframe";
 import { wordsFromSporeLabsResult } from "../utils/sporelabs-transcript";
 import {
   selectSupersededTranscriptKeys,
   sporelabsJobStateKey,
   sporelabsRawResponseKey,
+  sporelabsSubmitIntentKey,
   originalTranscriptKey,
 } from "../utils/transcript-format";
+import {
+  MAX_SPORELABS_HOPS,
+  sporelabsPollWindowPerHopMs,
+  sporelabsPollingBudgetMs,
+} from "../utils/transcript-timing";
+import { parseSporeLabsSubmitIntent } from "../utils/transcription-run";
 
 let checks = 0;
 let failures = 0;
@@ -43,6 +58,19 @@ function mockFetch(responses: Array<() => Response>) {
     return responses[Math.min(i++, responses.length - 1)]();
   }) as unknown as typeof fetch;
   return { fetchImpl, calls };
+}
+
+function header(call: Call, name: string): string | undefined {
+  return (call.init.headers as Record<string, string> | undefined)?.[name];
+}
+
+async function rejects(fn: () => Promise<unknown>): Promise<unknown> {
+  try {
+    await fn();
+  } catch (e) {
+    return e;
+  }
+  return null;
 }
 
 function json(status: number, body: unknown) {
@@ -179,6 +207,185 @@ async function main() {
     assert(hallucinations[0].start === 563.362, "stretch start on the video clock");
   }
 
+
+  // Idempotency key: one per run, stable across hops/retries.
+  {
+    const key = transcribeIdempotencyKey("asset-1", "v-123");
+    assert(key === "zeevee-transcribe:asset-1:v-123", `key format (${key})`);
+    assert(
+      (await rejects(async () => transcribeIdempotencyKey("asset-1", ""))) instanceof Error,
+      "key needs a version",
+    );
+  }
+
+  // Submit sends Idempotency-Key; polls never do.
+  {
+    const key = transcribeIdempotencyKey("a1", "v1");
+    const { fetchImpl, calls } = mockFetch([
+      json(202, { id: "tr_1", object: "audio.transcription", status: "queued" }),
+      json(200, { id: "tr_1", object: "audio.transcription", status: "queued" }),
+    ]);
+    await submitTranscription({ audio_url: PRESIGNED }, opts(fetchImpl), key);
+    await getTranscription("tr_1", opts(fetchImpl));
+    assert(header(calls[0], "Idempotency-Key") === key, "submit carries Idempotency-Key");
+    assert(header(calls[1], "Idempotency-Key") === undefined, "poll has no Idempotency-Key");
+    assert(!String(calls[0].init.body).includes(key), "key is a header, not in the body");
+  }
+
+  // HTTP retries (timeout, 503, 429) resend the same key and the same body.
+  {
+    const key = transcribeIdempotencyKey("a1", "v1");
+    let n = 0;
+    const calls: Call[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      n++;
+      if (n === 1) throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+      if (n === 2) return json(503, { error: { message: "busy" } })();
+      if (n === 3) return json(429, { error: { message: "slow down" } })();
+      return json(202, { id: "tr_9", object: "audio.transcription", status: "queued" })();
+    }) as unknown as typeof fetch;
+    const res = await submitTranscription(
+      { audio_url: PRESIGNED, duration_seconds: 10800, language: "en" },
+      opts(fetchImpl),
+      key,
+    );
+    assert(res.id === "tr_9", "retried submit returns the job");
+    assert(calls.length === 4, `four attempts (${calls.length})`);
+    assert(
+      calls.every((c) => header(c, "Idempotency-Key") === key),
+      "every attempt carries the same Idempotency-Key",
+    );
+    assert(
+      calls.every((c) => c.init.body === calls[0].init.body),
+      "every attempt sends the identical body",
+    );
+  }
+
+  // 409 with a key: fatal idempotency conflict, never retried.
+  {
+    const { fetchImpl, calls } = mockFetch([
+      json(409, { error: { message: "key reused with a different body", type: "invalid_request_error" } }),
+      json(202, { id: "tr_dup", object: "audio.transcription", status: "queued" }),
+    ]);
+    const origError = console.error;
+    const logged: string[] = [];
+    console.error = (...args: unknown[]) => void logged.push(args.join(" "));
+    let err: unknown;
+    try {
+      err = await rejects(() =>
+        submitTranscription({ audio_url: PRESIGNED }, opts(fetchImpl), transcribeIdempotencyKey("a1", "v1")),
+      );
+    } finally {
+      console.error = origError;
+    }
+    assert(isIdempotencyConflict(err), "409 with key is an idempotency conflict");
+    assert(err instanceof SporeLabsError && err.status === 409 && !err.retryable, "409 not retryable");
+    assert(calls.length === 1, `409 is not retried (${calls.length} calls)`);
+    assert(
+      logged.some((l) => l.includes("zeevee-transcribe:a1:v1") && l.includes("different request body")),
+      "409 conflict is logged with the key",
+    );
+    assert(!logged.some((l) => l.includes("X-Amz-Signature")), "presigned URL not logged");
+  }
+
+  // 409 without a key is an ordinary error (not tagged as an idempotency conflict).
+  {
+    const { fetchImpl, calls } = mockFetch([json(409, { error: { message: "conflict" } })]);
+    const err = await rejects(() => submitTranscription({ audio_url: PRESIGNED }, opts(fetchImpl)));
+    assert(err instanceof SporeLabsError && err.status === 409, "keyless 409 throws");
+    assert(!isIdempotencyConflict(err), "keyless 409 is not an idempotency conflict");
+    assert(calls.length === 1, "keyless 409 not retried");
+  }
+
+  // A malformed key is rejected before any request.
+  {
+    const { fetchImpl, calls } = mockFetch([json(202, { id: "tr_1", status: "queued" })]);
+    const err = await rejects(() =>
+      submitTranscription({ audio_url: PRESIGNED }, opts(fetchImpl), "has space\n"),
+    );
+    assert(err instanceof SporeLabsError && calls.length === 0, "bad key rejected locally");
+  }
+
+  // Reframe submits are unchanged: no Idempotency-Key.
+  {
+    const { fetchImpl, calls } = mockFetch([
+      json(202, { id: "rf_1", object: "video.reframe", status: "queued" }),
+    ]);
+    await submitReframe(
+      {
+        video_url: PRESIGNED,
+        asset_key: "zeevee/a/e",
+        fps: 24,
+        source_aspect: 16 / 9,
+        target_aspect: "9:16",
+        segments: [{ id: "s1", start: 0, end: 1 }],
+      },
+      opts(fetchImpl),
+    );
+    assert(header(calls[0], "Idempotency-Key") === undefined, "reframe has no Idempotency-Key");
+  }
+
+  // Crash recovery: the recorded intent round-trips through S3 JSON and a resubmit
+  // sends byte-identical body + key to the first attempt.
+  {
+    const key = transcribeIdempotencyKey("a1", "v1");
+    const intent = {
+      idempotencyKey: key,
+      createdAt: "2026-09-25T00:00:00.000Z",
+      audioKey: "transcription-audio/a1/v1.wav",
+      audio: { startInVideo: 0.042, sampleRate: 16000, samples: 172_800_000, duration: 10800 },
+      level: { peakAmplitude: 0.5, rmsAmplitude: 0.05 },
+      request: buildTranscribeRequestBody({ audio_url: PRESIGNED, duration_seconds: 10800, language: null }),
+    };
+    const stored = parseSporeLabsSubmitIntent(JSON.parse(JSON.stringify(intent)));
+    assert(stored !== null, "valid intent parses");
+    const { fetchImpl, calls } = mockFetch([
+      json(202, { id: "tr_7", object: "audio.transcription", status: "queued" }),
+    ]);
+    const first = await submitTranscriptionBody(intent.request, key, opts(fetchImpl));
+    const again = await submitTranscriptionBody(stored!.request, key, opts(fetchImpl));
+    assert(first.id === "tr_7" && again.id === "tr_7", "idempotent server returns the same job");
+    assert(calls[0].init.body === calls[1].init.body, "resubmit body identical to the first");
+    assert(
+      header(calls[0], "Idempotency-Key") === key && header(calls[1], "Idempotency-Key") === key,
+      "resubmit uses the same key",
+    );
+    const sameAsHelper = mockFetch([json(202, { id: "tr_8", status: "queued" })]);
+    await submitTranscription(
+      { audio_url: PRESIGNED, duration_seconds: 10800, language: null },
+      opts(sameAsHelper.fetchImpl),
+    );
+    assert(
+      sameAsHelper.calls[0].init.body === calls[0].init.body,
+      "buildTranscribeRequestBody matches what submitTranscription sends",
+    );
+
+    assert(parseSporeLabsSubmitIntent(null) === null, "null is not an intent");
+    assert(
+      parseSporeLabsSubmitIntent({ ...intent, request: { ...intent.request, audio_url: "" } }) === null,
+      "intent without audio_url rejected",
+    );
+    assert(
+      parseSporeLabsSubmitIntent({ jobId: "tr_1", submittedAt: "x" }) === null,
+      "a job-state file is not an intent",
+    );
+  }
+
+  // Polling budget: 3 h of audio at ~2.5x realtime plus cold start, with 2x headroom.
+  {
+    const threeHoursAudioMs = 3 * 60 * 60 * 1000;
+    const needMs = threeHoursAudioMs / 2.5 + 15 * 60 * 1000;
+    const budgetMs = sporelabsPollingBudgetMs();
+    assert(sporelabsPollWindowPerHopMs() >= 12 * 60 * 1000, "each hop polls >= 12 min");
+    assert(
+      budgetMs >= 2 * needMs,
+      `hop budget ${(budgetMs / 3.6e6).toFixed(2)} h covers 2x ${(needMs / 3.6e6).toFixed(2)} h`,
+    );
+    assert(budgetMs <= 8 * 60 * 60 * 1000, "a stuck job still stops within 8 h");
+    assert(MAX_SPORELABS_HOPS === 20, "hop cap unchanged for invocations already mid-run");
+  }
+
   // Cleanup: raw SporeLabs responses survive every later run; job state and old originals do not.
   {
     const assetId = "a1";
@@ -191,6 +398,7 @@ async function main() {
         oldRaw,
         originalTranscriptKey(assetId, "v1"),
         sporelabsJobStateKey(assetId, "v2"),
+        sporelabsSubmitIntentKey(assetId, "v2"),
         `transcriptions/${assetId}.json`,
       ],
       keepKeys: keep,
@@ -198,6 +406,14 @@ async function main() {
     assert(!stale.includes(oldRaw), "an older run's raw response is never deleted");
     assert(stale.includes(originalTranscriptKey(assetId, "v1")), "an older original is deleted");
     assert(stale.includes(sporelabsJobStateKey(assetId, "v2")), "job state is deleted");
+    assert(
+      stale.includes(sporelabsSubmitIntentKey(assetId, "v2")),
+      "submit record (holds a presigned URL) is deleted",
+    );
+    assert(
+      sporelabsSubmitIntentKey(assetId, "v2") === "transcriptions/a1/versions/v2/sporelabs-submit.json",
+      "submit record lives next to the job state",
+    );
     assert(!stale.some((k) => keep.includes(k)), "keep keys survive");
   }
 

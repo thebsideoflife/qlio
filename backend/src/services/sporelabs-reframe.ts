@@ -170,12 +170,30 @@ type ErrorEnvelope = {
   error?: { message?: string; type?: string; code?: string };
 };
 
+/** Error code on the SporeLabsError thrown when an idempotency key is reused with a different body. */
+export const IDEMPOTENCY_CONFLICT_CODE = "idempotency_conflict";
+
+export function isIdempotencyConflict(err: unknown): err is SporeLabsError {
+  return err instanceof SporeLabsError && err.code === IDEMPOTENCY_CONFLICT_CODE;
+}
+
+export interface RequestJsonExtras {
+  /**
+   * Sent as `Idempotency-Key` on every attempt, retries included. SporeLabs
+   * returns the original job for a repeated key (no new charge) and answers
+   * 409 when the key was used with a different body. Servers that do not
+   * support the header ignore it.
+   */
+  idempotencyKey?: string;
+}
+
 /** Shared by every SporeLabs job client (reframe, transcribe). */
 export async function requestJson<T>(
   method: "GET" | "POST",
   path: string,
   body: unknown,
   opts: ReframeClientOptions,
+  extras: RequestJsonExtras = {},
 ): Promise<T> {
   const apiKey = opts.apiKey ?? (await getSporeLabsReframeApiKey());
   const baseUrl = (opts.baseUrl ?? SPORELABS_REFRAME_BASE_URL).replace(/\/$/, "");
@@ -184,6 +202,10 @@ export async function requestJson<T>(
   const maxAttempts = Math.max(1, opts.maxAttempts ?? REFRAME_MAX_ATTEMPTS);
   const timeoutMs = opts.timeoutMs ?? REFRAME_HTTP_TIMEOUT_MS;
   const label = `SporeLabs ${method} ${path}`;
+  const idempotencyKey = extras.idempotencyKey;
+  if (idempotencyKey !== undefined && !/^[\x21-\x7e]{1,255}$/.test(idempotencyKey)) {
+    throw new SporeLabsError(400, `${label}: invalid Idempotency-Key`);
+  }
 
   let lastError: SporeLabsError | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -195,6 +217,7 @@ export async function requestJson<T>(
           Authorization: `Bearer ${apiKey}`,
           Accept: "application/json",
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+          ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: AbortSignal.timeout(timeoutMs),
@@ -234,6 +257,20 @@ export async function requestJson<T>(
     const envelope = (data as ErrorEnvelope | undefined)?.error;
     const message =
       envelope?.message || response.statusText || `HTTP ${response.status}`;
+    if (response.status === 409 && idempotencyKey) {
+      // The key already names a job created from a different request body.
+      // Resubmitting cannot succeed and must not create a second billed job.
+      const conflict = new SporeLabsError(
+        409,
+        `${label} 409: Idempotency-Key ${idempotencyKey} was already used with a ` +
+          `different request body; not resubmitting (${message})`,
+        envelope?.type,
+        IDEMPOTENCY_CONFLICT_CODE,
+        false,
+      );
+      console.error(`[SporeLabs] ${conflict.message}`);
+      throw conflict;
+    }
     // 429 is retried for rate limits, but an empty wallet will not refill itself.
     const retryable =
       isRetryableStatus(response.status) &&
