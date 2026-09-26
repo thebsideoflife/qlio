@@ -31,6 +31,18 @@ function getEffectiveKeyframes(framing: SegmentFraming): FramingKeyframe[] {
   ];
 }
 
+function stableStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, val) =>
+    val && typeof val === "object" && !Array.isArray(val)
+      ? Object.fromEntries(
+          Object.keys(val as Record<string, unknown>)
+            .sort()
+            .map((k) => [k, (val as Record<string, unknown>)[k]]),
+        )
+      : val,
+  );
+}
+
 function sortedWordEdits(
   wordEdits: Record<string, string> | null | undefined,
 ): Array<[string, string]> {
@@ -94,7 +106,9 @@ export function computeSegmentRenderFingerprint(
     squareTop: !!globalFraming.squareTop,
   };
 
-  const str = JSON.stringify(payload);
+  // Sort keys: caption styles come back from DynamoDB (and default merges) in
+  // arbitrary key order, and order must not make identical renders look stale.
+  const str = stableStringify(payload);
   let h = 5381;
   for (let i = 0; i < str.length; i++) {
     h = ((h << 5) + h) ^ str.charCodeAt(i);
