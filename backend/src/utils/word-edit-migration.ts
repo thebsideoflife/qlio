@@ -6,11 +6,13 @@
  * the new words have new timings. This maps each edited word in the previous
  * transcript to the matching word in the new one:
  *
- *   1. Same spoken word (case and punctuation ignored) starting within
- *      MATCH_WINDOW_SECONDS; the nearest start wins.
- *   2. Otherwise, for a text change (not a deletion), the new word that overlaps
- *      the old word's time span the most. A deletion is only carried over to the
- *      same spoken word, so it can never delete a different word.
+ *   the same spoken word (case and punctuation ignored) starting within
+ *   MATCH_WINDOW_SECONDS; the nearest start wins.
+ *
+ * Only the same word is ever edited. An edit on a word the new transcript hears
+ * differently is not moved: it was usually correcting a mishearing the new
+ * transcript no longer has (Murdoch: "Mayor" -> "Mere", and the new transcript
+ * already says "Mere"), and placing it by time overlap put it on the wrong word.
  *
  * Two edits never land on the same new word (the closer match keeps it). Edits
  * that cannot be placed are returned in `dropped` so the caller can keep them
@@ -48,10 +50,6 @@ function normalizeText(value: string): string {
     .normalize("NFKD")
     .replace(/[^\p{L}\p{N}']+/gu, "")
     .replace(/^'+|'+$/g, "");
-}
-
-function overlap(a: MigratableWord, b: MigratableWord): number {
-  return Math.min(a.end, b.end) - Math.max(a.start, b.start);
 }
 
 export function migrateWordEdits(
@@ -115,16 +113,6 @@ export function migrateWordEdits(
       .sort((a, b) => Math.abs(a.start - previous.start) - Math.abs(b.start - previous.start))[0];
     if (sameWord) {
       place(key, value, sameWord, Math.abs(sameWord.start - previous.start), previous.value);
-      continue;
-    }
-    const isDeletion = value.trim() === "";
-    const overlapping = isDeletion
-      ? undefined
-      : nearby
-          .filter((w) => overlap(w, previous) > 0)
-          .sort((a, b) => overlap(b, previous) - overlap(a, previous))[0];
-    if (overlapping) {
-      place(key, value, overlapping, 0.5 + Math.abs(overlapping.start - previous.start), previous.value);
       continue;
     }
     dropped.push({ key, value, previousText: previous.value, reason: "no-matching-word" });
