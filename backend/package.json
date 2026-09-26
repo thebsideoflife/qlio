@@ -18,6 +18,7 @@
     "iq-agent:coverage-cost": "tsx src/scripts/check-coverage-cost.ts",
     "test:transcription-sanitize": "tsx src/scripts/test-transcription-sanitize.ts",
     "test:caption-grouping": "tsx src/utils/caption-grouping.test.ts",
+    "test:word-edit-migration": "tsx src/utils/word-edit-migration.test.ts",
     "test:transcript-format": "tsx src/scripts/test-transcript-format.ts",
     "test:caption-settings": "tsx src/scripts/test-caption-settings.ts",
     "test:video-clip": "tsx src/utils/videoClip.test.ts",
@@ -29,7 +30,7 @@
     "test:sporelabs-reframe": "tsx src/services/sporelabs-reframe.test.ts",
     "test:sporelabs-transcribe": "tsx src/services/sporelabs-transcribe.test.ts",
     "test:shot-hold-framing": "tsx src/services/shot-hold-framing.test.ts",
-    "test": "npm run test:export-metadata && npm run test:agent-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates && npm run test:iq-agent && npm run test:transcription-sanitize && npm run test:transcript-format && npm run test:caption-grouping && npm run test:caption-settings && npm run test:video-clip && npm run test:clip-upload && npm run test:segment-frame-bounds && npm run test:render-downloads && npm run test:export-cache && npm run test:render-reuse && npm run test:sporelabs && npm run test:sporelabs-reframe && npm run test:sporelabs-transcribe && npm run test:shot-hold-framing && npm run test:translate-captions",
+    "test": "npm run test:export-metadata && npm run test:agent-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates && npm run test:iq-agent && npm run test:transcription-sanitize && npm run test:transcript-format && npm run test:word-edit-migration && npm run test:caption-grouping && npm run test:caption-settings && npm run test:video-clip && npm run test:clip-upload && npm run test:segment-frame-bounds && npm run test:render-downloads && npm run test:export-cache && npm run test:render-reuse && npm run test:sporelabs && npm run test:sporelabs-reframe && npm run test:sporelabs-transcribe && npm run test:shot-hold-framing && npm run test:translate-captions",
     "test:sporelabs": "tsx src/services/sporelabs.test.ts",
     "test:translate-captions": "tsx src/services/translate-captions.test.ts"
   },

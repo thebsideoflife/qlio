@@ -26,10 +26,11 @@ resource "aws_lambda_function" "transcribe_asset" {
   # invocation when a job outlives this one.
   environment {
     variables = merge(local.sporelabs_env, {
-      TABLE_NAME   = aws_dynamodb_table.assets.name
-      BUCKET_NAME  = aws_s3_bucket.media.id
-      FFMPEG_PATH  = "/opt/bin/ffmpeg"
-      FFPROBE_PATH = "/opt/bin/ffprobe"
+      TABLE_NAME     = aws_dynamodb_table.assets.name
+      PROJECTS_TABLE = aws_dynamodb_table.projects.name
+      BUCKET_NAME    = aws_s3_bucket.media.id
+      FFMPEG_PATH    = "/opt/bin/ffmpeg"
+      FFPROBE_PATH   = "/opt/bin/ffprobe"
     })
   }
 }

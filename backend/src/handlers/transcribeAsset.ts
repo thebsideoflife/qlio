@@ -33,6 +33,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   GetCommand,
+  QueryCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import {
@@ -44,6 +45,7 @@ import {
 import {
   normalizeLanguageCode,
   originalTranscriptKey,
+  parseTranscriptJson,
   selectSupersededTranscriptKeys,
   sporelabsJobStateKey,
   sporelabsRawResponseKey,
@@ -56,6 +58,10 @@ import {
   WHISPER_SAMPLE_RATE,
 } from "../utils/transcript-timing";
 import { wordsFromSporeLabsResult } from "../utils/sporelabs-transcript";
+import {
+  migrateWordEdits,
+  type MigratableWord,
+} from "../utils/word-edit-migration";
 import {
   isEffectivelySilent,
   parseWavInfo,
@@ -77,6 +83,7 @@ const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
 
 const TABLE_NAME = process.env.TABLE_NAME!;
 const BUCKET_NAME = process.env.BUCKET_NAME!;
+const PROJECTS_TABLE = process.env.PROJECTS_TABLE;
 const FFMPEG_PATH = process.env.FFMPEG_PATH || "/opt/bin/ffmpeg";
 const FFPROBE_PATH = process.env.FFPROBE_PATH || "/opt/bin/ffprobe";
 
@@ -354,6 +361,97 @@ async function setTranscriptionReady(
       },
     }),
   );
+}
+
+/** Words of the transcript being replaced, read before cleanup deletes it. */
+async function loadPreviousTranscriptWords(
+  transcriptionUrl: unknown,
+): Promise<MigratableWord[] | null> {
+  if (typeof transcriptionUrl !== "string" || !transcriptionUrl.startsWith("s3://")) {
+    return null;
+  }
+  const { bucket, key } = parseS3Uri(transcriptionUrl);
+  const res = await s3Client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  const parsed = parseTranscriptJson(JSON.parse(await res.Body!.transformToString()));
+  return parsed.kind === "original" ? parsed.words : null;
+}
+
+/**
+ * Re-key every project's caption word edits onto the new transcript's words
+ * (see utils/word-edit-migration.ts). The previous edits and anything that could
+ * not be placed are kept on the project under `wordEditsMigration` for review.
+ * Never throws: a failed migration must not fail the transcription.
+ */
+async function migrateProjectWordEdits(params: {
+  assetId: string;
+  previousWords: MigratableWord[] | null;
+  newWords: MigratableWord[];
+  fromVersion: unknown;
+  toVersion: string;
+}): Promise<void> {
+  const { assetId, previousWords, newWords, fromVersion, toVersion } = params;
+  if (!PROJECTS_TABLE) {
+    console.warn("[transcribe] PROJECTS_TABLE not set; word edits not migrated");
+    return;
+  }
+  try {
+    const projects: Record<string, any>[] = [];
+    let startKey: Record<string, unknown> | undefined;
+    do {
+      const page = await docClient.send(
+        new QueryCommand({
+          TableName: PROJECTS_TABLE,
+          IndexName: "AssetIdIndex",
+          KeyConditionExpression: "assetId = :a",
+          ExpressionAttributeValues: { ":a": assetId },
+          ExclusiveStartKey: startKey,
+        }),
+      );
+      projects.push(...((page.Items as Record<string, any>[]) ?? []));
+      startKey = page.LastEvaluatedKey;
+    } while (startKey);
+
+    for (const project of projects) {
+      const edits = project.captionSettings?.wordEdits;
+      if (!edits || typeof edits !== "object" || Object.keys(edits).length === 0) continue;
+      if (project.wordEditsMigration?.toVersion === toVersion) continue;
+      if (!previousWords) {
+        console.warn(
+          `[transcribe] project ${project.projectId}: previous transcript unreadable; ` +
+            `${Object.keys(edits).length} word edit(s) left as they were`,
+        );
+        continue;
+      }
+      const result = migrateWordEdits(previousWords, newWords, edits);
+      await docClient.send(
+        new UpdateCommand({
+          TableName: PROJECTS_TABLE,
+          Key: { projectId: project.projectId },
+          UpdateExpression:
+            "SET captionSettings.wordEdits = :edits, wordEditsMigration = :m",
+          ConditionExpression: "attribute_exists(projectId)",
+          ExpressionAttributeValues: {
+            ":edits": result.wordEdits,
+            ":m": {
+              fromVersion: typeof fromVersion === "string" ? fromVersion : null,
+              toVersion,
+              migratedAt: new Date().toISOString(),
+              migrated: result.migrated,
+              dropped: result.dropped,
+              previousWordEdits: edits,
+            },
+          },
+        }),
+      );
+      console.log(
+        `[transcribe] project ${project.projectId}: moved ${result.migrated} of ` +
+          `${Object.keys(edits).length} word edit(s) to ${toVersion}` +
+          (result.dropped.length ? `, ${result.dropped.length} kept for review` : ""),
+      );
+    }
+  } catch (err) {
+    console.error(`[transcribe] word-edit migration failed for asset ${assetId}`, err);
+  }
 }
 
 async function cleanupSupersededTranscripts(
@@ -792,11 +890,28 @@ export const handler: Handler<TranscribeAssetEvent> = async (event, context) => 
     await putJsonForRun(assetId, transcriptionVersion, s3Key, body);
 
     const transcriptionUrl = `s3://${BUCKET_NAME}/${s3Key}`;
+    // Read the transcript being replaced before cleanup deletes it.
+    const previousWords =
+      asset.transcriptionUrl && asset.transcriptionUrl !== transcriptionUrl
+        ? await loadPreviousTranscriptWords(asset.transcriptionUrl).catch((err) => {
+            console.warn("[transcribe] could not read the previous transcript", err);
+            return null;
+          })
+        : null;
     await stageTranscriptionReplacement(assetId, {
       transcriptionUrl,
       originalLanguage: language,
       transcriptionVersion,
     });
+    if (asset.transcriptionUrl && asset.transcriptionUrl !== transcriptionUrl) {
+      await migrateProjectWordEdits({
+        assetId,
+        previousWords,
+        newWords: words,
+        fromVersion: asset.transcriptionVersion,
+        toVersion: transcriptionVersion,
+      });
+    }
     await cleanupSupersededTranscripts(assetId, [s3Key, rawKey]);
     await setTranscriptionReady(assetId, transcriptionVersion);
     await s3Client
