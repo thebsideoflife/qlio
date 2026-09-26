@@ -118,6 +118,8 @@ export interface ProjectJobStatus {
   activeRenderJobId: string | null;
   /** Absent on older deployments, so treat undefined as "no agent running". */
   agentRun?: AgentRunStatus | null;
+  /** Backend render fingerprint version; differs when this tab is out of date. */
+  renderPipelineVersion?: number;
 }
 
 export const getProjectJobStatus = async (
@@ -580,6 +582,8 @@ export interface RenderRequest {
   captionSettings?: CaptionSettings;
   segments?: Segment[];
   globalFraming?: GlobalFramingSettings;
+  /** Render even if a matching render is already stored. */
+  force?: boolean;
 }
 
 export interface SegmentDownload {
@@ -669,7 +673,13 @@ export const pollExportPackage = async (
 export const startRender = async (
   projectId: string,
   request: RenderRequest,
-): Promise<{ jobId: string; status: string; message?: string }> => {
+): Promise<{
+  jobId: string;
+  status: string;
+  message?: string;
+  reusedCount?: number;
+  renderPipelineVersion?: number;
+}> => {
   const response = await axios.post(
     `${API_URL}/projects/${projectId}/render`,
     request,

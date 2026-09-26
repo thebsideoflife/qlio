@@ -7,6 +7,7 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
+import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { checkAuth } from "../utils/auth";
 import { resolveRenderTranscriptCandidates } from "../utils/transcript-source";
 import {
@@ -16,13 +17,18 @@ import {
   type CaptionSettingsPatch,
 } from "../utils/caption-settings";
 import { v4 as uuidv4 } from "uuid";
-import { RENDER_PIPELINE_VERSION } from "../utils/segmentRenderFingerprint";
+import {
+  computeSegmentRenderFingerprint,
+  RENDER_PIPELINE_VERSION,
+} from "../utils/segmentRenderFingerprint";
+import { planSegmentReuse, type StoredRender } from "../utils/renderReuse";
 
 const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client, {
   marshallOptions: { removeUndefinedValues: true },
 });
 const lambdaClient = new LambdaClient({});
+const s3Client = new S3Client({ maxAttempts: 5 });
 
 const RENDER_JOBS_TABLE = process.env.RENDER_JOBS_TABLE!;
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
@@ -104,6 +110,8 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     captionSettings?: CaptionSettingsPatch;
     segments?: Segment[];
     globalFraming?: GlobalFramingSettings;
+    /** Render even when a matching render is already stored. */
+    force?: boolean;
   };
   try {
     body = JSON.parse(event.body || "{}");
@@ -201,8 +209,51 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     };
   }
 
+  const transcriptionVersion =
+    typeof asset.transcriptionVersion === "string"
+      ? asset.transcriptionVersion
+      : undefined;
+
+  // Reuse stored renders whose inputs still match. The server decides, so a
+  // browser running an older bundle can't force needless re-renders.
+  const plan = body.force
+    ? { reuse: [], render: segments }
+    : planSegmentReuse(
+        segments,
+        project.segmentRenders as StoredRender[] | undefined,
+        (segment) =>
+          computeSegmentRenderFingerprint(
+            segment,
+            captionSettings,
+            globalFraming,
+            transcriptionVersion,
+          ),
+      );
+  const reused = (
+    await Promise.all(
+      plan.reuse.map(async (item) => {
+        try {
+          await s3Client.send(
+            new HeadObjectCommand({
+              Bucket: item.stored.bucket,
+              Key: item.stored.key,
+            }),
+          );
+          return item;
+        } catch {
+          return null;
+        }
+      }),
+    )
+  ).filter((item): item is NonNullable<typeof item> => item !== null);
+  const reusedIds = new Set(reused.map((item) => item.segment.id));
+  const segmentsToRender = segments.filter((s) => !reusedIds.has(s.id));
+  console.log(
+    `Render plan: reuse ${reused.length}, render ${segmentsToRender.length}`,
+  );
+
   // Validate limits
-  const totalDuration = segments.reduce(
+  const totalDuration = segmentsToRender.reduce(
     (sum, s) => sum + (s.endTime - s.startTime),
     0,
   );
@@ -211,7 +262,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
   // against runaway requests. Each segment adds ~2 Remotion Lambdas (orchestrator
   // + chunk rounding); at the duration cap 60 keeps a render under ~850 of the
   // account's 1,000 concurrent Lambdas.
-  if (segments.length > MAX_SEGMENTS) {
+  if (segmentsToRender.length > MAX_SEGMENTS) {
     return {
       statusCode: 400,
       headers: {
@@ -270,13 +321,14 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     `Render ${jobId} captions: language=${captionSettings.activeLanguage || "original"} uris=${transcriptionCandidates.join(",")}`,
   );
 
+  const now = new Date().toISOString();
   const renderJob = {
     jobId,
     renderPipelineVersion: RENDER_PIPELINE_VERSION,
     projectId,
-    status: "rendering",
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    status: "rendering" as "rendering" | "completed",
+    createdAt: now,
+    updatedAt: now,
     expiresAt: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60,
     progress: 0,
     totalDuration,
@@ -285,18 +337,64 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     sourceS3Uri: asset.s3VideoUrl,
     transcriptionS3Uri,
     transcriptionCandidates,
-    transcriptionVersion:
-      typeof asset.transcriptionVersion === "string"
-        ? asset.transcriptionVersion
-        : undefined,
+    transcriptionVersion,
     segments,
     captionSettings,
     globalFraming,
+    // Reused scenes are done already; the rest wait for cutSegments to
+    // replace their placeholder with a Remotion render ID.
+    segmentRenders: segments.map((segment) => {
+      const reuse = reused.find((item) => item.segment.id === segment.id);
+      return reuse
+        ? {
+            segmentId: segment.id,
+            title: segment.title,
+            renderId: "",
+            bucketName: reuse.stored.bucket!,
+            outputKey: reuse.stored.key!,
+            status: "completed" as const,
+            reused: true,
+            attempts: 0,
+          }
+        : {
+            segmentId: segment.id,
+            title: segment.title,
+            renderId: "",
+            bucketName: "",
+            outputKey: "",
+            status: "rendering" as const,
+            attempts: 1,
+            launchRequestedAt: now,
+          };
+    }),
+    rev: 0,
   };
+  if (segmentsToRender.length === 0) {
+    renderJob.status = "completed";
+    renderJob.progress = 100;
+  }
 
   await docClient.send(
     new PutCommand({ TableName: RENDER_JOBS_TABLE, Item: renderJob }),
   );
+
+  if (segmentsToRender.length === 0) {
+    return {
+      statusCode: 202,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
+      body: JSON.stringify({
+        jobId,
+        status: "completed",
+        segmentCount: segments.length,
+        reusedCount: reused.length,
+        renderPipelineVersion: RENDER_PIPELINE_VERSION,
+        message: "All selected scenes are already rendered",
+      }),
+    };
+  }
 
   // Track active render job on project for refresh recovery
   await docClient.send(
@@ -313,14 +411,17 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
   // Invoke FFmpeg Lambda to cut clips and start Remotion renders
   console.log(
-    `Invoking cutSegments for job ${jobId} with ${segments.length} segments`,
+    `Invoking cutSegments for job ${jobId} with ${segmentsToRender.length} segments`,
   );
 
   await lambdaClient.send(
     new InvokeCommand({
       FunctionName: STITCH_FUNCTION_NAME,
       InvocationType: "Event", // async — don't wait
-      Payload: JSON.stringify({ jobId }),
+      Payload: JSON.stringify({
+        jobId,
+        segmentIds: segmentsToRender.map((s) => s.id),
+      }),
     }),
   );
 
@@ -334,7 +435,9 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       jobId,
       status: "rendering",
       segmentCount: segments.length,
-      message: `Started ${segments.length} segment renders`,
+      reusedCount: reused.length,
+      renderPipelineVersion: RENDER_PIPELINE_VERSION,
+      message: `Started ${segmentsToRender.length} segment renders`,
     }),
   };
 };

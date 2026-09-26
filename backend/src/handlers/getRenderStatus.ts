@@ -16,6 +16,12 @@ import {
   presignRenderDownload,
 } from "../utils/renderDownloads";
 import { isSameRenderArtifact } from "../utils/renderArtifactCache";
+import {
+  isTransientRenderError,
+  MAX_SEGMENT_RENDER_ATTEMPTS,
+  shouldReplaceStoredRender,
+} from "../utils/renderReuse";
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { mapWithConcurrency } from "../utils/concurrency";
 import { getRenderProgress } from "@remotion/lambda/client";
 import type { AwsRegion } from "@remotion/lambda";
@@ -28,6 +34,10 @@ const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const RENDERS_BUCKET = process.env.RENDERS_BUCKET;
 const REMOTION_FUNCTION_NAME = process.env.REMOTION_FUNCTION_NAME;
 const AWS_REGION_NAME = process.env.AWS_REGION_NAME;
+const STITCH_FUNCTION_NAME = process.env.STITCH_FUNCTION_NAME;
+// A scene waiting this long for cutSegments to hand back a render ID is lost.
+const PENDING_LAUNCH_TIMEOUT_MS = 20 * 60 * 1000;
+const lambdaClient = new LambdaClient({});
 const PROGRESS_CHECK_CONCURRENCY = 10;
 
 type RenderLocation = { bucket: string; key: string };
@@ -47,10 +57,17 @@ interface StoredSegmentRender {
 interface SegmentRender {
   segmentId: string;
   title: string;
+  /** Empty while cutSegments is still cutting/launching this scene. */
   renderId: string;
   bucketName: string;
   outputKey: string; // Exact S3 key - stored at render start
   status: "rendering" | "completed" | "failed";
+  error?: string;
+  /** Launches so far (first render + automatic retries). */
+  attempts?: number;
+  launchRequestedAt?: string;
+  /** Stored render reused as-is; already on the project. */
+  reused?: boolean;
 }
 
 interface SegmentDownload {
@@ -125,6 +142,7 @@ async function persistRendersToProject(
     globalFraming?: { aspectRatio: string; enabled?: boolean; squareTop?: boolean };
     transcriptionVersion?: string;
     renderPipelineVersion?: number;
+    createdAt?: string;
   },
 ): Promise<Map<string, RenderLocation>> {
   const locations = new Map<string, RenderLocation>();
@@ -154,7 +172,9 @@ async function persistRendersToProject(
 
     const completed = segmentRenders.filter(
       (seg): seg is SegmentRender =>
-        seg.status === "completed" && Boolean(seg.bucketName && seg.outputKey),
+        seg.status === "completed" &&
+        !seg.reused &&
+        Boolean(seg.bucketName && seg.outputKey),
     );
 
     const resolved = await Promise.all(
@@ -195,6 +215,10 @@ async function persistRendersToProject(
       source,
     } of resolved) {
       locations.set(seg.segmentId, location);
+      // Never let an older job (e.g. a re-polled failed one) clobber a newer render.
+      if (!sameArtifact && !shouldReplaceStoredRender(existing, job.createdAt)) {
+        continue;
+      }
       renderMap.set(seg.segmentId, {
         segmentId: seg.segmentId,
         title: seg.title,
@@ -345,39 +369,39 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     }
   }
 
-  // Build segment downloads array and check progress for each
   const segmentDownloads: SegmentDownload[] = [];
   let completedCount = 0;
-  let failedCount = 0;
-  let needsUpdate = false;
+  const progressById = new Map<string, number>();
+  // Downloads must come from the CORS-enabled copies the editor can fetch().
+  let persistedLocations = new Map<string, RenderLocation>();
 
   if (job.status === "rendering" && REMOTION_FUNCTION_NAME && AWS_REGION_NAME) {
+    let needsUpdate = false;
+    const now = Date.now();
+
     // Each getRenderProgress call invokes the Remotion Lambda. Checking them
     // one by one pushes large exports past API Gateway's 29s limit.
-    const downloads = await mapWithConcurrency(
+    await mapWithConcurrency(
       segmentRenders,
       PROGRESS_CHECK_CONCURRENCY,
       async (segment, i) => {
-        const download: SegmentDownload = {
-          segmentId: segment.segmentId,
-          title: segment.title,
-          status: segment.status,
-          contentHash: renderContentHash(segment.segmentId),
-        };
+        if (segment.status !== "rendering") return;
 
-        // If already completed/failed, generate URL if needed
-        if (segment.status === "completed") {
-          completedCount++;
-          download.downloadUrl = await generatePresignedUrl(segment);
-          return download;
+        if (!segment.renderId) {
+          const requestedAt = Date.parse(
+            segment.launchRequestedAt || job.createdAt,
+          );
+          if (now - requestedAt > PENDING_LAUNCH_TIMEOUT_MS) {
+            segmentRenders[i] = {
+              ...segment,
+              status: "failed",
+              error: "Timed out waiting for the scene to be cut",
+            };
+            needsUpdate = true;
+          }
+          return;
         }
 
-        if (segment.status === "failed") {
-          failedCount++;
-          return download;
-        }
-
-        // Check progress from Remotion
         try {
           const renderProgress = await getRenderProgress({
             bucketName: segment.bucketName,
@@ -389,127 +413,190 @@ export const handler: APIGatewayProxyHandler = async (event) => {
           if (renderProgress.fatalErrorEncountered) {
             const rawError =
               renderProgress.errors?.[0]?.message || "Render failed";
-
-            segmentRenders[i].status = "failed";
-            download.status = "failed";
-            download.error = rawError;
-            failedCount++;
+            segmentRenders[i] = {
+              ...segment,
+              status: "failed",
+              error: rawError.slice(0, 2000),
+            };
             needsUpdate = true;
-
             console.error(`Segment ${segment.segmentId} failed:`, rawError);
           } else if (renderProgress.done) {
-            segmentRenders[i].status = "completed";
-            download.status = "completed";
-            completedCount++;
+            segmentRenders[i] = { ...segment, status: "completed" };
             needsUpdate = true;
-
-            // Generate presigned URL using stored bucket/key
-            download.downloadUrl = await generatePresignedUrl(segment);
-
             console.log(
               `Segment ${segment.segmentId} completed! Key: ${segment.outputKey}`,
             );
           } else {
-            download.progress = Math.round(renderProgress.overallProgress * 100);
+            progressById.set(
+              segment.segmentId,
+              Math.round(renderProgress.overallProgress * 100),
+            );
           }
         } catch (error) {
           console.error(
             `Error checking progress for segment ${segment.segmentId}:`,
             error,
           );
-          download.progress = 0;
         }
-
-        return download;
       },
     );
-    segmentDownloads.push(...downloads);
 
-    // Update job if any segments changed status
-    if (needsUpdate) {
-      const allCompleted = completedCount === segmentRenders.length;
-      const anyFailed = failedCount > 0;
-      const newStatus = allCompleted
+    // Relaunch scenes that hit a temporary AWS error instead of failing the
+    // whole export.
+    const retryIds: string[] = [];
+    if (STITCH_FUNCTION_NAME) {
+      segmentRenders.forEach((segment, i) => {
+        if (
+          segment.status === "failed" &&
+          (segment.attempts ?? 1) < MAX_SEGMENT_RENDER_ATTEMPTS &&
+          isTransientRenderError(segment.error)
+        ) {
+          retryIds.push(segment.segmentId);
+          segmentRenders[i] = {
+            ...segment,
+            status: "rendering",
+            renderId: "",
+            bucketName: "",
+            outputKey: "",
+            attempts: (segment.attempts ?? 1) + 1,
+            launchRequestedAt: new Date(now).toISOString(),
+          };
+          needsUpdate = true;
+        }
+      });
+    }
+
+    const completed = segmentRenders.filter((s) => s.status === "completed");
+    const failed = segmentRenders.filter((s) => s.status === "failed");
+    const expected = Array.isArray(job.segments)
+      ? job.segments.length
+      : segmentRenders.length;
+    const newStatus =
+      segmentRenders.length >= expected && completed.length === segmentRenders.length
         ? "completed"
-        : anyFailed && completedCount + failedCount === segmentRenders.length
+        : segmentRenders.length >= expected &&
+            completed.length + failed.length === segmentRenders.length
           ? "failed"
           : "rendering";
+    const jobError =
+      newStatus === "failed"
+        ? `${failed.length} of ${segmentRenders.length} scenes failed (${failed
+            .map((s) => s.title)
+            .join(", ")}): ${failed[0]?.error ?? "Render failed"}`.slice(0, 4000)
+        : undefined;
 
-      await docClient.send(
-        new UpdateCommand({
-          TableName: RENDER_JOBS_TABLE,
-          Key: { jobId },
-          UpdateExpression:
-            "SET #status = :status, segmentRenders = :segmentRenders, progress = :progress, updatedAt = :updatedAt",
-          ExpressionAttributeNames: { "#status": "status" },
-          ExpressionAttributeValues: {
-            ":status": newStatus,
-            ":segmentRenders": segmentRenders,
-            ":progress": Math.round(
-              (completedCount / segmentRenders.length) * 100,
-            ),
-            ":updatedAt": new Date().toISOString(),
-          },
-        }),
-      );
+    if (needsUpdate || newStatus !== job.status) {
+      const rev = typeof job.rev === "number" ? job.rev : null;
+      try {
+        await docClient.send(
+          new UpdateCommand({
+            TableName: RENDER_JOBS_TABLE,
+            Key: { jobId },
+            UpdateExpression: `SET #status = :status, segmentRenders = :segmentRenders, progress = :progress, updatedAt = :updatedAt, rev = :nextRev${
+              jobError ? ", #error = :error" : ""
+            }`,
+            ConditionExpression:
+              rev === null ? "attribute_not_exists(rev)" : "rev = :rev",
+            ExpressionAttributeNames: {
+              "#status": "status",
+              ...(jobError ? { "#error": "error" } : {}),
+            },
+            ExpressionAttributeValues: {
+              ":status": newStatus,
+              ":segmentRenders": segmentRenders,
+              ":progress": Math.round(
+                (completed.length / Math.max(expected, 1)) * 100,
+              ),
+              ":updatedAt": new Date().toISOString(),
+              ":nextRev": (rev ?? 0) + 1,
+              ...(rev === null ? {} : { ":rev": rev }),
+              ...(jobError ? { ":error": jobError } : {}),
+            },
+          }),
+        );
+        job.status = newStatus;
+        job.error = jobError;
+      } catch (error) {
+        if ((error as { name?: string }).name !== "ConditionalCheckFailedException") {
+          throw error;
+        }
+        // Another writer (cut worker or concurrent poll) got there first;
+        // report without side effects and let the next poll decide.
+        console.log(`Render job ${jobId} changed concurrently; skipping update`);
+        retryIds.length = 0;
+        job.status = "rendering";
+      }
 
-      job.status = newStatus;
-      job.progress = Math.round((completedCount / segmentRenders.length) * 100);
+      if (retryIds.length > 0) {
+        console.log(`Retrying scenes ${retryIds.join(",")} for job ${jobId}`);
+        await lambdaClient.send(
+          new InvokeCommand({
+            FunctionName: STITCH_FUNCTION_NAME,
+            InvocationType: "Event",
+            Payload: JSON.stringify({ jobId, segmentIds: retryIds }),
+          }),
+        );
+      }
 
-      // Persist to project only when job completes (not on every segment)
-      // This reduces DB writes from N to 1
       if (
-        (newStatus === "completed" || newStatus === "failed") &&
+        (job.status === "completed" || job.status === "failed") &&
         job.projectId
       ) {
-        if (newStatus === "completed") {
-          const locations = await persistRendersToProject(
-            job.projectId,
-            segmentRenders,
-            job,
-          );
-          await applyPersistedDownloadUrls(segmentDownloads, locations);
-        }
-        // Clear activeRenderJobId since render is done
+        // Keep every finished scene, even when others failed, so Retry only
+        // has to render what's missing.
+        persistedLocations = await persistRendersToProject(
+          job.projectId,
+          segmentRenders,
+          job,
+        );
         await docClient.send(
           new UpdateCommand({
             TableName: PROJECTS_TABLE,
             Key: { projectId: job.projectId },
             UpdateExpression: "REMOVE activeRenderJobId SET updatedAt = :now",
-            ExpressionAttributeValues: { ":now": new Date().toISOString() },
+            ConditionExpression: "activeRenderJobId = :jobId",
+            ExpressionAttributeValues: {
+              ":now": new Date().toISOString(),
+              ":jobId": jobId,
+            },
           }),
-        );
+        ).catch((error: { name?: string }) => {
+          if (error.name !== "ConditionalCheckFailedException") throw error;
+        });
       }
     }
-  } else if (job.status === "completed" || job.status === "failed") {
-    // Job already done - build download URLs
-    for (const segment of segmentRenders) {
-      const download: SegmentDownload = {
-        segmentId: segment.segmentId,
-        title: segment.title,
-        status: segment.status,
-        contentHash: renderContentHash(segment.segmentId),
-      };
-
-      if (segment.status === "completed") {
-        download.downloadUrl = await generatePresignedUrl(segment);
-        completedCount++;
-      }
-
-      segmentDownloads.push(download);
-    }
-
-    // Ensure renders are persisted to project (idempotent - safe to call multiple times)
-    // This catches cases where persist failed or polling stopped before completion
-    if (job.status === "completed" && job.projectId && completedCount > 0) {
-      const locations = await persistRendersToProject(
-        job.projectId,
-        segmentRenders,
-        job,
-      );
-      await applyPersistedDownloadUrls(segmentDownloads, locations);
-    }
+  } else if (
+    (job.status === "completed" || job.status === "failed") &&
+    job.projectId &&
+    segmentRenders.some((s) => s.status === "completed" && !s.reused)
+  ) {
+    // Idempotent: catches a persist that failed or never ran (including
+    // older failed jobs whose finished scenes were discarded).
+    persistedLocations = await persistRendersToProject(
+      job.projectId,
+      segmentRenders,
+      job,
+    );
   }
+
+  for (const segment of segmentRenders) {
+    const download: SegmentDownload = {
+      segmentId: segment.segmentId,
+      title: segment.title,
+      status: segment.status,
+      contentHash: renderContentHash(segment.segmentId),
+    };
+    if (segment.status === "completed") {
+      completedCount++;
+      download.downloadUrl = await generatePresignedUrl(segment);
+    } else if (segment.status === "failed") {
+      download.error = segment.error;
+    } else {
+      download.progress = progressById.get(segment.segmentId) ?? 0;
+    }
+    segmentDownloads.push(download);
+  }
+  await applyPersistedDownloadUrls(segmentDownloads, persistedLocations);
 
   // Calculate overall progress
   const progress =

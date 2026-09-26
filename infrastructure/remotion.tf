@@ -280,6 +280,8 @@ resource "aws_lambda_function" "get_render_status" {
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
       REMOTION_FUNCTION_NAME  = "remotion-render-4-0-387-mem2048mb-disk2048mb-240sec"
       AWS_REGION_NAME         = var.aws_region
+      # Relaunches scenes that failed on transient AWS errors
+      STITCH_FUNCTION_NAME    = aws_lambda_function.stitch_segments.function_name
     }
   }
 }
