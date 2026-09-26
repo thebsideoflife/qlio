@@ -594,6 +594,8 @@ export interface SegmentDownload {
   progress?: number;
   error?: string;
   contentHash?: string;
+  /** Hit a temporary AWS error; the backend relaunches it automatically. */
+  retrying?: boolean;
 }
 
 export interface RenderJobResponse {
