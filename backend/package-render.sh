@@ -13,6 +13,7 @@ mkdir -p render-package
 # Copy handler files
 cp dist/renderVideo.js render-package/
 cp dist/getRenderStatus.js render-package/
+cp dist/cancelRender.js render-package/
 
 # Copy only Remotion dependencies
 mkdir -p render-package/node_modules

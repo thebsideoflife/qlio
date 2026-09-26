@@ -70,6 +70,8 @@ resource "aws_lambda_function" "get_project_job_status" {
   environment {
     variables = {
       PROJECTS_TABLE = aws_dynamodb_table.projects.name
+      # Verifies the active export still exists before the panel resumes it.
+      RENDER_JOBS_TABLE = aws_dynamodb_table.render_jobs.name
       # Read-only, so pollers can see that the IQ agent owns the cut.
       AGENT_THREADS_TABLE     = aws_dynamodb_table.agent_threads.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn

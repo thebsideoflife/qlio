@@ -55,6 +55,40 @@ export function shouldReplaceStoredRender(
 
 export const MAX_SEGMENT_RENDER_ATTEMPTS = 4;
 
+/**
+ * A launched scene that hasn't finished by now is treated as stuck. Remotion's
+ * main function is capped at 240s, so a healthy scene always ends (done or
+ * fatal) well inside this; the message is transient so the scene is retried.
+ */
+export const SCENE_RENDER_TIMEOUT_MS = 12 * 60 * 1000;
+export const SCENE_RENDER_TIMEOUT_ERROR = "Scene render timed out";
+
+/**
+ * Hard ceiling for a whole export. Launch (20 min) plus every scene retry
+ * (4 x (12 min + backoff)) stays under ~80 min, so this only catches jobs
+ * nothing else could finish. Past it a job never blocks a new export.
+ */
+export const MAX_RENDER_JOB_MS = 2 * 60 * 60 * 1000;
+
+/** True when a job is past the hard ceiling, or its start time is unreadable. */
+export function isRenderJobExpired(
+  createdAt: unknown,
+  now: number = Date.now(),
+): boolean {
+  const started = typeof createdAt === "string" ? Date.parse(createdAt) : NaN;
+  return !Number.isFinite(started) || now - started > MAX_RENDER_JOB_MS;
+}
+
+/** True when a launched scene has run past SCENE_RENDER_TIMEOUT_MS. */
+export function isSceneRenderStuck(
+  launchedAt: string | undefined,
+  fallbackStart: string | undefined,
+  now: number = Date.now(),
+): boolean {
+  const started = Date.parse(launchedAt || fallbackStart || "");
+  return !Number.isFinite(started) || now - started > SCENE_RENDER_TIMEOUT_MS;
+}
+
 /** AWS capacity, throttling and 5xx errors that succeed on a later attempt. */
 export function isTransientRenderError(message: string | undefined): boolean {
   if (!message) return false;

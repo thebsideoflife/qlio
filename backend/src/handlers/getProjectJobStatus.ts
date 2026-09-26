@@ -13,6 +13,45 @@ const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client);
 
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
+const RENDER_JOBS_TABLE = process.env.RENDER_JOBS_TABLE;
+
+/**
+ * The export the panel should resume, or null. Only a job that exists and is
+ * still rendering is reported: a slot naming a finished or expired-away (TTL)
+ * job is released here, so reopening the panel can never resume into a job
+ * that will never answer.
+ */
+async function resolveActiveRenderJob(
+  projectId: string,
+  activeRenderJobId: unknown,
+): Promise<string | null> {
+  if (typeof activeRenderJobId !== "string" || !activeRenderJobId) return null;
+  if (!RENDER_JOBS_TABLE) return activeRenderJobId;
+  const { Item: job } = await docClient.send(
+    new GetCommand({
+      TableName: RENDER_JOBS_TABLE,
+      Key: { jobId: activeRenderJobId },
+      ProjectionExpression: "#status",
+      ExpressionAttributeNames: { "#status": "status" },
+    }),
+  );
+  // Still rendering (even past its limit): polling it finalizes it.
+  if (job?.status === "rendering") return activeRenderJobId;
+  await docClient
+    .send(
+      new UpdateCommand({
+        TableName: PROJECTS_TABLE,
+        Key: { projectId },
+        UpdateExpression: "REMOVE activeRenderJobId",
+        ConditionExpression: "activeRenderJobId = :jobId",
+        ExpressionAttributeValues: { ":jobId": activeRenderJobId },
+      }),
+    )
+    .catch((error: { name?: string }) => {
+      if (error.name !== "ConditionalCheckFailedException") throw error;
+    });
+  return null;
+}
 
 // Jobs stuck in pending/analyzing for longer than this are considered failed (OOM, timeout, etc.)
 const STALE_JOB_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes
@@ -222,7 +261,10 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         project.exportPackageJob,
         "exportPackageJob",
       ),
-      activeRenderJobId: project.activeRenderJobId || null,
+      activeRenderJobId: await resolveActiveRenderJob(
+        projectId,
+        project.activeRenderJobId,
+      ),
       agentRun,
       // Lets an editor tab loaded before a renderer change notice it's stale.
       renderPipelineVersion: RENDER_PIPELINE_VERSION,

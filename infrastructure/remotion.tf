@@ -229,6 +229,7 @@ resource "null_resource" "build_render_package" {
     # Only rebuild when handler files change
     render_video_hash = filemd5("../backend/dist/renderVideo.js")
     render_status_hash = filemd5("../backend/dist/getRenderStatus.js")
+    cancel_render_hash = filemd5("../backend/dist/cancelRender.js")
   }
   provisioner "local-exec" {
     command     = "./package-render.sh"
@@ -282,6 +283,26 @@ resource "aws_lambda_function" "get_render_status" {
       AWS_REGION_NAME         = var.aws_region
       # Relaunches scenes that failed on transient AWS errors
       STITCH_FUNCTION_NAME    = aws_lambda_function.stitch_segments.function_name
+    }
+  }
+}
+
+# Lambda function to cancel a render (frees the project's export slot)
+resource "aws_lambda_function" "cancel_render" {
+  filename         = data.archive_file.render_lambda_zip.output_path
+  function_name    = "${var.project_name}-cancel-render"
+  role             = aws_iam_role.remotion_lambda_role.arn
+  handler          = "cancelRender.handler"
+  runtime          = "nodejs20.x"
+  source_code_hash = data.archive_file.render_lambda_zip.output_base64sha256
+  timeout          = 30
+  memory_size      = 256
+
+  environment {
+    variables = {
+      RENDER_JOBS_TABLE       = aws_dynamodb_table.render_jobs.name
+      PROJECTS_TABLE          = aws_dynamodb_table.projects.name
+      API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
     }
   }
 }
