@@ -47,7 +47,7 @@ const translated = captionsFromParsedTranscript({
     { id: "l1", startTime: 10, endTime: 11, text: "Adiós" },
   ],
 } as any);
-assert(translated[0].endTime === 6 && translated[0].speechEndTime === 1, "translation line held 5s");
+assert(translated[0].endTime === 4.5 && translated[0].speechEndTime === 1, "translation line held 3.5s");
 
 const longWords = "extraordinary photographs demonstrate sophisticated cinematography during celebrations".split(" ").map((value, i) => w(value, i * 0.3));
 const original = { kind: "original", language: "en", words: longWords } as any;

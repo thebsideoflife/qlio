@@ -19,7 +19,7 @@
  * Deleted words (empty text) are dropped and never count toward any limit.
  */
 
-export const CAPTION_HOLD_SECONDS = 5;
+export const CAPTION_HOLD_SECONDS = 3.5;
 export const CAPTION_MAX_LINES = 2;
 export const CAPTION_MAX_WORDS = 8;
 export const CAPTION_MAX_DURATION = 3;
