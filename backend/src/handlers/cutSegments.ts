@@ -44,7 +44,9 @@ const client = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(client, {
   marshallOptions: { removeUndefinedValues: true },
 });
-const s3Client = new S3Client({});
+// S3 returns occasional 500 InternalError under load; one bad GET must not
+// sink a whole export.
+const s3Client = new S3Client({ maxAttempts: 6 });
 const lambdaClient = new LambdaClient({});
 
 const RENDER_JOBS_TABLE = process.env.RENDER_JOBS_TABLE!;
@@ -79,7 +81,8 @@ interface SegmentRender {
   renderId: string;
   bucketName: string;
   outputKey: string;
-  status: "rendering";
+  status: "rendering" | "failed";
+  error?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,43 +230,80 @@ function partitionSegments(segments: RenderSegment[]): string[][] {
   return bins.map((bin) => bin.ids);
 }
 
-async function invokeCutWorkers(
+async function invokeCutWorker(
   jobId: string,
-  segments: RenderSegment[],
+  segmentIds: string[],
 ): Promise<SegmentRender[]> {
   const functionName = process.env.AWS_LAMBDA_FUNCTION_NAME;
   if (!functionName) {
     throw new Error("AWS_LAMBDA_FUNCTION_NAME is unavailable");
   }
-
-  const workerResults = await Promise.all(
-    partitionSegments(segments).map(async (segmentIds) => {
-      const response = await lambdaClient.send(
-        new InvokeCommand({
-          FunctionName: functionName,
-          InvocationType: "RequestResponse",
-          Payload: Buffer.from(
-            JSON.stringify({ jobId, segmentIds, worker: true }),
-          ),
-        }),
-      );
-      const payload = response.Payload
-        ? Buffer.from(response.Payload).toString("utf8")
-        : "";
-      if (response.FunctionError) {
-        throw new Error(
-          `Exact-cut worker failed (${response.FunctionError}): ${payload}`,
-        );
-      }
-      const parsed = JSON.parse(payload) as unknown;
-      if (!Array.isArray(parsed)) {
-        throw new Error(`Exact-cut worker returned invalid payload: ${payload}`);
-      }
-      return parsed as SegmentRender[];
+  const response = await lambdaClient.send(
+    new InvokeCommand({
+      FunctionName: functionName,
+      InvocationType: "RequestResponse",
+      Payload: Buffer.from(JSON.stringify({ jobId, segmentIds, worker: true })),
     }),
   );
+  const payload = response.Payload
+    ? Buffer.from(response.Payload).toString("utf8")
+    : "";
+  if (response.FunctionError) {
+    throw new Error(`Exact-cut worker failed (${response.FunctionError}): ${payload}`);
+  }
+  const parsed = JSON.parse(payload) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error(`Exact-cut worker returned invalid payload: ${payload}`);
+  }
+  return parsed as SegmentRender[];
+}
 
-  return workerResults.flat();
+/**
+ * Run every worker group to completion. A failed group is retried once, then
+ * its scenes are reported as failed — the other groups' renders still count.
+ */
+async function invokeCutWorkers(
+  jobId: string,
+  segments: RenderSegment[],
+): Promise<SegmentRender[]> {
+  const groups = partitionSegments(segments);
+  const results = await Promise.all(
+    groups.map(async (segmentIds) => {
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          return await invokeCutWorker(jobId, segmentIds);
+        } catch (error) {
+          lastError = error;
+          console.error(
+            `Exact-cut worker for ${segmentIds.join(",")} failed (attempt ${attempt}):`,
+            error,
+          );
+        }
+      }
+      return failedRenders(
+        segments.filter((segment) => segmentIds.includes(segment.id)),
+        lastError,
+      );
+    }),
+  );
+  return results.flat();
+}
+
+function failedRenders(
+  segments: RenderSegment[],
+  error: unknown,
+): SegmentRender[] {
+  const message = error instanceof Error ? error.message : String(error);
+  return segments.map((segment) => ({
+    segmentId: segment.id,
+    title: segment.title,
+    renderId: "",
+    bucketName: "",
+    outputKey: "",
+    status: "failed" as const,
+    error: `Cut failed: ${message}`.slice(0, 2000),
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -313,16 +353,17 @@ export const handler: Handler<
   // re-encodes across a few synchronous workers, then publish all render IDs
   // atomically so status polling never observes a partial list.
   if (!event.worker && segments.length > 1) {
+    let segmentRenders: SegmentRender[];
     try {
-      const segmentRenders = await invokeCutWorkers(jobId, segments);
-      await updateJobWithRenders(jobId, segmentRenders);
-      console.log(
-        `cutSegments: launched ${segmentRenders.length} Remotion renders for job ${jobId}`,
-      );
+      segmentRenders = await invokeCutWorkers(jobId, segments);
     } catch (error) {
       console.error("cutSegments coordinator failed:", error);
-      await markJobFailed(jobId, error);
+      segmentRenders = failedRenders(segments, error);
     }
+    await mergeJobRenders(jobId, segmentRenders);
+    console.log(
+      `cutSegments: launched ${segmentRenders.filter((r) => r.status === "rendering").length} of ${segments.length} Remotion renders for job ${jobId}`,
+    );
     return;
   }
 
@@ -339,6 +380,7 @@ export const handler: Handler<
         typeof uri === "string" && uri.length > 0 && list.indexOf(uri) === index,
     );
     const { presignS3Uri } = await import("../utils/s3");
+    let loaded = uris.length === 0;
     for (const uri of uris) {
       try {
         const presignedUrl = await presignS3Uri(uri);
@@ -357,10 +399,19 @@ export const handler: Handler<
         console.log(
           `Loaded ${captions.length} caption lines from ${uri} (${parsed.kind})`,
         );
+        loaded = true;
         break;
       } catch (error) {
         console.error(`Failed to load transcription ${uri}:`, error);
       }
+    }
+    // Rendering without burned-in captions would look like success. Fail so
+    // the scene is retried instead.
+    if (!loaded) {
+      const error = new Error("Could not load captions transcript");
+      if (event.worker) throw error;
+      await mergeJobRenders(jobId, failedRenders(segments, error));
+      return;
     }
   }
 
@@ -449,8 +500,9 @@ export const handler: Handler<
 
     // 4. Kick off Remotion renders per clip
     console.log(`Starting ${segments.length} Remotion renders`);
-    const segmentRenders = await Promise.all(
-      segments.map(async (segment: any) => {
+    const segmentRenders: SegmentRender[] = await Promise.all(
+      segments.map(async (segment: any): Promise<SegmentRender> => {
+       try {
         const clipUrl = clipUrls.get(segment.id)!;
         const duration =
           clipDurations.get(segment.id) ??
@@ -518,6 +570,9 @@ export const handler: Handler<
           imageFormat: "jpeg",
           jpegQuality: 80,
           concurrencyPerLambda: 1,
+          // Chunk-level retries for Lambda throttling/capacity blips; whole
+          // scene retries live in getRenderStatus.
+          maxRetries: 3,
         });
 
         return {
@@ -528,6 +583,11 @@ export const handler: Handler<
           outputKey: `renders/${renderResponse.renderId}/${outName}`,
           status: "rendering" as const,
         };
+       } catch (error) {
+        // One scene failing to launch must not drop its siblings' renders.
+        console.error(`Remotion launch failed for ${segment.id}:`, error);
+        return failedRenders([segment], error)[0];
+       }
       }),
     );
 
@@ -538,12 +598,12 @@ export const handler: Handler<
       return segmentRenders;
     }
 
-    await updateJobWithRenders(jobId, segmentRenders);
+    await mergeJobRenders(jobId, segmentRenders);
     console.log(`cutSegments: launched ${segmentRenders.length} Remotion renders for job ${jobId}`);
   } catch (error) {
     console.error("cutSegments failed:", error);
     if (event.worker) throw error;
-    await markJobFailed(jobId, error);
+    await mergeJobRenders(jobId, failedRenders(segments, error));
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
@@ -553,43 +613,62 @@ export const handler: Handler<
 // Utilities
 // ---------------------------------------------------------------------------
 
-async function updateJobWithRenders(
+/**
+ * Replace these scenes' entries on the job, keeping every other scene
+ * (reused renders, other workers, earlier retries). Versioned so it never
+ * overwrites a concurrent status-poll write.
+ */
+async function mergeJobRenders(
   jobId: string,
-  segmentRenders: SegmentRender[],
+  renders: SegmentRender[],
 ): Promise<void> {
-  await docClient.send(
-    new UpdateCommand({
-      TableName: RENDER_JOBS_TABLE,
-      Key: { jobId },
-      UpdateExpression:
-        "SET segmentRenders = :segmentRenders, #status = :status, updatedAt = :updatedAt",
-      ExpressionAttributeNames: { "#status": "status" },
-      ExpressionAttributeValues: {
-        ":segmentRenders": segmentRenders,
-        ":status": "rendering",
-        ":updatedAt": new Date().toISOString(),
-      },
-    }),
-  );
-}
-
-async function markJobFailed(jobId: string, error: unknown): Promise<void> {
-  await docClient.send(
-    new UpdateCommand({
-      TableName: RENDER_JOBS_TABLE,
-      Key: { jobId },
-      UpdateExpression:
-        "SET #status = :status, #error = :error, updatedAt = :updatedAt",
-      ExpressionAttributeNames: { "#status": "status", "#error": "error" },
-      ExpressionAttributeValues: {
-        ":status": "failed",
-        ":error": `Cut/render failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        ":updatedAt": new Date().toISOString(),
-      },
-    }),
-  );
+  const now = new Date().toISOString();
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const { Item: job } = await docClient.send(
+      new GetCommand({ TableName: RENDER_JOBS_TABLE, Key: { jobId } }),
+    );
+    if (!job) throw new Error(`Job ${jobId} not found`);
+    const byId = new Map<string, Record<string, unknown>>(
+      ((job.segmentRenders || []) as Array<Record<string, unknown>>).map(
+        (entry) => [entry.segmentId as string, entry],
+      ),
+    );
+    for (const render of renders) {
+      const previous = byId.get(render.segmentId);
+      byId.set(render.segmentId, {
+        ...render,
+        attempts: (previous?.attempts as number | undefined) ?? 1,
+        ...(render.status === "rendering" ? { launchedAt: now } : {}),
+      });
+    }
+    const rev = typeof job.rev === "number" ? job.rev : null;
+    try {
+      await docClient.send(
+        new UpdateCommand({
+          TableName: RENDER_JOBS_TABLE,
+          Key: { jobId },
+          UpdateExpression:
+            "SET segmentRenders = :segmentRenders, #status = :status, updatedAt = :updatedAt, rev = :nextRev",
+          ConditionExpression:
+            rev === null ? "attribute_not_exists(rev)" : "rev = :rev",
+          ExpressionAttributeNames: { "#status": "status" },
+          ExpressionAttributeValues: {
+            ":segmentRenders": Array.from(byId.values()),
+            ":status": "rendering",
+            ":updatedAt": now,
+            ":nextRev": (rev ?? 0) + 1,
+            ...(rev === null ? {} : { ":rev": rev }),
+          },
+        }),
+      );
+      return;
+    } catch (error) {
+      if ((error as { name?: string }).name !== "ConditionalCheckFailedException") {
+        throw error;
+      }
+    }
+  }
+  throw new Error(`Could not record renders for job ${jobId}`);
 }
 
 function parseS3Uri(uri: string): { bucket: string; key: string } {

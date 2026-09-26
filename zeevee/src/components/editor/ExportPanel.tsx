@@ -51,6 +51,7 @@ import { cn, formatSegmentLabel } from "@/lib/utils";
 import {
   computeSegmentRenderFingerprint,
   isSegmentRenderStale,
+  RENDER_PIPELINE_VERSION,
   type SegmentRenderCache,
 } from "@/lib/segmentRenderFingerprint";
 import {
@@ -135,6 +136,9 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   const [status, setStatus] = useState<RenderStatus>("idle");
   const [progress, setProgress] = useState(0);
   const [jobId, setJobId] = useState<string | null>(null);
+  // Set when the backend renders with a newer pipeline than this tab knows;
+  // every freshness check here would be wrong until the page reloads.
+  const [clientOutdated, setClientOutdated] = useState(false);
   const [segmentDownloads, setSegmentDownloads] = useState<SegmentDownload[]>(
     [],
   );
@@ -575,20 +579,21 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     return !isSegmentRenderStale(cached, hash);
   });
   const selectedSegments = segments.filter((segment) => selectedSegmentIds.has(segment.id));
+  const selectedNeedingRenderCount = selectedSegments.filter((segment) => {
+    const cached = cachedRenderMap.get(segment.id);
+    return !cached?.url || isSegmentRenderStale(
+      cached,
+      computeSegmentRenderFingerprint(
+        segment,
+        captionSettings,
+        globalFraming,
+        transcriptionVersion,
+      ),
+    );
+  }).length;
   const allSelectedRenderedAndFresh =
     hasAnySelection && selectedSegments.length === selectedSegmentIds.size &&
-    selectedSegments.every((segment) => {
-      const cached = cachedRenderMap.get(segment.id);
-      return !!cached?.url && !isSegmentRenderStale(
-        cached,
-        computeSegmentRenderFingerprint(
-          segment,
-          captionSettings,
-          globalFraming,
-          transcriptionVersion,
-        ),
-      );
-    });
+    selectedNeedingRenderCount === 0;
   const currentSelectionKey = [...selectedSegmentIds].sort().join("\0");
   const folderMatchesSelection = packageSelectionKey === currentSelectionKey;
 
@@ -607,6 +612,12 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       try {
         const jobStatus = await getProjectJobStatus(projectId);
         if (cancelled) return;
+        if (
+          jobStatus.renderPipelineVersion != null &&
+          jobStatus.renderPipelineVersion !== RENDER_PIPELINE_VERSION
+        ) {
+          setClientOutdated(true);
+        }
 
         if (jobStatus.activeRenderJobId) {
           setJobId(jobStatus.activeRenderJobId);
@@ -736,8 +747,9 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
           setSegmentDownloads(result.segmentDownloads);
         }
 
-        if (result.status === "completed") {
-          setStatus("completed");
+        if (result.status === "completed" || result.status === "failed") {
+          // Keep every finished scene, even when others failed, so the next
+          // export only renders what's missing.
           if (result.segmentDownloads) {
             const newRenders = result.segmentDownloads
               .filter((s) => s.status === "completed" && s.downloadUrl)
@@ -759,7 +771,10 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
 
             dispatch(setLastSegmentRenders(Array.from(mergedMap.values())));
           }
+        }
 
+        if (result.status === "completed") {
+          setStatus("completed");
           const completedDownloads = (result.segmentDownloads || []).filter(
             (item) => item.status === "completed",
           );
@@ -874,6 +889,12 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
         segments: segments.filter((segment) => selectedSegmentIds.has(segment.id)),
         globalFraming,
       });
+      if (
+        result.renderPipelineVersion != null &&
+        result.renderPipelineVersion !== RENDER_PIPELINE_VERSION
+      ) {
+        setClientOutdated(true);
+      }
       setJobId(result.jobId);
       setStatus("rendering");
     } catch (err: unknown) {
@@ -916,7 +937,14 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
           captionSettings,
           segments: segments.filter((segment) => segment.id === segmentId),
           globalFraming,
+          force: true,
         });
+        if (
+          result.renderPipelineVersion != null &&
+          result.renderPipelineVersion !== RENDER_PIPELINE_VERSION
+        ) {
+          setClientOutdated(true);
+        }
         setJobId(result.jobId);
         setStatus("rendering");
       } catch (err: unknown) {
@@ -1070,6 +1098,23 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
           Choose scenes and export settings, then render your microseries.
         </p>
       </header>
+
+      {clientOutdated && (
+        <div className="shrink-0 flex items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm">
+          <span>
+            ZeeVee was updated. Reload to see which scenes are up to date.
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="shrink-0"
+            onClick={() => window.location.reload()}
+          >
+            Reload
+          </Button>
+        </div>
+      )}
 
       {(isProcessing ||
         status === "failed" ||
@@ -1643,7 +1688,9 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                 ? "Export complete. Packing videos, poster art, thumbnails, and metadata…"
                 : packageStatus === "failed"
                   ? "Export complete, but the download folder could not be prepared."
-                  : status === "completed" || packageStatus === "ready"
+                  : hasAnySelection && selectedNeedingRenderCount > 0 && someRendered
+                    ? `${selectedNeedingRenderCount} of ${selectedSegmentIds.size} selected scene${selectedSegmentIds.size === 1 ? "" : "s"} need rendering. Up-to-date scenes are reused.`
+                    : packageStatus === "ready" && folderMatchesSelection
                     ? "Export complete. Your organized download folder is ready."
                     : hasAnySelection
                       ? `${selectedSegmentIds.size} scene${selectedSegmentIds.size === 1 ? "" : "s"} selected`
@@ -1709,7 +1756,10 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                     : "Prepare folder"}
                 </Button>
               )}
-            {(status === "idle" || status === "failed") && (
+            {!isProcessing &&
+              (status === "idle" ||
+                status === "failed" ||
+                !allSelectedRenderedAndFresh) && (
               <Button
                 size="sm"
                 onClick={handleStartRender}
@@ -1723,11 +1773,15 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                 )}
                 {agentRunning
                   ? "IQ is working"
-                  : status === "failed"
-                    ? "Retry"
-                    : someRendered && hasAnySelection
-                      ? "Re-export"
-                      : "Export"}
+                  : someRendered &&
+                      selectedNeedingRenderCount > 0 &&
+                      selectedNeedingRenderCount < selectedSegmentIds.size
+                    ? `${status === "failed" ? "Retry" : "Render"} ${selectedNeedingRenderCount} scene${selectedNeedingRenderCount === 1 ? "" : "s"}`
+                    : status === "failed"
+                      ? "Retry"
+                      : someRendered && hasAnySelection
+                        ? "Re-export"
+                        : "Export"}
               </Button>
             )}
           </div>

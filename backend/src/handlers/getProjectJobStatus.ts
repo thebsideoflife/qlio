@@ -6,6 +6,7 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { checkAuth } from "../utils/auth";
+import { RENDER_PIPELINE_VERSION } from "../utils/segmentRenderFingerprint";
 import { getActiveAgentRun } from "../services/iq-agent/thread";
 
 const client = new DynamoDBClient({});
@@ -222,6 +223,8 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       ),
       activeRenderJobId: project.activeRenderJobId || null,
       agentRun,
+      // Lets an editor tab loaded before a renderer change notice it's stale.
+      renderPipelineVersion: RENDER_PIPELINE_VERSION,
     };
 
     return {
