@@ -79,7 +79,7 @@ export function buildExportPackageLayout(params: {
     const sceneNumber = index + 1;
     const slug = uniqueSlug(sceneAssetSlug(scene.title), usedSlugs);
     const thumbnailFilename = `scene_${padSceneNumber(sceneNumber)}_${slug}.jpg`;
-    const videoFilename = `${slug}.mp4`;
+    const videoFilename = `scene_${padSceneNumber(sceneNumber)}_${slug}.mp4`;
     return {
       segmentId: scene.segmentId,
       sceneNumber,

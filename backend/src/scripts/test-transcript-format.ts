@@ -692,7 +692,7 @@ assert(
   "server zip uses the delivery folder name",
 );
 assert(
-  packed.scenes[0].videoPath.includes("Video Scenes/Juliette_Woos_Deacon.mp4"),
+  packed.scenes[0].videoPath.includes("Video Scenes/scene_01_Juliette_Woos_Deacon.mp4"),
   "server zip scene path matches the editor layout",
 );
 assert(
