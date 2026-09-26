@@ -452,6 +452,97 @@ async function main() {
     assert(!isStockPhraseHallucination({ text: "Thank you.", no_speech_prob: 0.9 }, 1), "not alone: kept");
   }
 
+  // --- SporeLabs PR #256: server-suppressed stock phrases are ingested as restorable stretches
+  {
+    // Shapes as SporeLabs #256 returns them (default suppression and keep_suppressed).
+    const w = (word: string, start: number, end: number, probability = 0.29) => ({ word, start, end, probability });
+    const speech = (id: number, seek: number, start: number, end: number, text: string) => ({
+      id, seek, start, end, text, temperature: 0, avg_logprob: -0.25, compression_ratio: 1.3,
+      no_speech_prob: 0.05, hallucination_flag: null,
+      words: text.split(" ").map((t, i, a) => w(t, start + ((end - start) * i) / a.length, start + ((end - start) * (i + 1)) / a.length, 0.95)),
+    });
+    const reason =
+      "stock phrase over music/silence: no_speech_prob 0.94 > 0.6, the text is a known Whisper " +
+      "hallucination, and nothing else was decoded from its 30 s window";
+    const suppressedFlag = {
+      start: 141.22, end: 144.02, segment_ids: [], kind: "stock_phrase", text: "I'm sorry.",
+      no_speech_prob: 0.9356, avg_logprob: -0.8975, mean_word_probability: 0.2874, window_alone: true,
+      reason, suppressed: true, words: [w("I'm", 141.22, 142.6), w("sorry.", 142.6, 144.02)],
+      note: `"I'm sorry." — ${reason} (suppressed).`,
+    };
+    const loopNote = '3x repeated "Help!" — hallucination loop (compression_ratio 4.1, seek=30000).';
+    const defaultResult: any = {
+      model: "large-v3", engine: "openai-whisper==20250625", options: {}, language: "en", duration: 400,
+      num_segments: 4, num_words: 0, text: "",
+      hallucination_flags: [
+        suppressedFlag,
+        { start: 300, end: 303, segment_ids: [1, 2], kind: "repeated_segment", note: loopNote },
+      ],
+      segments: [
+        speech(0, 9600, 96.0, 99.0, "Get away from the car."),
+        { ...speech(1, 30000, 300, 301.5, "Help!"), hallucination_flag: loopNote },
+        { ...speech(2, 30000, 301.5, 303, "Help!"), hallucination_flag: loopNote },
+        speech(3, 30300, 310, 312, "Where did he go?"),
+      ],
+    };
+    const { words, hallucinations } = wordsFromSporeLabsResult(defaultResult, 0.042);
+    const text = words.map((x) => x.value).join(" ");
+    assert(!text.includes("sorry"), "suppressed stock line stays out of words");
+    assert(text.includes("car.") && text.includes("go?"), "speech is kept");
+    assert(hallucinations.length === 2, "stock stretch listed next to the loop");
+    const stock = hallucinations[0];
+    assert(stock.start === 141.262 && stock.end === 144.062, "stock stretch on the video clock");
+    assert(stock.note.startsWith("stock phrase") && stock.note.includes("SporeLabs"), "stock stretch note names SporeLabs");
+    assert(stock.words.map((x) => x.value).join(" ") === "I'm sorry.", "stock stretch keeps its words for restore");
+    assert(stock.words[0].start === 141.262, "restorable words on the video clock");
+    assert(hallucinations[1].note === loopNote && hallucinations[1].words.length === 2, "loop still grouped by its note");
+
+    // keep_suppressed: the segment stays, with its own stock_phrase verdict (no hallucination_flag).
+    const keepResult: any = {
+      ...defaultResult,
+      hallucination_flags: [
+        { ...suppressedFlag, suppressed: false, segment_ids: [1], note: suppressedFlag.note.replace("suppressed", "kept") },
+      ],
+      segments: [
+        speech(0, 9600, 96.0, 99.0, "Get away from the car."),
+        {
+          ...speech(1, 12000, 141.22, 144.02, "I'm sorry."),
+          no_speech_prob: 0.9356, words: suppressedFlag.words,
+          stock_phrase: { reason, no_speech_prob: 0.9356, window_alone: true, mean_word_probability: 0.2874, note: "x" },
+        },
+        speech(2, 30300, 310, 312, "Where did he go?"),
+      ],
+    };
+    const kept = wordsFromSporeLabsResult(keepResult, 0);
+    assert(!kept.words.some((x) => x.value === "sorry."), "keep mode: stock_phrase segment held out of words");
+    assert(kept.hallucinations.length === 1, "keep mode: listed once (segment verdict, flag entry not re-added)");
+    assert(kept.hallucinations[0].words.length === 2 && kept.hallucinations[0].note.includes("SporeLabs"), "keep mode: restorable");
+
+    // A stretch both SporeLabs and ZeeVee's #125 filter would flag is listed once.
+    const both: any = {
+      ...defaultResult,
+      hallucination_flags: [suppressedFlag],
+      segments: [
+        speech(0, 9600, 96.0, 99.0, "Get away from the car."),
+        { ...speech(1, 12000, 141.22, 144.02, "I'm sorry."), no_speech_prob: 0.9356, words: suppressedFlag.words },
+      ],
+    };
+    const once = wordsFromSporeLabsResult(both, 0);
+    assert(once.hallucinations.length === 1, "server + client flag: one stretch");
+    assert(once.hallucinations[0].words.length === 2, "server + client flag: words not doubled");
+    assert(once.hallucinations[0].note.includes("SporeLabs"), "server note wins");
+    assert(!once.words.some((x) => x.value === "sorry."), "server + client flag: out of words");
+
+    // Older responses: no stock_phrase flags, no stock_phrase field -> unchanged behaviour.
+    const old: any = { ...defaultResult, hallucination_flags: [], segments: defaultResult.segments };
+    const before = wordsFromSporeLabsResult(old, 0.042);
+    assert(before.hallucinations.length === 1 && before.hallucinations[0].note === loopNote, "no flags: only the loop");
+    assert(before.words.length === words.length, "no flags: same words");
+    // A kept (suppressed: false) flag without a stock_phrase field is not ingested on its own.
+    const stray: any = { ...defaultResult, hallucination_flags: [{ ...suppressedFlag, suppressed: false }] };
+    assert(wordsFromSporeLabsResult(stray, 0).hallucinations.length === 1, "unsuppressed flag alone: not ingested");
+  }
+
   console.log(`sporelabs-transcribe: ${checks - failures}/${checks} checks passed`);
   if (failures > 0) process.exit(1);
 }
