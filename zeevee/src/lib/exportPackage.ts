@@ -24,6 +24,7 @@ export function sanitizeFolderName(name: string): string {
 export interface ExportPackageSceneInput {
   segmentId: string;
   title: string;
+  sceneNumber?: number;
   videoUrl?: string | null;
   thumbnailUrl?: string | null;
 }
@@ -81,7 +82,11 @@ function uniqueSlug(base: string, used: Set<string>): string {
 
 export function buildExportPackageLayout(params: {
   projectTitle: string;
-  scenes: Array<{ segmentId: string; title: string }>;
+  /**
+   * sceneNumber is the scene's position in the full project (1-based), so a
+   * partial export keeps Qlio's numbering. Falls back to export order.
+   */
+  scenes: Array<{ segmentId: string; title: string; sceneNumber?: number }>;
 }): ExportPackageLayout {
   const rootFolder = sanitizeFolderName(params.projectTitle || "Untitled");
   const posterFolder = `${rootFolder} Poster Art`;
@@ -91,7 +96,7 @@ export function buildExportPackageLayout(params: {
   const usedSlugs = new Set<string>();
 
   const scenes = params.scenes.map((scene, index) => {
-    const sceneNumber = index + 1;
+    const sceneNumber = scene.sceneNumber ?? index + 1;
     const slug = uniqueSlug(sceneAssetSlug(scene.title), usedSlugs);
     const thumbnailFilename = `scene_${padSceneNumber(sceneNumber)}_${slug}.jpg`;
     const videoFilename = `scene_${padSceneNumber(sceneNumber)}_${slug}.mp4`;
@@ -267,7 +272,11 @@ export async function downloadExportPackage(
 
   const layout = buildExportPackageLayout({
     projectTitle,
-    scenes: scenes.map((s) => ({ segmentId: s.segmentId, title: s.title })),
+    scenes: scenes.map((s) => ({
+      segmentId: s.segmentId,
+      title: s.title,
+      sceneNumber: s.sceneNumber,
+    })),
   });
   const layoutById = new Map(layout.scenes.map((s) => [s.segmentId, s]));
   const warnings: string[] = [];

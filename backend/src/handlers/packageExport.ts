@@ -349,11 +349,15 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
       (typeof project.title === "string" ? project.title : "Untitled");
     const includeThumbnails = body.includeThumbnails !== false;
     const includePoster = body.includePoster !== false;
+    const projectSceneNumbers = new Map(
+      segments.map((s, index) => [s.id, index + 1]),
+    );
     const layout = buildExportPackageLayout({
       projectTitle,
       scenes: selected.map((s) => ({
         segmentId: s.id,
         title: s.title || "scene",
+        sceneNumber: projectSceneNumbers.get(s.id),
       })),
     });
 

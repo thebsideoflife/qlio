@@ -13,6 +13,7 @@ import {
 } from "./exportPackage";
 import {
   EXPORT_METADATA_VERSION,
+  buildExportMetadataDocument,
   type ExportMetadataDocument,
 } from "./exportMetadataJson";
 
@@ -252,6 +253,53 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
     "fills a missing scene URL",
   );
   assertEqual(scenes[0].videoUrl, "https://old/a.mp4", "does not mutate input");
+}
+
+{
+  // Partial export keeps the scene's project number, not its export position.
+  const layout = buildExportPackageLayout({
+    projectTitle: "Partial",
+    scenes: [
+      { segmentId: "f", title: "Scene Six", sceneNumber: 6 },
+      { segmentId: "k", title: "Scene Eleven", sceneNumber: 11 },
+    ],
+  });
+  assertEqual(
+    layout.scenes[0].thumbnailFilename,
+    "scene_06_Scene_Six.jpg",
+    "scene 6 thumbnail keeps its project number",
+  );
+  assertEqual(
+    layout.scenes[0].videoFilename,
+    "scene_06_Scene_Six.mp4",
+    "scene 6 video keeps its project number",
+  );
+  assertEqual(
+    layout.scenes[1].thumbnailFilename,
+    "scene_11_Scene_Eleven.jpg",
+    "scene 11 thumbnail keeps its project number",
+  );
+
+  const segments = Array.from({ length: 8 }, (_, i) => ({
+    id: `s${i + 1}`,
+    startTime: i * 10,
+    endTime: i * 10 + 10,
+    title: `${i + 1}. Scene ${i + 1}`,
+  }));
+  const metadata = buildExportMetadataDocument({
+    projectId: "p1",
+    projectTitle: "Partial",
+    segments,
+    selectedSegmentIds: new Set(["s6"]),
+    metadataBySegmentId: new Map(),
+    options: {},
+  });
+  assertEqual(metadata.scenes.length, 1, "only the selected scene is exported");
+  assertEqual(
+    metadata.scenes[0].sceneNumber,
+    6,
+    "metadata sceneNumber is the project scene number",
+  );
 }
 
 if (failures > 0) {
