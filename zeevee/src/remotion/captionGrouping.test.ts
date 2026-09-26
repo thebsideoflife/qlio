@@ -10,7 +10,7 @@ import {
   isDeletedCaptionWord,
   outputFrameForAspect,
 } from "./captionGrouping";
-import { activeCaptionAt } from "./captionTiming";
+import { activeCaptionAt, activeWordIndexAt } from "./captionTiming";
 import { resolveCaptionContent } from "./captionContent";
 
 function assert(condition: boolean, message: string): void {
@@ -93,15 +93,19 @@ assert(paused.length === 2, "0.6s pause splits a line");
 const long = groupWordsIntoCaptions([w("a", 0), w("b", 1), w("c", 2), w("d", 3.5)], { minPauseBetweenLines: Number.POSITIVE_INFINITY });
 assert(long.length === 2, "3s max duration splits");
 
-// --- hold: 5s after the last word, or until the next caption starts
+// --- hold: 3.5s after the last word, or until the next caption starts
 const held = groupWordsIntoCaptions([w("a", 0), w("b", 0.3), w("c", 2.0), w("d", 20)]);
 assert(held.length === 3, "three captions");
 assert(close(held[0].speechEndTime!, 0.5) && close(held[0].endTime, 2.0), "held until next caption starts");
-assert(close(held[1].speechEndTime!, 2.2) && close(held[1].endTime, 2.2 + CAPTION_HOLD_SECONDS), "held 5s when the gap is long");
-assert(close(held[2].endTime, 20.2 + CAPTION_HOLD_SECONDS), "last caption holds 5s");
+assert(close(held[1].speechEndTime!, 2.2) && close(held[1].endTime, 2.2 + CAPTION_HOLD_SECONDS), "held 3.5s when the gap is long");
+assert(close(held[2].endTime, 20.2 + CAPTION_HOLD_SECONDS), "last caption holds 3.5s");
 assert(activeCaptionAt(held, 1.9)?.id === held[0].id, "caption stays visible during the hold");
-assert(activeCaptionAt(held, 6.0)?.id === held[1].id, "still visible 3.8s after speech");
-assert(activeCaptionAt(held, 7.3) === undefined, "gone after 5s");
+assert(activeCaptionAt(held, 5.6)?.id === held[1].id, "still visible 3.4s after speech");
+assert(activeCaptionAt(held, 5.8) === undefined, "gone after 3.5s");
+assert(activeWordIndexAt(held[1].words!, 2.1, held[1].endTime) === 0, "last word highlighted while spoken");
+assert(activeWordIndexAt(held[1].words!, 5.6, held[1].endTime) === 0, "last word stays highlighted through the hold");
+assert(activeWordIndexAt(held[1].words!, 5.8, held[1].endTime) === -1, "no highlight once the hold ends");
+assert(activeWordIndexAt(held[0].words!, 1.9, held[0].endTime) === 1, "last word highlighted until the next caption starts");
 assert(activeCaptionAt(held, 1.9, 1.0) === undefined, "a held caption never carries into a segment that starts after its speech");
 assert(activeCaptionAt(held, 0.4, 0.2)?.id === held[0].id, "a caption still speaking at the segment start shows");
 const twice = holdCaptions(holdCaptions([{ id: "t", startTime: 1, endTime: 2, text: "x" }]));

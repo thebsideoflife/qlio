@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { CaptionLine, CaptionStyle } from "./types";
 import { resolveCaptionContent } from "./captionContent";
 import { captionWordText } from "./captionGrouping";
+import { activeWordIndexAt } from "./captionTiming";
 import { isCaptionFontReady, loadCaptionFont } from "./loadCaptionFonts";
 
 interface CaptionTextProps {
@@ -38,9 +39,7 @@ export function CaptionText({
   const visibleWords = content.mode === "words" ? content.words : [];
   const displayText = content.mode === "text" ? content.text : null;
 
-  const activeWordIndex = visibleWords.findIndex(
-    (word) => currentTime >= word.start && currentTime < word.end,
-  );
+  const activeWordIndex = activeWordIndexAt(visibleWords, currentTime, caption.endTime);
 
   const highlightColor = style.highlightColor || "#fbbf24";
   const showAnimation = highlightColor !== "none" && visibleWords.length > 0;

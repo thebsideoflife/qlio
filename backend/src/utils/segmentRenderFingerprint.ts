@@ -2,7 +2,7 @@
 
 // Bump whenever the Remotion bundle changes rendered pixels without changing
 // project inputs. This invalidates MP4s made by an older renderer.
-export const RENDER_PIPELINE_VERSION = 8;
+export const RENDER_PIPELINE_VERSION = 9;
 
 interface FramingKeyframe {
   time: number;
