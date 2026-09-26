@@ -91,34 +91,87 @@ export interface TranscribeJob {
   usage?: Record<string, number>;
 }
 
+export interface TranscribeSubmitRequest {
+  audio_url: string;
+  duration_seconds?: number;
+  language?: string | null;
+}
+
+/** Exact JSON body POSTed to `/audio/transcribe`. */
+export interface TranscribeRequestBody {
+  model: string;
+  audio_url: string;
+  duration_seconds?: number;
+  options: Record<string, unknown>;
+}
+
+/**
+ * Idempotency key for one transcription run. Stable across retries, hops and
+ * crash-recovery resubmits of that run; a new run (new version) gets a new key.
+ */
+export function transcribeIdempotencyKey(
+  assetId: string,
+  transcriptionVersion: string,
+): string {
+  if (!assetId || !transcriptionVersion) {
+    throw new Error("transcribeIdempotencyKey needs an assetId and a transcriptionVersion");
+  }
+  return `zeevee-transcribe:${assetId}:${transcriptionVersion}`;
+}
+
 /**
  * `language`: the asset's known language, or null to let Whisper detect it. The
  * reference run forces "en"; we do the same whenever the asset is known to be English.
  */
-export async function submitTranscription(
-  request: { audio_url: string; duration_seconds?: number; language?: string | null },
+export function buildTranscribeRequestBody(
+  request: TranscribeSubmitRequest,
+): TranscribeRequestBody {
+  return {
+    model: TRANSCRIBE_MODEL,
+    audio_url: request.audio_url,
+    ...(request.duration_seconds && request.duration_seconds > 0
+      ? { duration_seconds: request.duration_seconds }
+      : {}),
+    options: {
+      ...REFERENCE_WHISPER_OPTIONS,
+      ...(request.language !== undefined ? { language: request.language } : {}),
+    },
+  };
+}
+
+/**
+ * POST an exact, already-built body. A crash-recovery resubmit passes the body
+ * recorded before the first attempt so SporeLabs sees the same key + same body
+ * and returns the original job instead of answering 409.
+ */
+export async function submitTranscriptionBody(
+  body: TranscribeRequestBody,
+  idempotencyKey: string | undefined,
   opts: ReframeClientOptions = {},
 ): Promise<TranscribeJob> {
   const res = await requestJson<TranscribeJob>(
     "POST",
     "/audio/transcribe",
-    {
-      model: TRANSCRIBE_MODEL,
-      audio_url: request.audio_url,
-      ...(request.duration_seconds && request.duration_seconds > 0
-        ? { duration_seconds: request.duration_seconds }
-        : {}),
-      options: {
-        ...REFERENCE_WHISPER_OPTIONS,
-        ...(request.language !== undefined ? { language: request.language } : {}),
-      },
-    },
+    body,
     opts,
+    { idempotencyKey },
   );
   if (typeof res.id !== "string" || !res.id) {
     throw new SporeLabsError(502, "SporeLabs transcribe submit returned no job id");
   }
   return res;
+}
+
+export async function submitTranscription(
+  request: TranscribeSubmitRequest,
+  opts: ReframeClientOptions = {},
+  idempotencyKey?: string,
+): Promise<TranscribeJob> {
+  return submitTranscriptionBody(
+    buildTranscribeRequestBody(request),
+    idempotencyKey,
+    opts,
+  );
 }
 
 export async function getTranscription(

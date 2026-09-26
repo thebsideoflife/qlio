@@ -95,6 +95,19 @@ export function sporelabsJobStateKey(
   return `transcriptions/${assetId}/versions/${encodeURIComponent(transcriptionVersion)}/sporelabs-job.json`;
 }
 
+/**
+ * Exact SporeLabs submit request for a run, written before the first POST. A
+ * crash between the POST and the job-state write resubmits this same body with
+ * the same Idempotency-Key, so SporeLabs returns the original job. Holds a
+ * presigned audio URL; removed with the other per-run files at commit.
+ */
+export function sporelabsSubmitIntentKey(
+  assetId: string,
+  transcriptionVersion: string,
+): string {
+  return `transcriptions/${assetId}/versions/${encodeURIComponent(transcriptionVersion)}/sporelabs-submit.json`;
+}
+
 /** The 16 kHz WAV handed to SporeLabs. Outside transcriptions/ so it never mixes with transcripts. */
 export function transcriptionAudioKey(
   assetId: string,
