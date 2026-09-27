@@ -24,6 +24,7 @@ import {
   Scissors,
   Search,
   Sigma,
+  Tag,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -46,6 +47,7 @@ const TOOL_ICONS: Record<ToolName, typeof Search> = {
   edit_segments: Scissors,
   check_budget: Sigma,
   ask_user: HelpCircle,
+  set_project_title: Tag,
   finish_turn: Flag,
 };
 

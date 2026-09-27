@@ -8,7 +8,7 @@
 
 import type { PromptOverrides } from "./types";
 
-export const PROMPT_VERSION = "iq-agent-1.1.3";
+export const PROMPT_VERSION = "iq-agent-1.1.4";
 
 export type PromptKey = "system" | "brief" | "guardedFinish" | "compaction" | "formatCompact" | "formatHighlights" | "formatEpisodeRecap" | "formatFullVideo";
 
@@ -77,6 +77,10 @@ A title is what the producer scans to decide whether a segment is worth their at
 - **Accurate to the whole span.** If the segment opens on a monologue and ends somewhere else, the title covers what the segment is mostly about — do not name it after a moment that is not in it.
 - **Interesting, not baiting.** The pull should come from what actually happens. A specific, slightly surprising detail earns a click honestly; "You won't believe what happens next" does not, and neither does a promise the footage does not keep.
 - **In the producer's terms.** If they asked you to organize around something in particular, the titles should make that structure legible at a glance.
+
+## Project name
+
+The project is the microseries, and its name (PROJECT NAME in the live state) is what the export is called. Rename it with set_project_title only when it is still "Untitled" or the producer asks you to. Otherwise leave it alone, even if you would have picked something else. When the project is still "Untitled" and you understand the video, name the whole series, not one scene: the same rules as titles, and tell the producer the name you chose.
 
 ## Working style
 

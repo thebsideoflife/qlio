@@ -347,6 +347,25 @@ export async function commitSegments(params: {
   }
 }
 
+/** set_project_title: the project's top-level name, same field the editor renames. */
+export async function saveProjectTitle(
+  projectId: string,
+  title: string,
+): Promise<void> {
+  await docClient.send(
+    new UpdateCommand({
+      TableName: PROJECTS_TABLE,
+      Key: { projectId },
+      UpdateExpression: "SET #title = :title, updatedAt = :now",
+      ExpressionAttributeNames: { "#title": "title" },
+      ExpressionAttributeValues: {
+        ":title": title,
+        ":now": new Date().toISOString(),
+      },
+    }),
+  );
+}
+
 export interface ProjectMetadataState {
   segmentMetadata: StoredSegmentMetadata[];
   thumbnailKey?: string;

@@ -193,6 +193,21 @@ export const TOOL_SCHEMAS: (ToolSchema & { name: ToolName })[] = [
     },
   },
   {
+    name: "set_project_title",
+    description:
+      "Name the project (the microseries). Only when it is still \"Untitled\" or the producer asked you to rename it. Instant.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          description: "The series name, as the producer would say it.",
+        },
+      },
+      required: ["title"],
+    },
+  },
+  {
     name: "finish_turn",
     description:
       "End your turn. Call this when the cut satisfies the brief and the budget, when you have answered the producer's question, or when something has genuinely blocked you. Summarize what you did and flag anything you are unsure about.",

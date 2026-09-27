@@ -56,6 +56,8 @@ export interface ExecContext {
   cacheBucket?: string;
   brief?: Brief;
   segments: AgentSegment[];
+  /** The project (microseries) name, as the producer sees it. */
+  projectTitle: string;
   cost: CostMeter;
   watchHistory: WatchHistoryEntry[];
   transcriptWords: TranscriptWord[] | null;
@@ -94,6 +96,8 @@ export interface ExecOutcome {
   segmentsChanged?: boolean;
   changedIds?: string[];
   ledger?: Ledger;
+  /** Set when set_project_title renamed the project; the loop saves it. */
+  projectTitle?: string;
 }
 
 /**
@@ -173,6 +177,8 @@ async function route(
       return execCheckBudget(ctx);
     case "ask_user":
       return execAsk(input, ctx);
+    case "set_project_title":
+      return execSetProjectTitle(input, ctx);
     case "finish_turn":
       return execFinish(input, ctx);
     default:
@@ -501,6 +507,33 @@ function execCheckBudget(ctx: ExecContext): ExecOutcome {
       },
     },
     ledger,
+  };
+}
+
+function execSetProjectTitle(
+  input: Record<string, unknown>,
+  ctx: ExecContext,
+): ExecOutcome {
+  const title = String(input.title ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (title.length === 0) {
+    return {
+      result: toolError(
+        "empty_title",
+        "set_project_title was called with no title.",
+        "Pass the series name as `title`.",
+      ),
+    };
+  }
+  const previous = ctx.projectTitle;
+  ctx.projectTitle = title;
+  return {
+    result: {
+      ok: true,
+      text: `Project renamed from "${previous}" to "${title}". Tell the producer in your reply.`,
+      summary: `Named the project "${truncate(title, 60)}"`,
+      digest: { title, previous },
+    },
+    projectTitle: title,
   };
 }
 

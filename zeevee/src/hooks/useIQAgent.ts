@@ -86,6 +86,7 @@ function errorMessage(err: unknown): string {
 export function useIQAgent(
   projectId: string | undefined,
   onSegments: (segments: Segment[]) => void,
+  onProjectTitle?: (title: string) => void,
 ): IQAgentState {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [snapshot, setSnapshot] = useState<AgentEventsResponse | null>(null);
@@ -101,6 +102,8 @@ export function useIQAgent(
   const pokedRef = useRef(false);
   const onSegmentsRef = useRef(onSegments);
   onSegmentsRef.current = onSegments;
+  const onProjectTitleRef = useRef(onProjectTitle);
+  onProjectTitleRef.current = onProjectTitle;
 
   const isRunning = snapshot?.run?.status === "running";
 
@@ -164,6 +167,9 @@ export function useIQAgent(
 
     (async () => {
       let running = false;
+      // Renames apply only once history is replayed: on load the project
+      // already has its current name, and an old rename must not undo a newer one.
+      let caughtUp = false;
 
       while (!cancelled) {
         try {
@@ -183,6 +189,8 @@ export function useIQAgent(
             for (const event of response.events) {
               if (event.type === "state.updated") {
                 onSegmentsRef.current(event.segments);
+              } else if (event.type === "project.renamed" && caughtUp) {
+                onProjectTitleRef.current?.(event.title);
               }
             }
           }
@@ -190,6 +198,7 @@ export function useIQAgent(
           setSnapshot(response);
           setLoading(false);
           running = response.run?.status === "running";
+          if (!response.hasMore) caughtUp = true;
 
           // A full page means there is more history behind it; keep pulling.
           // The length check keeps a stuck cursor from spinning the loop.

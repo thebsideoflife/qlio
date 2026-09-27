@@ -63,6 +63,8 @@ interface RequestBody {
   includeThumbnails?: boolean;
   includePoster?: boolean;
   projectTitle?: string;
+  /** The producer's IANA time zone, for the date-time in the zip name. */
+  timeZone?: string;
   metadataDocument?: {
     projectThumbnailUrl?: string | null;
     scenes: Array<{ segmentId: string; thumbnailUrl?: string | null }>;
@@ -385,6 +387,8 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
         title: s.title || "scene",
         sceneNumber: sceneNumbers.get(s.id),
       })),
+      exportedAt: new Date(),
+      timeZone: body.timeZone,
     });
 
     const zipKey = exportPackageObjectKey(projectId, jobId);

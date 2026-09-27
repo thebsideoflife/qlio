@@ -122,6 +122,7 @@ export function describeBounds(brief: Brief): string {
 }
 
 export function renderLiveState(params: {
+  projectTitle: string;
   segments: Parameters<typeof renderSegmentTable>[0];
   ledger: Ledger;
   cost: CostMeter;
@@ -131,6 +132,8 @@ export function renderLiveState(params: {
   const lines = [
     "<live_state>",
     "This block is regenerated fresh every turn and is the authoritative state of the cut. Trust it over anything earlier in this conversation.",
+    "",
+    `PROJECT NAME: ${params.projectTitle}`,
     "",
     "CURRENT CUT",
     renderSegmentTable(params.segments),

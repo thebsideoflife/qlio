@@ -39,6 +39,34 @@ export function safeExportFilenameBase(title: string): string {
   return slug || "export";
 }
 
+/**
+ * "2026-09-27 1542" in the producer's time zone, for the zip name only. An
+ * unknown zone falls back to UTC rather than failing the export.
+ */
+export function zipTimestamp(at: Date, timeZone?: string): string {
+  const format = (zone: string) => {
+    const parts = Object.fromEntries(
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone: zone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      })
+        .formatToParts(at)
+        .map((part) => [part.type, part.value]),
+    );
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}${parts.minute}`;
+  };
+  try {
+    return format(timeZone || "UTC");
+  } catch {
+    return format("UTC");
+  }
+}
+
 function uniqueSlug(base: string, used: Set<string>): string {
   let slug = base;
   let n = 2;
@@ -76,6 +104,9 @@ export function buildExportPackageLayout(params: {
    * partial export keeps Qlio's numbering. Falls back to export order.
    */
   scenes: Array<{ segmentId: string; title: string; sceneNumber?: number }>;
+  /** When set, the zip (only) is named "<Project> 2026-09-27 1542.zip". */
+  exportedAt?: Date;
+  timeZone?: string;
 }): ExportPackageLayout {
   const rootFolder = sanitizeFolderName(params.projectTitle || "Untitled");
   const posterFolder = `${rootFolder} Poster Art`;
@@ -107,7 +138,9 @@ export function buildExportPackageLayout(params: {
     posterPath: `${rootFolder}/${posterFolder}/${posterFilename}`,
     videoFolder,
     metadataFilename,
-    zipFilename: `${rootFolder}.zip`,
+    zipFilename: params.exportedAt
+      ? `${rootFolder} ${zipTimestamp(params.exportedAt, params.timeZone)}.zip`
+      : `${rootFolder}.zip`,
     scenes,
   };
 }
