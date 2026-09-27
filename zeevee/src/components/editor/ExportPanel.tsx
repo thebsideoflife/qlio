@@ -71,8 +71,6 @@ import {
   downloadExportMetadataJson,
   normalizeContentAdvisory,
 } from "@/lib/exportMetadataJson";
-import type { ExportPackageProgress } from "@/lib/exportPackage";
-import { sceneVideoFilename } from "@/lib/sceneNaming";
 
 interface ExportPanelProps {
   projectId: string;
@@ -175,7 +173,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   >("idle");
   const [packageSelectionKey, setPackageSelectionKey] = useState<string | null>(null);
   const [packageProgress, setPackageProgress] =
-    useState<ExportPackageProgress | null>(null);
+    useState<{ label: string; completed: number; total: number } | null>(null);
   const [packageError, setPackageError] = useState<string | null>(null);
   const [packageDownloadUrl, setPackageDownloadUrl] = useState<string | null>(
     null,
@@ -448,7 +446,6 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       setPackageDownloadUrl(null);
       setPackageFilename(null);
       setPackageProgress({
-        phase: "archiving",
         completed: 0,
         total: 1,
         label: "Preparing download folder…",
@@ -930,7 +927,6 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   const flushProjectForExport = useCallback(async () => {
     if (localVersion <= syncedVersion) return;
     await updateProject(projectId, {
-      title: projectTitle,
       segments,
       captionSettings,
       globalFraming,
@@ -939,7 +935,6 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     dispatch(markSynced(localVersion));
   }, [
     projectId,
-    projectTitle,
     segments,
     captionSettings,
     globalFraming,
@@ -1080,27 +1075,15 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     ],
   );
 
-  // Browsers ignore `download` on cross-origin S3 links, so ask the server for
-  // a link that names the file scene_NN_Title.mp4 (NN = project scene number).
+  // Browsers ignore `download` on cross-origin S3 links, so the server signs a
+  // link named scene_NN_Title.mp4 (NN = project scene number).
   const handleDownload = useCallback(
     async (url: string, segmentId: string, sceneNumber: number, title: string) => {
-      let href = url;
-      let filename = sceneVideoFilename(sceneNumber, title);
-      try {
-        const named = await getSceneVideoDownload(projectId, {
-          segmentId,
-          sceneNumber,
-          title,
-        });
-        href = named.downloadUrl;
-        filename = named.filename;
-      } catch (err) {
-        console.warn("Falling back to unnamed scene download", err);
-      }
+      const named = await getSceneVideoDownload(projectId, { segmentId, sceneNumber, title })
+        .catch(() => null);
       const a = document.createElement("a");
-      a.href = href;
-      a.download = filename;
-      a.rel = "noopener";
+      a.href = named ?? url;
+      if (!named) a.target = "_blank";
       a.click();
     },
     [projectId],

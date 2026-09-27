@@ -14,6 +14,7 @@ import {
   splitSegment,
   type Segment,
 } from "./editorSlice";
+import { buildExportMetadataDocument } from "@/lib/exportMetadataJson";
 
 let checks = 0;
 let failures = 0;
@@ -75,6 +76,19 @@ const order = (store: ReturnType<typeof makeStore>) =>
   store.dispatch(setSegments([scene("a", 0, 100), scene("b", 200, 300)]));
   store.dispatch(splitSegment({ id: "a", atTime: 50 }));
   assertEqual(order(store), ["a-a", "a-b", "b"], "split halves stay in place");
+}
+
+{
+  const segments = [scene("a", 0, 10), scene("b", 10, 20), scene("c", 20, 30)];
+  const doc = buildExportMetadataDocument({
+    projectId: "p",
+    projectTitle: "P",
+    segments,
+    selectedSegmentIds: new Set(["c"]),
+    metadataBySegmentId: new Map(),
+    options: {},
+  });
+  assertEqual(doc.scenes[0].sceneNumber, 3, "exporting scene 3 alone keeps number 3");
 }
 
 if (failures > 0) {

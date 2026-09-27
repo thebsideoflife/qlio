@@ -194,42 +194,28 @@ async function handleGet(
 }
 
 /**
- * GET ?sceneVideo=<segmentId>&sceneNumber=<n>&title=<t>: a presigned link to
- * one scene's latest render that downloads as scene_NN_Title.mp4, so a scene
- * keeps its project number when downloaded on its own.
+ * GET ?sceneVideo=<segmentId>&sceneNumber=<n>&title=<t>: a link to one scene's
+ * latest render that downloads as scene_NN_Title.mp4.
  */
 async function handleSceneVideoDownload(
   projectId: string,
   query: Record<string, string | undefined>,
 ): Promise<APIGatewayProxyResult> {
-  const segmentId = query.sceneVideo;
-  const sceneNumber = Number(query.sceneNumber);
-  if (!segmentId || !Number.isInteger(sceneNumber) || sceneNumber < 1) {
-    return json(400, { error: "sceneVideo and a positive sceneNumber are required" });
-  }
   const project = (
     await dynamo.send(
       new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
     )
   ).Item;
-  if (!project) return json(404, { error: "Project not found" });
-
-  const render = ((project.segmentRenders || []) as StoredSegmentRender[]).find(
-    (r) => r.segmentId === segmentId,
+  const render = ((project?.segmentRenders || []) as StoredSegmentRender[]).find(
+    (r) => r.segmentId === query.sceneVideo,
   );
-  if (!render?.bucket || !render.key) {
-    return json(404, { error: "No rendered video for this scene" });
-  }
-  const segment = ((project.segments || []) as Array<{ id: string; title?: string }>)
-    .find((s) => s.id === segmentId);
+  if (!render) return json(404, { error: "No rendered video for this scene" });
   const filename = sceneVideoFilename(
-    sceneNumber,
-    query.title || segment?.title || render.title || "scene",
+    Number(query.sceneNumber) || 1,
+    query.title || render.title || "scene",
   );
   return json(200, {
-    filename,
     downloadUrl: await presignPackage(render.bucket, render.key, filename),
-    contentHash: render.contentHash,
   });
 }
 
@@ -362,20 +348,11 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
       return;
     }
 
-    // Chronological order defines scene numbers (older projects may have
-    // been stored out of order).
+    // Chronological order = project scene numbers (older projects may be
+    // stored unsorted).
     const segments = [
-      ...((project.segments || []) as Array<{
-        id: string;
-        title?: string;
-        startTime?: number;
-        endTime?: number;
-      }>),
-    ].sort(
-      (a, b) =>
-        (a.startTime ?? 0) - (b.startTime ?? 0) ||
-        (a.endTime ?? 0) - (b.endTime ?? 0),
-    );
+      ...((project.segments || []) as Array<{ id: string; title?: string; startTime: number }>),
+    ].sort((a, b) => a.startTime - b.startTime);
     const requested = new Set(
       (body.segmentIds?.length ? body.segmentIds : segments.map((s) => s.id)),
     );
@@ -400,15 +377,13 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
       (typeof project.title === "string" ? project.title : "Untitled");
     const includeThumbnails = body.includeThumbnails !== false;
     const includePoster = body.includePoster !== false;
-    const projectSceneNumbers = new Map(
-      segments.map((s, index) => [s.id, index + 1]),
-    );
+    const sceneNumbers = new Map(segments.map((s, i) => [s.id, i + 1]));
     const layout = buildExportPackageLayout({
       projectTitle,
       scenes: selected.map((s) => ({
         segmentId: s.id,
         title: s.title || "scene",
-        sceneNumber: projectSceneNumbers.get(s.id),
+        sceneNumber: sceneNumbers.get(s.id),
       })),
     });
 

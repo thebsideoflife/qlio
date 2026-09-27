@@ -1,54 +1,253 @@
 /**
- * Delivery-package filenames must carry each scene's project number, so a
- * partial export (e.g. only scene 6) is not renumbered from 1.
+ * Delivery-folder layout for the export package.
  *
  * Run: npx tsx src/utils/exportPackageLayout.test.ts
  */
-import { buildExportPackageLayout } from "./exportPackageLayout";
+import {
+  buildExportPackageLayout,
+  localizeExportMetadataDocument,
+  padSceneNumber,
+  sanitizeFolderName,
+  sceneAssetSlug,
+  sceneVideoFilename,
+} from "./exportPackageLayout";
 
 let checks = 0;
 let failures = 0;
 
-function assertEqual<T>(actual: T, expected: T, message: string): void {
+function assert(condition: boolean, message: string): void {
   checks++;
-  if (actual !== expected) {
+  if (!condition) {
     failures++;
-    console.error(
-      `  FAIL: ${message}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-    );
+    console.error(`  FAIL: ${message}`);
   }
+}
+
+function assertEqual<T>(actual: T, expected: T, message: string): void {
+  assert(
+    actual === expected,
+    `${message}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
+  );
+}
+
+{
+  assertEqual(
+    sanitizeFolderName("Remembering Hayden Panettiere"),
+    "Remembering Hayden Panettiere",
+    "keeps project title spaces",
+  );
+  assertEqual(
+    sanitizeFolderName('Foo / Bar: "Baz"?'),
+    "Foo Bar Baz",
+    "strips illegal filename characters",
+  );
+  assertEqual(sanitizeFolderName("   "), "Export", "falls back when empty");
+}
+
+{
+  assertEqual(
+    sceneAssetSlug("Juliette Woos Deacon"),
+    "Juliette_Woos_Deacon",
+    "underscores scene titles",
+  );
+  assertEqual(
+    sceneAssetSlug("1. Mother calls Juliette"),
+    "Mother_calls_Juliette",
+    "strips leading scene numbers",
+  );
+  assertEqual(
+    sceneAssetSlug("Never Gonna Find Another Love Like Mine"),
+    "Never_Gonna_Find_Another_Love_Like_Mine",
+    "long title slug",
+  );
+  assertEqual(padSceneNumber(1), "01", "pads scene 1");
+  assertEqual(padSceneNumber(12), "12", "does not pad scene 12");
 }
 
 {
   const layout = buildExportPackageLayout({
+    projectTitle: "Remembering Hayden Panettiere",
+    scenes: [
+      { segmentId: "a", title: "Juliette Woos Deacon" },
+      { segmentId: "b", title: "Mother calls Juliette" },
+      { segmentId: "c", title: "Never Gonna Find Another Love Like Mine" },
+    ],
+  });
+
+  assertEqual(
+    layout.rootFolder,
+    "Remembering Hayden Panettiere",
+    "root folder is the project title",
+  );
+  assertEqual(
+    layout.posterFolder,
+    "Remembering Hayden Panettiere Poster Art",
+    "poster art folder",
+  );
+  assertEqual(
+    layout.posterFilename,
+    "Remembering Hayden Panettiere poster.jpg",
+    "poster filename",
+  );
+  assertEqual(
+    layout.posterPath,
+    "Remembering Hayden Panettiere/Remembering Hayden Panettiere Poster Art/Remembering Hayden Panettiere poster.jpg",
+    "poster path",
+  );
+  assertEqual(
+    layout.videoFolder,
+    "Remembering Hayden Panettiere Video Scenes",
+    "video scenes folder",
+  );
+  assertEqual(
+    layout.metadataFilename,
+    "remembering-hayden-panettiere-metadata.json",
+    "kebab-case metadata filename",
+  );
+  assertEqual(
+    layout.zipFilename,
+    "Remembering Hayden Panettiere.zip",
+    "zip filename",
+  );
+
+  assertEqual(
+    layout.scenes[0].thumbnailFilename,
+    "scene_01_Juliette_Woos_Deacon.jpg",
+    "scene 1 thumbnail",
+  );
+  assertEqual(
+    layout.scenes[0].videoFilename,
+    "scene_01_Juliette_Woos_Deacon.mp4",
+    "scene 1 video shares the thumbnail scene prefix",
+  );
+  assertEqual(
+    layout.scenes[0].videoPath,
+    "Remembering Hayden Panettiere/Remembering Hayden Panettiere Video Scenes/scene_01_Juliette_Woos_Deacon.mp4",
+    "scene 1 video path",
+  );
+  assertEqual(
+    layout.scenes[0].thumbnailPath,
+    "Remembering Hayden Panettiere/scene_01_Juliette_Woos_Deacon.jpg",
+    "scene thumbnails live at package root",
+  );
+  assertEqual(
+    layout.scenes[1].thumbnailFilename,
+    "scene_02_Mother_calls_Juliette.jpg",
+    "scene 2 thumbnail",
+  );
+  assertEqual(
+    layout.scenes[2].thumbnailFilename,
+    "scene_03_Never_Gonna_Find_Another_Love_Like_Mine.jpg",
+    "scene 3 thumbnail",
+  );
+}
+
+{
+  const layout = buildExportPackageLayout({
+    projectTitle: "Dupe",
+    scenes: [
+      { segmentId: "a", title: "Cold Open" },
+      { segmentId: "b", title: "Cold Open" },
+    ],
+  });
+  assertEqual(layout.scenes[0].videoFilename, "scene_01_Cold_Open.mp4", "first duplicate");
+  assertEqual(
+    layout.scenes[1].videoFilename,
+    "scene_02_Cold_Open_2.mp4",
+    "second duplicate gets a suffix",
+  );
+}
+
+{
+  const layout = buildExportPackageLayout({
+    projectTitle: "Remembering Hayden Panettiere",
+    scenes: [{ segmentId: "a", title: "Juliette Woos Deacon" }],
+  });
+  const document = {
+    exportVersion: 1,
+    projectId: "p1",
+    projectTitle: "Remembering Hayden Panettiere",
+    exportedAt: "2026-08-18T00:00:00.000Z",
+    options: {},
+    projectThumbnailUrl: "https://cdn.example/cover.jpg?sig=1",
+    scenes: [
+      {
+        sceneNumber: 1,
+        segmentId: "a",
+        editorTitle: "Juliette Woos Deacon",
+        startTimeSec: 0,
+        endTimeSec: 10,
+        durationSec: 10,
+        thumbnailUrl: "https://cdn.example/thumb.jpg?sig=1",
+      },
+    ],
+  };
+  const localized = localizeExportMetadataDocument(document, layout, {
+    includePoster: true,
+    includeThumbnails: true,
+  });
+  assertEqual(
+    localized.projectThumbnailUrl,
+    "Remembering Hayden Panettiere Poster Art/Remembering Hayden Panettiere poster.jpg",
+    "metadata poster path is local",
+  );
+  assertEqual(
+    localized.scenes[0].thumbnailUrl,
+    "scene_01_Juliette_Woos_Deacon.jpg",
+    "metadata thumbnail path is local",
+  );
+  assertEqual(
+    document.projectThumbnailUrl,
+    "https://cdn.example/cover.jpg?sig=1",
+    "does not mutate the original document",
+  );
+
+  const partial = localizeExportMetadataDocument(document, layout, {
+    includePoster: false,
+    includeThumbnails: true,
+    includedThumbnailSegmentIds: new Set(),
+  });
+  assertEqual(
+    partial.projectThumbnailUrl,
+    document.projectThumbnailUrl,
+    "does not localize a poster that was not archived",
+  );
+  assertEqual(
+    partial.scenes[0].thumbnailUrl,
+    document.scenes[0].thumbnailUrl,
+    "does not localize a thumbnail that was not archived",
+  );
+}
+
+{
+  // Partial export keeps the scene's project number, not its export position.
+  const layout = buildExportPackageLayout({
     projectTitle: "Partial",
-    scenes: [{ segmentId: "f", title: "6. Scene Six", sceneNumber: 6 }],
+    scenes: [
+      { segmentId: "f", title: "Scene Six", sceneNumber: 6 },
+      { segmentId: "k", title: "Scene Eleven", sceneNumber: 11 },
+    ],
   });
   assertEqual(
     layout.scenes[0].thumbnailFilename,
     "scene_06_Scene_Six.jpg",
-    "lone scene 6 thumbnail is not renumbered",
+    "scene 6 thumbnail keeps its project number",
   );
   assertEqual(
     layout.scenes[0].videoFilename,
     "scene_06_Scene_Six.mp4",
-    "lone scene 6 video is not renumbered",
+    "scene 6 video keeps its project number",
   );
-  assertEqual(layout.scenes[0].sceneNumber, 6, "layout sceneNumber");
-}
-
-{
-  const layout = buildExportPackageLayout({
-    projectTitle: "Fallback",
-    scenes: [
-      { segmentId: "a", title: "One" },
-      { segmentId: "b", title: "Two" },
-    ],
-  });
   assertEqual(
     layout.scenes[1].thumbnailFilename,
-    "scene_02_Two.jpg",
-    "falls back to export order without a sceneNumber",
+    "scene_11_Scene_Eleven.jpg",
+    "scene 11 thumbnail keeps its project number",
+  );
+
+  assertEqual(
+    sceneVideoFilename(6, "6. Scene Six"),
+    "scene_06_Scene_Six.mp4",
+    "single scene 6 download keeps its project number",
   );
 }
 

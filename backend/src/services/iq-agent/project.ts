@@ -318,14 +318,11 @@ export async function commitSegments(params: {
   brief?: Brief;
 }): Promise<void> {
   const changed = new Set(params.changedIds ?? []);
-  // Scenes are stored chronologically; a scene's number is its position.
-  const segments = params.segments
-    .map((seg) =>
-      changed.has(seg.id) && seg.framing
-        ? { ...seg, framing: undefined }
-        : seg,
-    )
-    .sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
+  const segments = params.segments.map((seg) =>
+    changed.has(seg.id) && seg.framing
+      ? { ...seg, framing: undefined }
+      : seg,
+  );
 
   const names: Record<string, string> = { "#seg": "segments" };
   const values: Record<string, unknown> = {
