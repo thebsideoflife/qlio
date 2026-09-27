@@ -22,6 +22,7 @@ const TOOL_FALLBACK_LABELS: Record<ToolName, string> = {
   edit_segments: "Edited the cut",
   check_budget: "Checked the budget",
   ask_user: "Asked a question",
+  set_project_title: "Named the project",
   finish_turn: "Wrapped up",
 };
 

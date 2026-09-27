@@ -634,6 +634,8 @@ export const startExportPackage = async (
     includeThumbnails?: boolean;
     includePoster?: boolean;
     projectTitle?: string;
+    /** For the date-time in the zip name. */
+    timeZone?: string;
     metadataDocument?: unknown;
   },
 ): Promise<ExportPackageResponse> => {

@@ -39,6 +39,7 @@ import { finalizeDeliveryMetadata } from "./metadata";
 import { FORMAT_GUIDES, getPrompt, renderTemplate, PROMPT_VERSION } from "./prompts";
 import {
   commitSegments,
+  saveProjectTitle,
   getTwelveLabsClient,
   isFramingJobActive,
   loadProjectContext,
@@ -203,6 +204,7 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
       cacheBucket: BUCKET_NAME,
       brief,
       segments: project.segments,
+      projectTitle: project.projectTitle,
       cost: { ...thread.cost },
       watchHistory: [],
       transcriptWords: null,
@@ -391,6 +393,7 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
         summary,
         toolLedger,
         liveState: renderLiveState({
+          projectTitle: ctx.projectTitle,
           segments: ctx.segments,
           ledger,
           cost: ctx.cost,
@@ -533,6 +536,11 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
             changedIds: outcome.changedIds,
             brief,
           });
+        }
+
+        if (outcome.projectTitle) {
+          await saveProjectTitle(projectId, outcome.projectTitle);
+          await emit({ type: "project.renamed", title: outcome.projectTitle });
         }
 
         await emit({

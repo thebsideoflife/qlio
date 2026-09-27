@@ -10,6 +10,7 @@ import {
   sanitizeFolderName,
   sceneAssetSlug,
   sceneVideoFilename,
+  zipTimestamp,
 } from "./exportPackageLayout";
 
 let checks = 0;
@@ -249,6 +250,24 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
     "scene_06_Scene_Six.mp4",
     "single scene 6 download keeps its project number",
   );
+}
+
+{
+  // Date-time goes on the zip name only; folders and scene files stay clean.
+  const at = new Date("2026-09-27T19:42:00Z");
+  const layout = buildExportPackageLayout({
+    projectTitle: "Untitled",
+    scenes: [{ segmentId: "a", title: "One", sceneNumber: 1 }],
+    exportedAt: at,
+    timeZone: "America/New_York",
+  });
+  assertEqual(layout.zipFilename, "Untitled 2026-09-27 1542.zip", "zip name has local date-time");
+  assertEqual(layout.rootFolder, "Untitled", "root folder has no date-time");
+  assertEqual(layout.scenes[0].videoPath, "Untitled/Untitled Video Scenes/scene_01_One.mp4", "scene paths have no date-time");
+  assertEqual(zipTimestamp(at), "2026-09-27 1942", "no time zone falls back to UTC");
+  assertEqual(zipTimestamp(at, "Not/AZone"), "2026-09-27 1942", "bad time zone falls back to UTC");
+  assertEqual(zipTimestamp(new Date("2026-09-28T03:05:00Z"), "America/Los_Angeles"), "2026-09-27 2005", "local date, not UTC date");
+  assertEqual(zipTimestamp(new Date("2026-09-27T04:00:00Z"), "America/New_York"), "2026-09-27 0000", "midnight is 0000, not 2400");
 }
 
 if (failures > 0) {

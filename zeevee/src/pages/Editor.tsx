@@ -35,6 +35,7 @@ import {
   setSquareTopEnabled,
   setAgentRunActive,
   setSourceFps,
+  updateProjectTitle,
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
 import { useRef, useEffect, useState } from "react";
@@ -222,7 +223,11 @@ export default function Editor() {
     },
     [dispatch],
   );
-  const agent = useIQAgent(projectId, applyAgentSegments);
+  const applyAgentProjectTitle = useCallback(
+    (title: string) => dispatch(updateProjectTitle(title)),
+    [dispatch],
+  );
+  const agent = useIQAgent(projectId, applyAgentSegments, applyAgentProjectTitle);
 
   useEffect(() => {
     dispatch(setAgentRunActive(agent.isRunning));

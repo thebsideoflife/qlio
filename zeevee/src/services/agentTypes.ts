@@ -15,6 +15,7 @@ export type ToolName =
   | "edit_segments"
   | "check_budget"
   | "ask_user"
+  | "set_project_title"
   | "finish_turn";
 
 export type RunStage =
@@ -154,6 +155,7 @@ export type AgentEventBody =
       suggestions?: string[];
     }
   | { type: "run.awaiting_input" }
+  | { type: "project.renamed"; title: string }
   | { type: "framing.started"; total: number }
   | { type: "framing.progress"; completed: number; total: number }
   | {

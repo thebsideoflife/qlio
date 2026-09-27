@@ -476,6 +476,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
           includeThumbnails: metadataEnabled && includeThumbnails,
           includePoster: metadataEnabled && includeThumbnails,
           projectTitle: projectTitle || "Untitled",
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           metadataDocument: metadataEnabled
             ? buildMetadataDocument(new Set(includedSegmentIds))
             : null,
