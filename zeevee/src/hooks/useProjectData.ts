@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { pendingProjectTitle } from "@/lib/projectTitleSave";
 import { useDispatch, useSelector } from "react-redux";
 import type { RootState } from "@/store/store";
 import {
@@ -259,10 +260,11 @@ export function useProjectData(projectId: string | undefined) {
 
       dispatch(
         setProjectMetadata({
-          title: project.title || "Untitled",
+          title:
+            pendingProjectTitle(projectId) || project.title || "Untitled",
           assetName:
-            project.asset?.originalName ||
             project.asset?.title ||
+            project.asset?.originalName ||
             "Unknown Asset",
           assetId: project.asset?.assetId || project.assetId || null,
         }),

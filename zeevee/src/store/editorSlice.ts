@@ -387,6 +387,10 @@ function ensureMaterializedKeyframes(
   return framing.keyframes;
 }
 
+// Scenes are always chronological: a scene's number is its 1-based position,
+// so inserting or deleting one renumbers the scenes after it.
+const byStartTime = (a: Segment, b: Segment) => a.startTime - b.startTime;
+
 export const editorSlice = createSlice({
   name: "editor",
   initialState,
@@ -400,7 +404,7 @@ export const editorSlice = createSlice({
       state.isSyncing = false;
     },
     setSegments: (state, action: PayloadAction<Segment[]>) => {
-      state.segments = action.payload;
+      state.segments = [...action.payload].sort(byStartTime);
       // Note: setSegments from API load should NOT set dirty
     },
     setProjectMetadata: (
@@ -413,11 +417,8 @@ export const editorSlice = createSlice({
         state.assetId = action.payload.assetId;
       }
     },
+    // Saved immediately via saveProjectTitle, not the autosave, so no markEdited.
     updateProjectTitle: (state, action: PayloadAction<string>) => {
-      state.projectTitle = action.payload;
-      markEdited(state);
-    },
-    setProjectTitleFromServer: (state, action: PayloadAction<string>) => {
       state.projectTitle = action.payload;
     },
     selectSegment: (state, action: PayloadAction<string | null>) => {
@@ -646,6 +647,7 @@ export const editorSlice = createSlice({
       };
 
       state.segments.push(newSegment);
+      state.segments.sort(byStartTime);
       state.selectedSegmentId = newSegment.id;
       markEdited(state);
     },
@@ -1219,7 +1221,6 @@ export const {
   setSegments,
   setProjectMetadata,
   updateProjectTitle,
-  setProjectTitleFromServer,
   selectSegment,
   updateSegmentTitle,
   updateSegmentTime,

@@ -15,6 +15,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useDispatch, useSelector } from "react-redux";
 import { pollAssetStatuses } from "@/store/assetsSlice";
 import { updateProjectTitle } from "@/store/editorSlice";
+import { saveProjectTitle } from "@/lib/projectTitleSave";
 import type { RootState, AppDispatch } from "@/store/store";
 import { UploadWizard } from "@/components/upload/UploadWizard";
 import {
@@ -139,9 +140,16 @@ export function MainLayout({ children }: MainLayoutProps) {
                   {projectIdFromPath && (
                     <EditableTitle
                       title={projectTitle || "Untitled"}
-                      onSave={(newTitle) =>
-                        dispatch(updateProjectTitle(newTitle))
-                      }
+                      onSave={(newTitle) => {
+                        const previous = projectTitle;
+                        dispatch(updateProjectTitle(newTitle));
+                        saveProjectTitle(projectIdFromPath, newTitle).catch(
+                          (err) => {
+                            console.error("Failed to rename project", err);
+                            dispatch(updateProjectTitle(previous));
+                          },
+                        );
+                      }}
                       className="font-bold underline decoration-dotted decoration-muted-foreground/50 underline-offset-4 hover:bg-muted/50 px-1 py-0 rounded truncate max-w-[140px] sm:max-w-none"
                       inputClassName="h-7 px-1.5 py-0 text-sm font-bold border-border focus-visible:ring-1"
                     />

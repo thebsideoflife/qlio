@@ -26,32 +26,32 @@ export const handler: APIGatewayProxyHandler = async (event) => {
       };
     }
 
-    const body = JSON.parse(event.body || "{}");
-    // We expect metadata in the body.
-    // We will update the metadata map in DynamoDB.
-    
-    // Construct UpdateExpression dynamically based on keys provided
-    // For simplicity, we'll assume body contains the metadata object to merge/set
-    // or specific fields. Let's assume we update the 'metadata' attribute directly or merge into it.
-    // Given the previous code stored "metadata" as a map, we can just update that attribute.
-    
-    // However, DynamoDB update nested maps can be tricky if we want to merge.
-    // For now, let's just replace the metadata field or add top-level fields if needed.
-    // The requirement is to "answer questions". So we receive answers.
+    // The display name lives in the top-level `title`, which listAssetsStatus
+    // reads. (It used to be written into `metadata`, so renames reverted.)
+    const { title } = JSON.parse(event.body || "{}");
+    if (typeof title !== "string" || !title.trim()) {
+      return {
+        statusCode: 400,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+        body: JSON.stringify({ error: "A non-empty title is required" }),
+      };
+    }
 
     await docClient.send(
       new UpdateCommand({
         TableName: TABLE_NAME,
         Key: { assetId },
-        UpdateExpression: "set #meta = :m",
-        ExpressionAttributeNames: {
-          "#meta": "metadata",
-        },
+        UpdateExpression: "SET #title = :t, updatedAt = :u",
+        ConditionExpression: "attribute_exists(assetId)",
+        ExpressionAttributeNames: { "#title": "title" },
         ExpressionAttributeValues: {
-          ":m": body,
+          ":t": title.trim(),
+          ":u": new Date().toISOString(),
         },
-        ReturnValues: "ALL_NEW",
-      })
+      }),
     );
 
     return {

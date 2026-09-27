@@ -154,9 +154,9 @@ export const getAsset = async (assetId: string) => {
 
 export const updateAsset = async (
   assetId: string,
-  metadata: Record<string, unknown>,
+  update: { title: string },
 ) => {
-  const response = await axios.patch(`${API_URL}/assets/${assetId}`, metadata, {
+  const response = await axios.patch(`${API_URL}/assets/${assetId}`, update, {
     headers: getAuthHeaders(),
   });
   return response.data;
@@ -643,6 +643,25 @@ export const startExportPackage = async (
     { headers: getAuthHeaders() },
   );
   return response.data;
+};
+
+/** Link to a scene's render that downloads as scene_NN_Title.mp4. */
+export const getSceneVideoDownload = async (
+  projectId: string,
+  params: { segmentId: string; sceneNumber: number; title: string },
+): Promise<string> => {
+  const response = await axios.get(
+    `${API_URL}/projects/${projectId}/export-package`,
+    {
+      headers: getAuthHeaders(),
+      params: {
+        sceneVideo: params.segmentId,
+        sceneNumber: params.sceneNumber,
+        title: params.title,
+      },
+    },
+  );
+  return response.data.downloadUrl;
 };
 
 export const getExportPackage = async (

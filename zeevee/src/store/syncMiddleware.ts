@@ -22,7 +22,6 @@ function startSyncInterval(store: StoreAPI) {
     const state = store.getState();
     const {
       projectId,
-      projectTitle,
       segments,
       captionSettings,
       globalFraming,
@@ -44,8 +43,9 @@ function startSyncInterval(store: StoreAPI) {
 
       store.dispatch(setSyncing(true));
       try {
+        // The title is saved on its own when edited (saveProjectTitle); sending
+        // it here could push a stale name back over a newer one.
         await updateProject(projectId, {
-          title: projectTitle,
           segments,
           captionSettings,
           globalFraming,

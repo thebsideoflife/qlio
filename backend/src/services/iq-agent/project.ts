@@ -18,10 +18,6 @@ import {
 } from "@aws-sdk/client-secrets-manager";
 import { TwelveLabs } from "twelvelabs-js";
 import type { ChunkInfo } from "../twelvelabs";
-import {
-  deriveProjectTitleFromSegments,
-  isDefaultProjectTitle,
-} from "../../utils/projectTitle";
 import { buildChunkFacts } from "./chunks";
 import type { StoredSegmentMetadata } from "../../types/segment-metadata";
 import type { AgentSegment, Brief, VideoFacts } from "./types";
@@ -320,7 +316,6 @@ export async function commitSegments(params: {
   segments: AgentSegment[];
   changedIds?: string[];
   brief?: Brief;
-  currentTitle: string;
 }): Promise<void> {
   const changed = new Set(params.changedIds ?? []);
   const segments = params.segments.map((seg) =>
@@ -329,23 +324,12 @@ export async function commitSegments(params: {
       : seg,
   );
 
-  const autoTitle = deriveProjectTitleFromSegments(
-    segments.map((s) => ({ title: s.title, startTime: s.startTime })),
-  );
-  const shouldRename = autoTitle != null && isDefaultProjectTitle(params.currentTitle);
-
   const names: Record<string, string> = { "#seg": "segments" };
   const values: Record<string, unknown> = {
     ":segments": segments,
     ":now": new Date().toISOString(),
   };
   const sets = ["#seg = :segments", "updatedAt = :now"];
-
-  if (shouldRename) {
-    names["#title"] = "title";
-    sets.push("#title = :title");
-    values[":title"] = autoTitle;
-  }
 
   await docClient.send(
     new UpdateCommand({

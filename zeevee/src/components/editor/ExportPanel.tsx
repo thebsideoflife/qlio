@@ -35,6 +35,7 @@ import {
   updateProject,
   startExportPackage,
   pollExportPackage,
+  getSceneVideoDownload,
   type GenerateExportMetadataResponse,
   type SegmentDownload,
 } from "@/services/api";
@@ -70,7 +71,6 @@ import {
   downloadExportMetadataJson,
   normalizeContentAdvisory,
 } from "@/lib/exportMetadataJson";
-import type { ExportPackageProgress } from "@/lib/exportPackage";
 
 interface ExportPanelProps {
   projectId: string;
@@ -173,7 +173,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   >("idle");
   const [packageSelectionKey, setPackageSelectionKey] = useState<string | null>(null);
   const [packageProgress, setPackageProgress] =
-    useState<ExportPackageProgress | null>(null);
+    useState<{ label: string; completed: number; total: number } | null>(null);
   const [packageError, setPackageError] = useState<string | null>(null);
   const [packageDownloadUrl, setPackageDownloadUrl] = useState<string | null>(
     null,
@@ -446,7 +446,6 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       setPackageDownloadUrl(null);
       setPackageFilename(null);
       setPackageProgress({
-        phase: "archiving",
         completed: 0,
         total: 1,
         label: "Preparing download folder…",
@@ -928,7 +927,6 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   const flushProjectForExport = useCallback(async () => {
     if (localVersion <= syncedVersion) return;
     await updateProject(projectId, {
-      title: projectTitle,
       segments,
       captionSettings,
       globalFraming,
@@ -937,7 +935,6 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     dispatch(markSynced(localVersion));
   }, [
     projectId,
-    projectTitle,
     segments,
     captionSettings,
     globalFraming,
@@ -1078,13 +1075,19 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
     ],
   );
 
-  const handleDownload = useCallback((url: string, title: string) => {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${title}.mp4`;
-    a.target = "_blank";
-    a.click();
-  }, []);
+  // Browsers ignore `download` on cross-origin S3 links, so the server signs a
+  // link named scene_NN_Title.mp4 (NN = project scene number).
+  const handleDownload = useCallback(
+    async (url: string, segmentId: string, sceneNumber: number, title: string) => {
+      const named = await getSceneVideoDownload(projectId, { segmentId, sceneNumber, title })
+        .catch(() => null);
+      const a = document.createElement("a");
+      a.href = named ?? url;
+      if (!named) a.target = "_blank";
+      a.click();
+    },
+    [projectId],
+  );
 
   // The user's way out of any export, stuck or not: ends it on the server and
   // frees the project, so the next Export starts fresh.
@@ -1457,9 +1460,11 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                             className="shrink-0 h-8 w-8 text-muted-foreground hover:text-foreground"
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleDownload(
+                              void handleDownload(
                                 row.downloadUrl!,
-                                formatSegmentLabel(row.index, row.label),
+                                row.id,
+                                row.index,
+                                row.label,
                               );
                             }}
                             aria-label={`Download ${row.label}`}

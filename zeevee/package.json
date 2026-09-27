@@ -10,7 +10,6 @@
     "test:fingerprint": "npx tsx src/scripts/test-segment-metadata-fingerprint.ts",
     "test:agent-thread": "npx tsx --tsconfig tsconfig.app.json src/scripts/test-agent-thread.ts",
     "test:zoom-math": "npx tsx src/scripts/test-zoom-math.ts",
-    "test:export-package": "npx tsx src/lib/exportPackage.test.ts",
     "test:transcript": "npx tsx --tsconfig tsconfig.app.json src/lib/transcript.test.ts",
     "test:caption-grouping": "npx tsx --tsconfig tsconfig.app.json src/remotion/captionGrouping.test.ts",
     "test:caption-content": "npx tsx --tsconfig tsconfig.app.json src/remotion/captionContent.test.ts",
@@ -18,7 +17,8 @@
     "test:framing": "npx tsx --tsconfig tsconfig.app.json src/remotion/framingInterpolation.test.ts",
     "test:timeline-keyframes": "npx tsx --tsconfig tsconfig.app.json src/lib/timelineKeyframes.test.ts",
     "test:frame-cuts": "npx tsx --tsconfig tsconfig.app.json src/store/editorFrameCuts.test.ts",
-    "test": "npm run test:fingerprint && npm run test:agent-thread && npm run test:zoom-math && npm run test:export-package && npm run test:transcript && npm run test:caption-content && npm run test:caption-fonts && npm run test:caption-grouping && npm run test:framing && npm run test:timeline-keyframes && npm run test:frame-cuts",
+    "test:scene-order": "npx tsx --tsconfig tsconfig.app.json src/store/editorSceneOrder.test.ts",
+    "test": "npm run test:fingerprint && npm run test:agent-thread && npm run test:zoom-math && npm run test:transcript && npm run test:caption-content && npm run test:caption-fonts && npm run test:caption-grouping && npm run test:framing && npm run test:timeline-keyframes && npm run test:frame-cuts && npm run test:scene-order",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -45,7 +45,6 @@
     "axios": "^1.13.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "jszip": "^3.10.1",
     "lucide-react": "^0.554.0",
     "mediabunny": "1.25.8",
     "react": "^19.2.0",

@@ -1,20 +1,16 @@
 /**
  * Delivery-folder layout for the export package.
  *
- * Run: npx tsx src/lib/exportPackage.test.ts
+ * Run: npx tsx src/utils/exportPackageLayout.test.ts
  */
 import {
-  applyFreshVideoUrls,
   buildExportPackageLayout,
   localizeExportMetadataDocument,
   padSceneNumber,
   sanitizeFolderName,
   sceneAssetSlug,
-} from "./exportPackage";
-import {
-  EXPORT_METADATA_VERSION,
-  type ExportMetadataDocument,
-} from "./exportMetadataJson";
+  sceneVideoFilename,
+} from "./exportPackageLayout";
 
 let checks = 0;
 let failures = 0;
@@ -167,8 +163,8 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
     projectTitle: "Remembering Hayden Panettiere",
     scenes: [{ segmentId: "a", title: "Juliette Woos Deacon" }],
   });
-  const document: ExportMetadataDocument = {
-    exportVersion: EXPORT_METADATA_VERSION,
+  const document = {
+    exportVersion: 1,
     projectId: "p1",
     projectTitle: "Remembering Hayden Panettiere",
     exportedAt: "2026-08-18T00:00:00.000Z",
@@ -224,34 +220,35 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
 }
 
 {
-  const scenes = [
-    { segmentId: "a", title: "One", videoUrl: "https://old/a.mp4" },
-    { segmentId: "b", title: "Two", videoUrl: "https://old/b.mp4" },
-    { segmentId: "c", title: "Three" },
-  ];
-  const refreshed = applyFreshVideoUrls(
-    scenes,
-    new Map([
-      ["a", "https://fresh/a.mp4"],
-      ["c", "https://fresh/c.mp4"],
-    ]),
+  // Partial export keeps the scene's project number, not its export position.
+  const layout = buildExportPackageLayout({
+    projectTitle: "Partial",
+    scenes: [
+      { segmentId: "f", title: "Scene Six", sceneNumber: 6 },
+      { segmentId: "k", title: "Scene Eleven", sceneNumber: 11 },
+    ],
+  });
+  assertEqual(
+    layout.scenes[0].thumbnailFilename,
+    "scene_06_Scene_Six.jpg",
+    "scene 6 thumbnail keeps its project number",
   );
   assertEqual(
-    refreshed[0].videoUrl,
-    "https://fresh/a.mp4",
-    "replaces a stale scene URL",
+    layout.scenes[0].videoFilename,
+    "scene_06_Scene_Six.mp4",
+    "scene 6 video keeps its project number",
   );
   assertEqual(
-    refreshed[1].videoUrl,
-    "https://old/b.mp4",
-    "keeps URLs that were not refreshed",
+    layout.scenes[1].thumbnailFilename,
+    "scene_11_Scene_Eleven.jpg",
+    "scene 11 thumbnail keeps its project number",
   );
+
   assertEqual(
-    refreshed[2].videoUrl,
-    "https://fresh/c.mp4",
-    "fills a missing scene URL",
+    sceneVideoFilename(6, "6. Scene Six"),
+    "scene_06_Scene_Six.mp4",
+    "single scene 6 download keeps its project number",
   );
-  assertEqual(scenes[0].videoUrl, "https://old/a.mp4", "does not mutate input");
 }
 
 if (failures > 0) {
@@ -259,4 +256,4 @@ if (failures > 0) {
   process.exit(1);
 }
 
-console.log(`OK: ${checks} export package checks`);
+console.log(`OK: ${checks} export package layout checks`);

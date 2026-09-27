@@ -25,6 +25,11 @@ export function padSceneNumber(sceneNumber: number): string {
   return String(Math.max(1, sceneNumber)).padStart(2, "0");
 }
 
+/** Filename a single scene video downloads as, matching the package layout. */
+export function sceneVideoFilename(sceneNumber: number, title: string): string {
+  return `scene_${padSceneNumber(sceneNumber)}_${sceneAssetSlug(title)}.mp4`;
+}
+
 export function safeExportFilenameBase(title: string): string {
   const slug = title
     .replace(/[^\w\s-]/g, "")
@@ -66,7 +71,11 @@ export interface ExportPackageLayout {
 
 export function buildExportPackageLayout(params: {
   projectTitle: string;
-  scenes: Array<{ segmentId: string; title: string }>;
+  /**
+   * sceneNumber is the scene's position in the full project (1-based), so a
+   * partial export keeps Qlio's numbering. Falls back to export order.
+   */
+  scenes: Array<{ segmentId: string; title: string; sceneNumber?: number }>;
 }): ExportPackageLayout {
   const rootFolder = sanitizeFolderName(params.projectTitle || "Untitled");
   const posterFolder = `${rootFolder} Poster Art`;
@@ -76,7 +85,7 @@ export function buildExportPackageLayout(params: {
   const usedSlugs = new Set<string>();
 
   const scenes = params.scenes.map((scene, index) => {
-    const sceneNumber = index + 1;
+    const sceneNumber = scene.sceneNumber ?? index + 1;
     const slug = uniqueSlug(sceneAssetSlug(scene.title), usedSlugs);
     const thumbnailFilename = `scene_${padSceneNumber(sceneNumber)}_${slug}.jpg`;
     const videoFilename = `scene_${padSceneNumber(sceneNumber)}_${slug}.mp4`;

@@ -136,12 +136,16 @@ export function buildExportMetadataDocument(
     options,
   } = params;
 
-  const selected = segments.filter((s) => selectedSegmentIds.has(s.id));
+  // Number scenes by their position in the full project, not the selection,
+  // so exporting only scene 6 still reports scene 6.
+  const selected = segments
+    .map((seg, index) => ({ seg, sceneNumber: index + 1 }))
+    .filter(({ seg }) => selectedSegmentIds.has(seg.id));
 
-  const scenes: ExportSceneMetadata[] = selected.map((seg, index) => {
+  const scenes: ExportSceneMetadata[] = selected.map(({ seg, sceneNumber }) => {
     const meta = metadataBySegmentId.get(seg.id);
     const scene: ExportSceneMetadata = {
-      sceneNumber: index + 1,
+      sceneNumber,
       segmentId: seg.id,
       editorTitle: seg.title,
       startTimeSec: seg.startTime,

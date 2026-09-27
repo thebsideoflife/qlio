@@ -21,6 +21,7 @@ import {
   buildExportPackageLayout,
   exportPackageObjectKey,
   localizeExportMetadataDocument,
+  sceneVideoFilename,
 } from "../utils/exportPackageLayout";
 import { computeExportPackageFingerprint } from "../utils/exportPackageFingerprint";
 
@@ -192,6 +193,32 @@ async function handleGet(
   return json(200, await jobResponse(job));
 }
 
+/**
+ * GET ?sceneVideo=<segmentId>&sceneNumber=<n>&title=<t>: a link to one scene's
+ * latest render that downloads as scene_NN_Title.mp4.
+ */
+async function handleSceneVideoDownload(
+  projectId: string,
+  query: Record<string, string | undefined>,
+): Promise<APIGatewayProxyResult> {
+  const project = (
+    await dynamo.send(
+      new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId } }),
+    )
+  ).Item;
+  const render = ((project?.segmentRenders || []) as StoredSegmentRender[]).find(
+    (r) => r.segmentId === query.sceneVideo,
+  );
+  if (!render) return json(404, { error: "No rendered video for this scene" });
+  const filename = sceneVideoFilename(
+    Number(query.sceneNumber) || 1,
+    query.title || render.title || "scene",
+  );
+  return json(200, {
+    downloadUrl: await presignPackage(render.bucket, render.key, filename),
+  });
+}
+
 async function handleStart(
   projectId: string,
   body: RequestBody,
@@ -321,10 +348,11 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
       return;
     }
 
-    const segments = (project.segments || []) as Array<{
-      id: string;
-      title?: string;
-    }>;
+    // Chronological order = project scene numbers (older projects may be
+    // stored unsorted).
+    const segments = [
+      ...((project.segments || []) as Array<{ id: string; title?: string; startTime: number }>),
+    ].sort((a, b) => a.startTime - b.startTime);
     const requested = new Set(
       (body.segmentIds?.length ? body.segmentIds : segments.map((s) => s.id)),
     );
@@ -349,11 +377,13 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
       (typeof project.title === "string" ? project.title : "Untitled");
     const includeThumbnails = body.includeThumbnails !== false;
     const includePoster = body.includePoster !== false;
+    const sceneNumbers = new Map(segments.map((s, i) => [s.id, i + 1]));
     const layout = buildExportPackageLayout({
       projectTitle,
       scenes: selected.map((s) => ({
         segmentId: s.id,
         title: s.title || "scene",
+        sceneNumber: sceneNumbers.get(s.id),
       })),
     });
 
@@ -496,7 +526,11 @@ async function handleApi(
   if (!projectId) return json(400, { error: "Missing projectId" });
 
   const method = event.requestContext?.http?.method || event.httpMethod;
-  if (method === "GET") return handleGet(projectId);
+  if (method === "GET") {
+    const query = event.queryStringParameters || {};
+    if (query.sceneVideo) return handleSceneVideoDownload(projectId, query);
+    return handleGet(projectId);
+  }
 
   let body: RequestBody = {};
   try {
