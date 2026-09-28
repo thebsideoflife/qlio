@@ -383,7 +383,7 @@ export function renderLedger(ledger: Ledger): string {
 
   if (ledger.blocking.length > 0) {
     lines.push("", "BLOCKING (must be resolved before you finish):");
-    for (const b of ledger.blocking) lines.push(`  - ${b}`);
+    for (const b of blockingLines(ledger.blocking)) lines.push(`  - ${b}`);
   } else {
     lines.push("", "BLOCKING: none — the cut is arithmetically and structurally clean.");
   }
@@ -394,6 +394,55 @@ export function renderLedger(ledger: Ledger): string {
   }
 
   return lines.join("\n");
+}
+
+/**
+ * How many blocking items the model sees at once. A long EDL can produce one
+ * line per unverified edge — 124 of them in one incident — and listing all of
+ * them every turn buried the model and blew the thread row past DynamoDB's
+ * item limit. The list is recomputed after every edit, so the rest surface as
+ * the first ones are fixed.
+ */
+export const BLOCKING_SHOWN_MAX = 15;
+
+export function blockingLines(blocking: string[], max = BLOCKING_SHOWN_MAX): string[] {
+  if (blocking.length <= max) return blocking;
+  return [
+    ...blocking.slice(0, max),
+    `…and ${blocking.length - max} more blocking items not listed here. The list refreshes after every edit.`,
+  ];
+}
+
+/** Entries of each growing ledger list kept on the stored thread row. */
+export const STORED_LEDGER_LIST_MAX = 20;
+
+/**
+ * The copy of the ledger written to the thread row. Counts stay exact; the
+ * long lists keep their first entries only. Nothing is lost: the loop recomputes
+ * the full ledger from the segments every turn, and the stored copy only
+ * paints the panel.
+ */
+export function ledgerForStorage(ledger: Ledger): Ledger {
+  const max = STORED_LEDGER_LIST_MAX;
+  const trimmed =
+    ledger.blocking.length > max ||
+    ledger.unverifiedEdges.length > max ||
+    ledger.perSegment.violations.length > max;
+  if (!trimmed) return ledger;
+  return {
+    ...ledger,
+    perSegment: {
+      ...ledger.perSegment,
+      violations: ledger.perSegment.violations.slice(0, max),
+    },
+    unverifiedEdges: ledger.unverifiedEdges.slice(0, max),
+    blocking: blockingLines(ledger.blocking, max),
+    counts: {
+      blocking: ledger.blocking.length,
+      unverifiedEdges: ledger.unverifiedEdges.length,
+      violations: ledger.perSegment.violations.length,
+    },
+  };
 }
 
 export function renderBlindSpots(
