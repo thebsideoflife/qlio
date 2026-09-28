@@ -14,6 +14,7 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { DEAD_RUN_MS, THREAD_TTL_DAYS } from "./config";
+import { ledgerForStorage } from "./ledger";
 import { emptyCostMeter } from "./types";
 import type {
   AgentSegment,
@@ -37,10 +38,18 @@ const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
 const THREADS_TABLE = process.env.AGENT_THREADS_TABLE!;
 
 /**
- * Conversation history is bounded so the item can never approach the 400 KB
- * DynamoDB ceiling. Full fidelity always survives in the event log.
+ * DynamoDB caps an item at 400 KB, and an update is checked against the stored
+ * item plus the incoming values, not just the result: rewriting a 225 KB row
+ * with 232 KB of fresh state failed although the row would have ended up
+ * smaller. Keeping every state write under half the limit keeps old + new under
+ * it. History gets whatever the other fields leave; full fidelity always
+ * survives in the event log.
  */
-const MAX_TURNS_JSON_BYTES = 200_000;
+const MAX_STATE_WRITE_BYTES = 180_000;
+/** History keeps at least this much even when the other fields are large. */
+const MIN_TURNS_BYTES = 20_000;
+/** What history shrinks to when DynamoDB still rejects a write for size. */
+const FALLBACK_TURNS = 2;
 const MAX_TOOL_LEDGER_ENTRIES = 120;
 const MAX_IDEMPOTENCY_KEYS = 60;
 
@@ -307,36 +316,7 @@ export async function persistRunState(
     ":runId": runId,
   };
 
-  if (payload.turns) {
-    sets.push("turnsJson = :turns");
-    values[":turns"] = boundTurns(payload.turns);
-  }
-  if (payload.summary !== undefined) {
-    sets.push("summary = :summary");
-    values[":summary"] = payload.summary;
-  }
-  if (payload.toolLedger) {
-    sets.push("toolLedgerJson = :toolLedger");
-    values[":toolLedger"] = JSON.stringify(
-      payload.toolLedger.slice(-MAX_TOOL_LEDGER_ENTRIES),
-    );
-  }
-  if (payload.segments) {
-    sets.push("segmentsJson = :segments");
-    values[":segments"] = JSON.stringify(payload.segments);
-  }
-  if (payload.ledger) {
-    sets.push("ledgerJson = :ledger");
-    values[":ledger"] = JSON.stringify(payload.ledger);
-  }
-  if (payload.cost) {
-    sets.push("cost = :cost");
-    values[":cost"] = payload.cost;
-  }
-  if (payload.examined) {
-    sets.push("examinedJson = :examined");
-    values[":examined"] = JSON.stringify(payload.examined);
-  }
+  Object.assign(values, stateValues(payload, sets));
   // Panel inputs are project.metadata. Do not write a duplicate `brief` here.
   if (payload.run) {
     names["#run"] = "run";
@@ -366,50 +346,124 @@ export async function persistRunState(
   const expression =
     `SET ${sets.join(", ")}` + (removes.length ? ` REMOVE ${removes.join(", ")}` : "");
 
-  try {
-    await docClient.send(
+  const send = (vals: Record<string, unknown>) =>
+    docClient.send(
       new UpdateCommand({
         TableName: THREADS_TABLE,
         Key: { projectId },
         UpdateExpression: expression,
         ConditionExpression: condition,
         ExpressionAttributeNames: Object.keys(names).length ? names : undefined,
-        ExpressionAttributeValues: values,
+        ExpressionAttributeValues: vals,
       }),
     );
+
+  try {
+    await send(values);
   } catch (err) {
     if (isConditionalFailure(err)) throw new LockLostError();
-    throw err;
+    if (!isItemTooLargeError(err) || !payload.turns) throw err;
+    // Same write with only the latest exchange. Once it lands the row is small
+    // again, and the next checkpoint stores the full budget of history.
+    console.warn(
+      `[IQAgent] run ${runId}: thread row too large; storing only the last ${FALLBACK_TURNS} turns.`,
+    );
+    try {
+      await send({
+        ...values,
+        ":turns": boundTurns(payload.turns.slice(-FALLBACK_TURNS), MIN_TURNS_BYTES),
+      });
+    } catch (retryErr) {
+      if (isConditionalFailure(retryErr)) throw new LockLostError();
+      throw retryErr;
+    }
   }
 }
 
-function boundTurns(turns: StoredTurn[]): string {
+/** DynamoDB's answer to a write that would push the item past 400 KB. */
+export function isItemTooLargeError(err: unknown): boolean {
+  const e = err as { name?: string; message?: string } | undefined;
+  return (
+    e?.name === "ValidationException" &&
+    /item size .*exceeded the maximum allowed size/i.test(e.message ?? "")
+  );
+}
+
+function byteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+/**
+ * Serialize the state fields of a payload, adding a SET clause for each to
+ * `sets`. Every field is measured in UTF-8 bytes, and history gets whatever
+ * the rest leaves under `MAX_STATE_WRITE_BYTES`.
+ */
+function stateValues(payload: PersistPayload, sets: string[]): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  let used = 0;
+  const put = (column: string, key: string, value: string) => {
+    sets.push(`${column} = ${key}`);
+    values[key] = value;
+    used += byteLength(value);
+  };
+
+  if (payload.summary !== undefined) put("summary", ":summary", payload.summary);
+  if (payload.toolLedger) {
+    put(
+      "toolLedgerJson",
+      ":toolLedger",
+      JSON.stringify(payload.toolLedger.slice(-MAX_TOOL_LEDGER_ENTRIES)),
+    );
+  }
+  if (payload.segments) {
+    put("segmentsJson", ":segments", JSON.stringify(payload.segments));
+  }
+  if (payload.ledger) {
+    put("ledgerJson", ":ledger", JSON.stringify(ledgerForStorage(payload.ledger)));
+  }
+  if (payload.examined) {
+    put("examinedJson", ":examined", JSON.stringify(payload.examined));
+  }
+  if (payload.cost) {
+    sets.push("cost = :cost");
+    values[":cost"] = payload.cost;
+    used += byteLength(JSON.stringify(payload.cost));
+  }
+  if (payload.turns) {
+    const budget = Math.max(MIN_TURNS_BYTES, MAX_STATE_WRITE_BYTES - used);
+    put("turnsJson", ":turns", boundTurns(payload.turns, budget));
+  }
+  return values;
+}
+
+function boundTurns(turns: StoredTurn[], maxBytes: number): string {
   let kept = turns;
   let json = JSON.stringify(kept);
-  while (json.length > MAX_TURNS_JSON_BYTES && kept.length > 2) {
+  while (byteLength(json) > maxBytes && kept.length > 2) {
     kept = kept.slice(Math.max(1, Math.floor(kept.length / 4)));
     // A conversation must never start with a dangling tool result.
     while (kept.length > 0 && startsWithToolResult(kept[0])) kept = kept.slice(1);
     json = JSON.stringify(kept);
   }
-  if (json.length <= MAX_TURNS_JSON_BYTES) return json;
+  if (byteLength(json) <= maxBytes) return json;
 
   // A couple of enormous turns (a transcript dump, a wall of search hits) can
-  // still blow the item limit on their own. Losing the whole write here would
+  // still blow the budget on their own. Losing the whole write here would
   // strand the run, so shrink the text in place instead and say so.
   kept = kept.map((turn) => ({
     ...turn,
     content: shrinkBlocks(turn.content, TRUNCATED_TURN_CHARS),
   }));
   json = JSON.stringify(kept);
-  return json.length <= MAX_TURNS_JSON_BYTES
-    ? json
-    : JSON.stringify(kept.slice(-2));
+  return byteLength(json) <= maxBytes ? json : JSON.stringify(kept.slice(-2));
 }
 
 const TRUNCATED_TURN_CHARS = 4000;
 
-function shrinkBlocks(content: StoredTurn["content"], max: number) {
+function shrinkBlocks(
+  content: StoredTurn["content"],
+  max: number,
+): StoredTurn["content"] {
   if (!Array.isArray(content)) return content;
   return content.map((block) => {
     const b = block as { type?: string; text?: string; content?: unknown };
@@ -425,6 +479,10 @@ function shrinkBlocks(content: StoredTurn["content"], max: number) {
         content: `${b.content.slice(0, max)}\n\n[Trimmed to fit the stored history. Re-run the tool if you need the rest.]`,
       };
     }
+    // A tool_result nests its text blocks one level down.
+    if (Array.isArray(b.content)) {
+      return { ...b, content: shrinkBlocks(b.content as StoredTurn["content"], max) };
+    }
     return block;
   }) as StoredTurn["content"];
 }
@@ -438,12 +496,48 @@ function startsWithToolResult(turn: StoredTurn): boolean {
   );
 }
 
-/** Release the lock and record the terminal run state. */
+/**
+ * Release the lock and record the terminal run state.
+ *
+ * Ending the run must never depend on the state it carries: if DynamoDB refuses
+ * the write for size, it is retried with the last turns only, and then with
+ * nothing but the release itself. A run that cannot be closed wedges the
+ * project until the reaper notices.
+ */
 export async function releaseRun(
   projectId: string,
   runId: string,
   finalRun: RunState,
   extra: PersistPayload = {},
+  epoch?: number,
+): Promise<void> {
+  const attempts: PersistPayload[] = [extra];
+  if (extra.turns) {
+    attempts.push({ ...extra, turns: extra.turns.slice(-FALLBACK_TURNS) });
+  }
+  attempts.push({ openQuestionId: extra.openQuestionId, cost: extra.cost });
+
+  for (let i = 0; i < attempts.length; i++) {
+    try {
+      await sendRelease(projectId, runId, finalRun, attempts[i], epoch);
+      return;
+    } catch (err) {
+      if (epoch !== undefined && isConditionalFailure(err)) {
+        throw new LockLostError();
+      }
+      if (!isItemTooLargeError(err) || i === attempts.length - 1) throw err;
+      console.warn(
+        `[IQAgent] run ${runId}: thread row too large to release with its state; retrying with less.`,
+      );
+    }
+  }
+}
+
+async function sendRelease(
+  projectId: string,
+  runId: string,
+  finalRun: RunState,
+  extra: PersistPayload,
   epoch?: number,
 ): Promise<void> {
   const sets: string[] = [
@@ -459,36 +553,7 @@ export async function releaseRun(
     ":runId": runId,
   };
 
-  if (extra.turns) {
-    sets.push("turnsJson = :turns");
-    values[":turns"] = boundTurns(extra.turns);
-  }
-  if (extra.summary !== undefined) {
-    sets.push("summary = :summary");
-    values[":summary"] = extra.summary;
-  }
-  if (extra.toolLedger) {
-    sets.push("toolLedgerJson = :toolLedger");
-    values[":toolLedger"] = JSON.stringify(
-      extra.toolLedger.slice(-MAX_TOOL_LEDGER_ENTRIES),
-    );
-  }
-  if (extra.segments) {
-    sets.push("segmentsJson = :segments");
-    values[":segments"] = JSON.stringify(extra.segments);
-  }
-  if (extra.ledger) {
-    sets.push("ledgerJson = :ledger");
-    values[":ledger"] = JSON.stringify(extra.ledger);
-  }
-  if (extra.cost) {
-    sets.push("cost = :cost");
-    values[":cost"] = extra.cost;
-  }
-  if (extra.examined) {
-    sets.push("examinedJson = :examined");
-    values[":examined"] = JSON.stringify(extra.examined);
-  }
+  Object.assign(values, stateValues(extra, sets));
 
   const removes = ["activeRunId", "#run"];
   names["#run"] = "run";
@@ -505,23 +570,16 @@ export async function releaseRun(
     values[":epoch"] = epoch;
   }
 
-  try {
-    await docClient.send(
-      new UpdateCommand({
-        TableName: THREADS_TABLE,
-        Key: { projectId },
-        UpdateExpression: `SET ${sets.join(", ")} REMOVE ${removes.join(", ")}`,
-        ConditionExpression: condition,
-        ExpressionAttributeNames: names,
-        ExpressionAttributeValues: values,
-      }),
-    );
-  } catch (err) {
-    if (epoch !== undefined && isConditionalFailure(err)) {
-      throw new LockLostError();
-    }
-    throw err;
-  }
+  await docClient.send(
+    new UpdateCommand({
+      TableName: THREADS_TABLE,
+      Key: { projectId },
+      UpdateExpression: `SET ${sets.join(", ")} REMOVE ${removes.join(", ")}`,
+      ConditionExpression: condition,
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
+    }),
+  );
 }
 
 export async function requestCancel(

@@ -138,6 +138,11 @@ export interface Ledger {
   blocking: string[];
   /** Non-blocking observations worth surfacing to both model and producer. */
   warnings: string[];
+  /**
+   * Full list lengths, present only on a stored copy whose lists were trimmed
+   * to fit the thread row (see `ledgerForStorage`).
+   */
+  counts?: { blocking: number; unverifiedEdges: number; violations: number };
 }
 
 // ============================================================================

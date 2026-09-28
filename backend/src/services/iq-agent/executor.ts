@@ -19,6 +19,7 @@ import {
 import { recordExamined, totalSeconds } from "./examined";
 import { buildVocabulary, findUngroundedNames } from "./grounding";
 import {
+  blockingLines,
   computeLedger,
   fmt,
   fmtTimecode,
@@ -625,7 +626,7 @@ function execFinish(
     ctx.finishRefusals += 1;
     const { text: template } = getPrompt("guardedFinish", ctx.promptOverrides);
     const message = renderTemplate(template, {
-      blocking: ledger.blocking.map((b) => `- ${b}`).join("\n"),
+      blocking: blockingLines(ledger.blocking).map((b) => `- ${b}`).join("\n"),
       ledger: renderLedger(ledger),
     });
     return {
@@ -641,7 +642,7 @@ function execFinish(
 
   const allConcerns = [
     ...concerns,
-    ...ledger.blocking.map((b) => `Unresolved: ${b}`),
+    ...blockingLines(ledger.blocking).map((b) => `Unresolved: ${b}`),
     // Only reachable via the refusal cap, and the producer needs to know the
     // cut was signed off with part of the source never opened.
     ...blindSpots.map(

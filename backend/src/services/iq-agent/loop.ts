@@ -55,6 +55,7 @@ import {
   getThread,
   heartbeat,
   LockLostError,
+  isItemTooLargeError,
   persistRunState,
   releaseRun,
   setFramingMirror,
@@ -924,18 +925,28 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
       console.log(`[IQAgent] run ${runId}: ${err.message} Leaving it to the owner.`);
       return;
     }
-    const code = err instanceof ProjectContextError ? err.code : "worker_error";
+    // A size refusal is not worth retrying as-is, but the writes below fall back
+    // to a trimmed history, so the next message starts from a row that fits.
+    const tooLarge = isItemTooLargeError(err);
+    const code =
+      err instanceof ProjectContextError
+        ? err.code
+        : tooLarge
+          ? "thread_too_large"
+          : "worker_error";
     const message =
       err instanceof ProjectContextError
         ? err.message
-        : `The agent hit an unexpected error: ${errorText(err)}`;
+        : tooLarge
+          ? "This conversation grew too large to save. Older history is trimmed on the next message so it fits, and anything already applied to the cut was kept — send a message to continue."
+          : `The agent hit an unexpected error: ${errorText(err)}`;
     console.error(`[IQAgent] run ${runId} crashed:`, err);
     await appendEvent(projectId, runId, {
       type: "run.failed",
       code,
       message,
       detail: errorText(err),
-      retryable: !(err instanceof ProjectContextError),
+      retryable: !(err instanceof ProjectContextError) && !tooLarge,
     }).catch(() => undefined);
     // Keep whatever the run managed to do. Without this, a crash three tool
     // calls into an iteration resumes from the last checkpoint and repeats all
