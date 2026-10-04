@@ -3,13 +3,14 @@
  *
  * Every model call goes here, pinned to the same models we already used —
  * not Auto/starter:
- *   - Sonnet 4.5          IQ agent, Jockey brief, export-metadata enrich
+ *   - Sonnet 5.5          IQ agent, Jockey brief, export-metadata enrich
  *   - Haiku               Pegasus title classifier
  *   - gpt-4o-mini         caption translation
  *   - gemini-2.5-pro      framing analysis (legacy FRAMING_ENGINE=gemini)
  *
  * Sampling parameters are passed through only when the caller sets them, so
- * each call keeps the provider defaults it had before the move. Whisper
+ * each call keeps the provider defaults it had before the move — except where
+ * the model rejects them (see `rejectsSamplingAndForcedTools`). Whisper
  * transcription is not here yet: it still runs through ./openrouter.
  */
 
@@ -23,9 +24,23 @@ const secretsClient = new SecretsManagerClient({});
 export const SPORELABS_BASE_URL =
   process.env.SPORELABS_BASE_URL?.replace(/\/$/, "") || "https://sporelabs.dev/v1";
 
-/** Same model as `claude-sonnet-4-5-20250929` / Bedrock inference profile. */
+/**
+ * Claude Sonnet 5.5 (`claude-sonnet-5-5` on the Anthropic API,
+ * `anthropic.claude-sonnet-5-5` on Bedrock), via OpenRouter. Setting the env
+ * var to `anthropic/claude-sonnet-4.5` rolls back.
+ */
 export const SPORELABS_SONNET_MODEL =
-  process.env.SPORELABS_SONNET_MODEL || "anthropic/claude-sonnet-4.5";
+  process.env.SPORELABS_SONNET_MODEL || "anthropic/claude-sonnet-5.5";
+
+/**
+ * Sonnet 5.5 answers a 400 to a non-default temperature and to a forced
+ * tool_choice ("required" or a named function), both of which Sonnet 4.5
+ * accepted. Keyed on the model id rather than applied to every call, so an env
+ * rollback to 4.5 keeps the sampling and forcing the agent was tuned with.
+ */
+export function rejectsSamplingAndForcedTools(model: string): boolean {
+  return /^anthropic\/claude-sonnet-5\.5(?![\d])/.test(model);
+}
 
 /** Same model as `anthropic.claude-3-haiku-20240307-v1:0`. */
 export const SPORELABS_HAIKU_MODEL =
@@ -174,11 +189,18 @@ async function chatCompletionsOnce(params: {
     model: params.model,
     messages: params.messages,
   };
+  const strict = rejectsSamplingAndForcedTools(params.model);
   if (params.maxTokens !== undefined) payload.max_tokens = params.maxTokens;
-  if (params.temperature !== undefined) payload.temperature = params.temperature;
+  if (params.temperature !== undefined && !strict) {
+    payload.temperature = params.temperature;
+  }
   if (params.tools && params.tools.length > 0) {
     payload.tools = params.tools;
-    if (params.toolChoice) payload.tool_choice = params.toolChoice;
+    if (params.toolChoice) {
+      // Callers that force a tool already check that the call came back.
+      const forced = params.toolChoice === "required" || typeof params.toolChoice === "object";
+      payload.tool_choice = strict && forced ? "auto" : params.toolChoice;
+    }
   }
   if (params.responseFormat) {
     payload.response_format = params.responseFormat;

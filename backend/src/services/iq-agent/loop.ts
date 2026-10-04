@@ -372,6 +372,12 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
       // work instead of checkpointing and continuing.
       ctx.deadlineAt = Date.now() + params.getRemainingTimeMs() - CONTINUATION_RESERVE_MS;
 
+      // Strip first, so frames already due to be dropped do not count toward
+      // the compaction decision. Compaction keeps a suffix of the turns, so the
+      // last IMAGE_RETENTION_TURNS — the only ones still holding images — are
+      // the same either way.
+      stripOldImages(turns, IMAGE_RETENTION_TURNS);
+
       const compaction = await compactHistory({
         turns,
         summary,
@@ -384,8 +390,6 @@ export async function runAgentTurn(params: RunTurnParams): Promise<void> {
           console.log(`[IQAgent] ${compaction.note}`);
         }
       }
-
-      stripOldImages(turns, IMAGE_RETENTION_TURNS);
 
       await setStage("thinking");
 

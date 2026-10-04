@@ -9,6 +9,7 @@
 
 import {
   CONTEXT_SOFT_TOKEN_CAP,
+  IMAGE_TOKEN_ESTIMATE,
   MAX_ITERATIONS,
   TURN_WINDOW,
 } from "./config";
@@ -25,9 +26,33 @@ import type {
   VideoFacts,
 } from "./types";
 
+/**
+ * Rough token count: text by length, images at a flat rate. Image blocks are
+ * left out of the serialized text, since their base64 is what made the old
+ * estimate run hundreds of times over what Claude actually bills.
+ */
 export function estimateTokens(value: unknown): number {
-  const text = typeof value === "string" ? value : JSON.stringify(value ?? "");
-  return Math.ceil(text.length / 3.5);
+  if (typeof value === "string") return Math.ceil(value.length / 3.5);
+  let images = 0;
+  const text =
+    JSON.stringify(value ?? "", (_key, item: unknown) => {
+      if (isImageBlock(item)) {
+        images += 1;
+        return undefined;
+      }
+      return item;
+    }) ?? "";
+  return Math.ceil(text.length / 3.5) + images * IMAGE_TOKEN_ESTIMATE;
+}
+
+/** Claude `image` blocks and OpenAI `image_url` parts. */
+function isImageBlock(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const block = value as { type?: unknown; source?: unknown };
+  return (
+    (block.type === "image" && typeof block.source === "object" && block.source !== null) ||
+    block.type === "image_url"
+  );
 }
 
 /**
@@ -277,6 +302,8 @@ function markCacheBreakpoints(messages: ClaudeMessage[]): void {
   }
 }
 
+const COMPACTION_MAX_TOKENS = 4096;
+
 export interface CompactionResult {
   turns: StoredTurn[];
   summary?: string;
@@ -324,7 +351,9 @@ export async function compactHistory(params: {
       ],
       messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
       tools: [],
-      maxTokens: 1024,
+      // A ceiling, not a target: Sonnet 5.5 thinks by default and its thinking
+      // counts against max_tokens, which at 1024 could leave no room for text.
+      maxTokens: COMPACTION_MAX_TOKENS,
       temperature: 0.2,
     });
     const text = response.blocks

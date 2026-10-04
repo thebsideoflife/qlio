@@ -157,14 +157,50 @@ async function main() {
     temperature: 0.4,
     toolChoice: { type: "any" },
   });
-  assert(calls[0].body.model === "anthropic/claude-sonnet-4.5", "IQ agent pinned to Sonnet 4.5");
-  assert(calls[0].body.temperature === 0.4, "IQ agent temperature kept");
-  assert(calls[0].body.tool_choice === "required", "tool_choice any -> required");
+  assert(calls[0].body.model === "anthropic/claude-sonnet-5.5", "IQ agent pinned to Sonnet 5.5");
+  // Sonnet 5.5 rejects both with a 400.
+  assert(!("temperature" in calls[0].body), "temperature dropped for Sonnet 5.5");
+  assert(calls[0].body.tool_choice === "auto", "forced tool_choice relaxed to auto for Sonnet 5.5");
   assert(res.stopReason === "tool_use", "tool_calls -> tool_use");
   assert(res.usage.inputTokens === 100, "input tokens exclude cache reads/writes");
   assert(res.usage.cacheReadTokens === 700 && res.usage.cacheCreationTokens === 200, "cache usage mapped");
   const block = res.blocks[0] as { type: string; input: Record<string, unknown> };
   assert(block.type === "tool_use" && block.input.a === 1, "tool call -> tool_use block");
+
+  // An env rollback to Sonnet 4.5 keeps the sampling and forcing it accepted.
+  const tool = { type: "function" as const, function: { name: "cut" } };
+  calls.length = 0;
+  responses = [ok({ content: "a" }), ok({ content: "b" })];
+  await sporelabsChatCompletions({
+    model: "anthropic/claude-sonnet-4.5",
+    messages: [],
+    tools: [tool],
+    toolChoice: "required",
+    temperature: 0.4,
+  });
+  await sporelabsChatCompletions({
+    model: "anthropic/claude-sonnet-4.5",
+    messages: [],
+    tools: [tool],
+    toolChoice: { type: "function", function: { name: "cut" } },
+  });
+  assert(calls[0].body.temperature === 0.4, "Sonnet 4.5 temperature kept");
+  assert(calls[0].body.tool_choice === "required", "Sonnet 4.5 tool_choice required kept");
+  assert(
+    (calls[1].body.tool_choice as { type?: string })?.type === "function",
+    "Sonnet 4.5 named tool_choice kept",
+  );
+
+  // Sonnet 5.5: unforced choices pass through untouched.
+  calls.length = 0;
+  responses = [ok({ content: "c" })];
+  await sporelabsChatCompletions({
+    model: "anthropic/claude-sonnet-5.5",
+    messages: [],
+    tools: [tool],
+    toolChoice: "none",
+  });
+  assert(calls[0].body.tool_choice === "none", "Sonnet 5.5 tool_choice none kept");
 
   if (failures > 0) {
     console.error(`sporelabs: ${failures}/${checks} checks failed`);

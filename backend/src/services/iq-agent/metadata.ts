@@ -431,6 +431,9 @@ async function runBatch(
       system: [{ type: "text", text: METADATA_SYSTEM }],
       messages: buildMessages(params, batch, isRetry),
       tools: [WRITE_METADATA_TOOL],
+      // Sent as `auto` to Sonnet 5.5, which rejects forced tool use. The task
+      // prompt asks for the call, and a batch that comes back without one is
+      // caught by the retry pass like any other incomplete answer.
       toolChoice: { type: "tool", name: WRITE_METADATA_TOOL.name },
       maxTokens: MAX_OUTPUT_TOKENS,
       temperature: MODEL_TEMPERATURE,
