@@ -86,6 +86,87 @@ async function testArgumentConstruction(): Promise<void> {
     accurateArgs[accurateArgs.indexOf("-r") + 1] === "30",
     "accurate mode uses the provided fps",
   );
+  assert(
+    !accurateArgs.includes("-ignore_editlist"),
+    "accurate mode honors the source edit list",
+  );
+}
+
+function firstFrameLuma(clipPath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("ffmpeg", [
+      "-v", "error",
+      "-i", clipPath,
+      "-frames:v", "1",
+      "-vf", "format=gray",
+      "-f", "rawvideo",
+      "-",
+    ]);
+    const chunks: Buffer[] = [];
+    let stderr = "";
+    child.stdout.on("data", (data: Buffer) => chunks.push(data));
+    child.stderr.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`ffmpeg exited with code ${code}: ${stderr}`));
+        return;
+      }
+      const pixels = Buffer.concat(chunks);
+      let sum = 0;
+      for (const value of pixels) sum += value;
+      resolve(sum / pixels.length);
+    });
+    child.on("error", reject);
+  });
+}
+
+/**
+ * B-frame H.264 in MP4 carries an edit list that hides the decoder delay.
+ * Ignoring it made clip frame 0 two source frames early, so every framing
+ * cut in an export ran two frames ahead of its shot change.
+ */
+async function testEditListFrameAlignment(): Promise<void> {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "video-clip-elst-"));
+  const sourcePath = path.join(tmpDir, "source.mp4");
+  const clipPath = path.join(tmpDir, "clip.mp4");
+  const fps = 30;
+  const startFrame = 75;
+
+  try {
+    // Luma = 2 × frame number, so a clip's first frame names its source frame.
+    await run("ffmpeg", [
+      "-v", "error",
+      "-f", "lavfi",
+      "-i", `color=c=black:size=64x36:rate=${fps},format=gray,geq=lum='N*2'`,
+      "-f", "lavfi",
+      "-i", "sine=frequency=440:sample_rate=44100",
+      "-t", "5",
+      "-c:v", "libx264",
+      "-preset", "medium",
+      "-bf", "2",
+      "-pix_fmt", "yuv420p",
+      "-c:a", "aac",
+      "-y", sourcePath,
+    ]);
+
+    await extractClip(
+      sourcePath,
+      clipPath,
+      startFrame / fps,
+      1,
+      "accurate",
+      fps,
+    );
+    const frame = (await firstFrameLuma(clipPath)) / 2;
+    assert(
+      Math.abs(frame - startFrame) < 0.5,
+      `accurate mode: clip frame 0 is source frame ${frame.toFixed(1)}, expected ${startFrame}`,
+    );
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 }
 
 async function testNonKeyframeRegression(): Promise<void> {
@@ -169,6 +250,7 @@ async function testNonKeyframeRegression(): Promise<void> {
 async function main(): Promise<void> {
   await testArgumentConstruction();
   await testNonKeyframeRegression();
+  await testEditListFrameAlignment();
   console.log("videoClip tests passed");
 }
 

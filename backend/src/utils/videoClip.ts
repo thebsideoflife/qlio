@@ -26,7 +26,8 @@ export function formatFfmpegFps(fps: number): string {
  * keyframe, so clip t=0 can be seconds earlier than the requested start.
  *
  * `accurate` uses a coarse input seek plus output-side seek and re-encodes
- * so clip boundaries match segment.startTime exactly — required for caption sync.
+ * so clip boundaries match segment.startTime exactly — required for caption sync
+ * and for framing cuts to land on the source frame they were placed on.
  * Pass `fps` to pin the output timebase to the source/composition frame grid.
  */
 export function buildExtractClipArgs(
@@ -75,9 +76,11 @@ export function buildExtractClipArgs(
       ? ["-r", formatFfmpegFps(fps), "-vsync", "cfr"]
       : [];
 
+  // Honor the source's edit list. The editor's <video>, the reframe proxy and
+  // the transcript all play the edit-listed timeline; ignoring it shifts clip
+  // frame n to an earlier source frame (2 frames on typical B-frame H.264), so
+  // every framing cut lands that many frames before the shot change it marks.
   return [
-    "-ignore_editlist",
-    "1",
     ...(preSeek > 0 ? ["-ss", formatFfmpegSeconds(preSeek)] : []),
     "-i",
     inputPath,
