@@ -630,12 +630,10 @@ async function handleStartBatch(
     });
   }
 
-  const validAspectRatios: TargetAspectRatio[] = ["16:9", "1:1", "9:16"];
-  const aspectRatio: TargetAspectRatio = validAspectRatios.includes(
-    targetAspectRatio as TargetAspectRatio,
-  )
-    ? (targetAspectRatio as TargetAspectRatio)
-    : "9:16";
+  // Autoframing only outputs 9:16. 16:9 keeps the no-AI fit-to-landscape path;
+  // every other request (missing, "1:1", anything else) is framed for 9:16.
+  const aspectRatio: TargetAspectRatio =
+    targetAspectRatio === "16:9" ? "16:9" : "9:16";
 
   // Reject if a job is already running (unless it's stale — no heartbeat for
   // >15 min). SporeLabs jobs can legitimately run longer than one Lambda, so
@@ -947,7 +945,6 @@ async function executeShotHoldJob(
       projectId,
       jobId,
       segments,
-      targetAspectRatio: payload.targetAspectRatio as "9:16" | "1:1",
       sporelabsJobId: payload.sporelabsJobId,
       continuation: payload.continuation,
     },
@@ -980,7 +977,7 @@ async function executeShotHoldJob(
           projectId,
           segments,
           keyframes,
-          payload.targetAspectRatio,
+          "9:16",
           jobId,
         ),
       makeFallbackKeyframe,

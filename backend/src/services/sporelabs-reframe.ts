@@ -28,7 +28,9 @@ export const REFRAME_MAX_SEGMENTS = 500;
 // TYPES
 // ============================================================================
 
-export type ReframeTargetAspect = "9:16" | "1:1";
+/** Autoframing only outputs 9:16. */
+export type ReframeTargetAspect = "9:16";
+export const REFRAME_TARGET_ASPECT: ReframeTargetAspect = "9:16";
 
 export interface ReframeSegmentInput {
   id: string;
