@@ -12,7 +12,11 @@
  */
 
 import { randomUUID } from "crypto";
-import { buildReframeAssetKey, clampReframeSegments } from "./sporelabs-reframe";
+import {
+  buildReframeAssetKey,
+  clampReframeSegments,
+  REFRAME_TARGET_ASPECT,
+} from "./sporelabs-reframe";
 import type {
   ClampedReframeSegments,
   ReframeClientOptions,
@@ -21,7 +25,6 @@ import type {
   ReframeRequest,
   ReframeResult,
   ReframeSubmitResponse,
-  ReframeTargetAspect,
 } from "./sporelabs-reframe";
 
 // ============================================================================
@@ -48,7 +51,6 @@ export interface ShotHoldJobInput {
   projectId: string;
   jobId: string;
   segments: ShotHoldSegment[];
-  targetAspectRatio: ReframeTargetAspect;
   /** Present on a continuation invocation. */
   sporelabsJobId?: string;
   continuation?: number;
@@ -96,10 +98,7 @@ export type ShotHoldOutcome = "completed" | "continued" | "superseded";
 // TUNABLES
 // ============================================================================
 
-const TARGET_CANVAS_ASPECT: Record<ReframeTargetAspect, number> = {
-  "9:16": 9 / 16,
-  "1:1": 1,
-};
+const TARGET_CANVAS_ASPECT = 9 / 16;
 
 export const POLL_INTERVAL_MS = 5_000;
 /** Below this, hand off to a fresh invocation instead of polling again. */
@@ -227,7 +226,7 @@ export function buildReframeRequest(
       asset_key: buildReframeAssetKey(assetId, proxy.etag),
       fps: proxy.fps,
       source_aspect: proxy.width / proxy.height,
-      target_aspect: input.targetAspectRatio,
+      target_aspect: REFRAME_TARGET_ASPECT,
       segments: clamp.segments,
       options: {},
     },
@@ -294,7 +293,7 @@ export async function runShotHoldFraming(
 
     // A source no wider than the canvas (vertical phone footage into 9:16) has
     // nothing to crop; SporeLabs rejects it. Show the whole picture instead.
-    if (proxy.width / proxy.height <= TARGET_CANVAS_ASPECT[input.targetAspectRatio] + 1e-6) {
+    if (proxy.width / proxy.height <= TARGET_CANVAS_ASPECT + 1e-6) {
       const fit = new Map<number, FramingKeyframe[]>();
       segments.forEach((_, i) =>
         fit.set(i, [
@@ -326,7 +325,7 @@ export async function runShotHoldFraming(
     sporelabsJobId = submitted.id;
     console.log(
       `[Framing] SporeLabs reframe ${sporelabsJobId} submitted for job ${jobId}: ` +
-        `${request.segments.length} of ${segments.length} segments, fps ${proxy.fps.toFixed(3)}, aspect ${request.source_aspect.toFixed(4)} → ${input.targetAspectRatio}`,
+        `${request.segments.length} of ${segments.length} segments, fps ${proxy.fps.toFixed(3)}, aspect ${request.source_aspect.toFixed(4)} → ${REFRAME_TARGET_ASPECT}`,
     );
     if (!(await deps.updateJob({ sporelabsJobId, stage: "queued" }))) {
       return "superseded";

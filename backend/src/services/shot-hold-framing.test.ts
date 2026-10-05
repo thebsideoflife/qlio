@@ -246,7 +246,6 @@ const INPUT: ShotHoldJobInput = {
   projectId: "p1",
   jobId: "job-1",
   segments: SEGMENTS,
-  targetAspectRatio: "9:16",
 };
 
 const COMPLETED: ReframeJob = {
