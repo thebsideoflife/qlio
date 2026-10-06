@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { WordEdit } from "@/remotion/captionGrouping";
 
 const API_URL = import.meta.env.VITE_API_URL;
 const AUTH_KEY = "api_password";
@@ -210,7 +211,7 @@ export interface CaptionSettings {
     maxWidth: number;
     highlightColor?: string;
   };
-  wordEdits?: Record<string, string>;
+  wordEdits?: Record<string, WordEdit>;
   activeLanguage?: string;
 }
 

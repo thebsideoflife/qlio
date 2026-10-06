@@ -1,5 +1,7 @@
 /** Mirrors zeevee/src/lib/segmentRenderFingerprint.ts for render staleness checks. */
 
+import type { WordEdit } from "./caption-grouping";
+
 // Bump whenever the Remotion bundle changes rendered pixels without changing
 // project inputs. This invalidates MP4s made by an older renderer.
 export const RENDER_PIPELINE_VERSION = 10;
@@ -44,12 +46,12 @@ function stableStringify(value: unknown): string {
 }
 
 function sortedWordEdits(
-  wordEdits: Record<string, string> | null | undefined,
-): Array<[string, string]> {
+  wordEdits: Record<string, WordEdit> | null | undefined,
+): Array<[string, WordEdit]> {
   if (!wordEdits) return [];
   return Object.keys(wordEdits)
     .sort()
-    .map((key) => [key, wordEdits[key]] as [string, string]);
+    .map((key) => [key, wordEdits[key]] as [string, WordEdit]);
 }
 
 function normalizeFraming(framing: SegmentFraming | undefined) {
@@ -75,7 +77,7 @@ export function computeSegmentRenderFingerprint(
     enabled: boolean;
     style: unknown;
     activeLanguage?: string;
-    wordEdits?: Record<string, string> | null;
+    wordEdits?: Record<string, WordEdit> | null;
   },
   globalFraming: { aspectRatio: string; enabled?: boolean; squareTop?: boolean },
   transcriptionVersion?: string | null,
@@ -93,7 +95,7 @@ export function computeSegmentRenderFingerprint(
       ...(captionSettings.enabled && transcriptionVersion
         ? { transcriptionVersion }
         : {}),
-      // Word edits (text and deletions) change the burn-in.
+      // Word edits (text, deletions and timing) change the burn-in.
       // Sorted so key order never changes the hash.
       ...(captionSettings.enabled
         ? { wordEdits: sortedWordEdits(captionSettings.wordEdits) }

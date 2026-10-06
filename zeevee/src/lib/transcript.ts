@@ -94,10 +94,10 @@ export function orderedOriginalTranscriptUrls(params: {
   );
 }
 
-export interface TranscriptWordCard {
+export interface TranscriptWordCard<W extends CaptionWord = CaptionWord> {
   startTime: number;
   endTime: number;
-  words: CaptionWord[];
+  words: W[];
 }
 
 export interface TranscriptLineCard {
@@ -204,10 +204,10 @@ function groupingOptions(
   };
 }
 
-export function groupWordsForTranscript(
-  words: CaptionWord[],
+export function groupWordsForTranscript<W extends CaptionWord>(
+  words: W[],
   options: TranscriptGroupingOptions = {},
-): TranscriptWordCard[] {
+): TranscriptWordCard<W>[] {
   if (words.length === 0) return [];
   const resolved = groupingOptions(options);
   return packGroups(

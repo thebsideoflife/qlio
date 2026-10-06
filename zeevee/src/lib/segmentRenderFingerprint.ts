@@ -4,6 +4,7 @@ import type {
   SegmentFraming,
 } from "@/remotion/types";
 import { getEffectiveKeyframes } from "@/remotion/types";
+import type { WordEdit } from "@/remotion/captionGrouping";
 import type { Segment } from "@/store/editorSlice";
 
 // Keep in lockstep with backend/src/utils/segmentRenderFingerprint.ts. Bump
@@ -23,12 +24,12 @@ function stableStringify(value: unknown): string {
 }
 
 function sortedWordEdits(
-  wordEdits: Record<string, string> | null | undefined,
-): Array<[string, string]> {
+  wordEdits: Record<string, WordEdit> | null | undefined,
+): Array<[string, WordEdit]> {
   if (!wordEdits) return [];
   return Object.keys(wordEdits)
     .sort()
-    .map((key) => [key, wordEdits[key]] as [string, string]);
+    .map((key) => [key, wordEdits[key]] as [string, WordEdit]);
 }
 
 function normalizeFraming(framing: SegmentFraming | undefined) {
@@ -63,7 +64,7 @@ export function computeSegmentRenderFingerprint(
       ...(captionSettings.enabled && transcriptionVersion
         ? { transcriptionVersion }
         : {}),
-      // Word edits (text and deletions) change the burn-in.
+      // Word edits (text, deletions and timing) change the burn-in.
       // Sorted so key order never changes the hash.
       ...(captionSettings.enabled
         ? { wordEdits: sortedWordEdits(captionSettings.wordEdits) }

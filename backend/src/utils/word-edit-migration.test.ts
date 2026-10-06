@@ -58,4 +58,15 @@ assert(d.migrated === 0 && d.dropped[0].reason === "not-in-previous-transcript",
 const e = migrateWordEdits([w(50, 50.2, "gun")], [w(52, 52.2, "gun")], { "50-50.2": "GUN" });
 assert(e.migrated === 0, "no match outside the window");
 
+// A timing edit carries over with its corrected timing.
+{
+  const timed = { value: "Mere", start: 5.1, end: 5.4 };
+  const result = migrateWordEdits(
+    [{ start: 5, end: 5.3, value: "Mere" }],
+    [{ start: 5.02, end: 5.31, value: "Mere" }],
+    { "5-5.3": timed },
+  );
+  assert(JSON.stringify(result.wordEdits) === JSON.stringify({ "5.02-5.31": timed }), "timing edit migrates");
+}
+
 console.log("word-edit-migration tests passed");

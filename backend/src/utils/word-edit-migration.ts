@@ -19,6 +19,8 @@
  * for a person to review.
  */
 
+import { wordEditKey, type WordEdit } from "./caption-grouping";
+
 export interface MigratableWord {
   start: number;
   end: number;
@@ -27,22 +29,20 @@ export interface MigratableWord {
 
 export interface DroppedWordEdit {
   key: string;
-  value: string;
+  value: WordEdit;
   previousText: string | null;
   reason: "not-in-previous-transcript" | "no-matching-word" | "taken-by-closer-edit";
 }
 
 export interface WordEditMigration {
-  wordEdits: Record<string, string>;
+  wordEdits: Record<string, WordEdit>;
   migrated: number;
   dropped: DroppedWordEdit[];
 }
 
 export const MATCH_WINDOW_SECONDS = 1.0;
 
-export function wordEditKey(word: { start: number; end: number }): string {
-  return `${word.start}-${word.end}`;
-}
+export { wordEditKey };
 
 function normalizeText(value: string): string {
   return value
@@ -55,7 +55,7 @@ function normalizeText(value: string): string {
 export function migrateWordEdits(
   previousWords: readonly MigratableWord[],
   newWords: readonly MigratableWord[],
-  wordEdits: Record<string, string>,
+  wordEdits: Record<string, WordEdit>,
 ): WordEditMigration {
   const previousByKey = new Map<string, MigratableWord>();
   for (const word of previousWords) {
@@ -64,7 +64,7 @@ export function migrateWordEdits(
   const sorted = [...newWords].sort((a, b) => a.start - b.start);
 
   const dropped: DroppedWordEdit[] = [];
-  const placed = new Map<string, { key: string; value: string; distance: number }>();
+  const placed = new Map<string, { key: string; value: WordEdit; distance: number }>();
 
   const candidatesNear = (t: number): MigratableWord[] => {
     // Binary search for the first word starting after t - window.
@@ -82,7 +82,7 @@ export function migrateWordEdits(
     return out;
   };
 
-  const place = (key: string, value: string, target: MigratableWord, distance: number, previousText: string) => {
+  const place = (key: string, value: WordEdit, target: MigratableWord, distance: number, previousText: string) => {
     const targetKey = wordEditKey(target);
     const existing = placed.get(targetKey);
     if (existing && existing.distance <= distance) {
@@ -118,7 +118,7 @@ export function migrateWordEdits(
     dropped.push({ key, value, previousText: previous.value, reason: "no-matching-word" });
   }
 
-  const migrated: Record<string, string> = {};
+  const migrated: Record<string, WordEdit> = {};
   for (const [targetKey, { value }] of placed) migrated[targetKey] = value;
   return { wordEdits: migrated, migrated: placed.size, dropped };
 }

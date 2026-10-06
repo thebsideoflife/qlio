@@ -31,6 +31,7 @@ import {
   resetEditor,
   updateFramingKeyframe,
   updateCaptionWord,
+  type TranscriptWord,
   setGlobalAspectRatio,
   setSquareTopEnabled,
   setAgentRunActive,
@@ -51,6 +52,7 @@ import {
   Clock,
   Pencil,
   PanelTop,
+  Crosshair,
 } from "lucide-react";
 import { getEffectiveKeyframes } from "@/remotion/types";
 import {
@@ -1011,6 +1013,60 @@ function TranscriptSkeleton() {
   );
 }
 
+/** Start / end of the word being edited, in seconds, with "set to playhead". */
+function WordTimingBar({
+  word,
+  currentTime,
+  onChange,
+}: {
+  word: TranscriptWord;
+  currentTime: number;
+  onChange: (timing: { start?: number; end?: number }) => void;
+}) {
+  const field = (label: string, name: "start" | "end") => (
+    <label className="flex items-center gap-1">
+      <span className="font-semibold">{label}</span>
+      <input
+        // Remount when the saved value changes so the field shows it.
+        key={`${word.key}-${word[name]}`}
+        type="number"
+        step={0.01}
+        min={0}
+        defaultValue={word[name].toFixed(2)}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        }}
+        onBlur={(e) => {
+          const seconds = Number(e.target.value);
+          if (Math.abs(seconds - word[name]) >= 0.005) onChange({ [name]: seconds });
+        }}
+        className="w-20 rounded border border-border bg-background px-1.5 py-0.5 font-mono"
+      />
+      <button
+        type="button"
+        title={`Set ${name} to the playhead`}
+        // Keep focus (and the selected word) where it is.
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => onChange({ [name]: Number(currentTime.toFixed(2)) })}
+        className="rounded p-1 hover:bg-muted"
+      >
+        <Crosshair className="h-3 w-3" />
+      </button>
+    </label>
+  );
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-3 rounded-md bg-muted/60 px-2 py-1.5 text-[11px]">
+      <span className="max-w-[8rem] truncate font-semibold">
+        “{captionWordText(word.value) || "[deleted]"}”
+      </span>
+      {field("Start", "start")}
+      {field("End", "end")}
+    </div>
+  );
+}
+
 interface TranscriptPanelProps {
   segments: Array<{ id: string; startTime: number; endTime: number }>;
   currentTime: number;
@@ -1041,6 +1097,12 @@ function TranscriptPanel({
 
   // Edit mode state
   const [editMode, setEditMode] = React.useState(false);
+  // The word whose timing the edit bar shows (its word-edit key).
+  const [selectedKey, setSelectedKey] = React.useState<string | null>(null);
+  const selectedWord = React.useMemo(
+    () => (editMode && selectedKey ? transcription.find((w) => w.key === selectedKey) ?? null : null),
+    [editMode, selectedKey, transcription],
+  );
 
   // Handle word click - either seek or edit
   const handleWordClick = React.useCallback(
@@ -1056,16 +1118,23 @@ function TranscriptPanel({
 
   // Save edited word on blur.
   const handleWordBlur = React.useCallback(
-    (word: { start: number; end: number; value: string }, newValue: string) => {
+    (word: TranscriptWord, newValue: string) => {
       dispatch(
         updateCaptionWord({
-          start: word.start,
-          end: word.end,
-          newValue: captionWordText(newValue),
+          key: word.key,
+          value: captionWordText(newValue),
         }),
       );
     },
     [dispatch],
+  );
+
+  const setSelectedTiming = React.useCallback(
+    (timing: { start?: number; end?: number }) => {
+      if (!selectedWord) return;
+      dispatch(updateCaptionWord({ key: selectedWord.key, ...timing }));
+    },
+    [dispatch, selectedWord],
   );
 
   // Handle keydown in contentEditable
@@ -1131,7 +1200,10 @@ function TranscriptPanel({
           <div className="flex items-center gap-3">
             {transcription.length > 0 && (
               <button
-                onClick={() => setEditMode(!editMode)}
+                onClick={() => {
+                  setEditMode(!editMode);
+                  setSelectedKey(null);
+                }}
                 className={cn(
                   "flex items-center gap-1.5 px-2 py-1 rounded-md font-semibold transition-colors",
                   editMode
@@ -1152,8 +1224,15 @@ function TranscriptPanel({
         {editMode && (
           <div className="text-[11px] text-muted-foreground">
             Click a word to edit it. <kbd className="font-mono">Enter</kbd> saves.
-            Clearing a word deletes it.
+            Clearing a word deletes it. Type extra words into a word to add missing ones.
           </div>
+        )}
+        {selectedWord && (
+          <WordTimingBar
+            word={selectedWord}
+            currentTime={currentTime}
+            onChange={setSelectedTiming}
+          />
         )}
       </div>
 
@@ -1220,8 +1299,13 @@ function TranscriptPanel({
 
                     return (
                       <span
-                        key={`${word.start}-${word.end}-${wordIdx}`}
+                        key={`${word.key}-${wordIdx}`}
                         onClick={() => !editMode && handleWordClick(word)}
+                        onFocus={() => {
+                          if (!editMode) return;
+                          setSelectedKey(word.key);
+                          onWordClick(word.start);
+                        }}
                         onBlur={(e) => {
                           if (!editMode) return;
                           const target = e.target as HTMLElement;

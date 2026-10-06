@@ -1,3 +1,5 @@
+import type { WordEdit } from "./captionGrouping";
+
 export interface CaptionWord {
   start: number;
   end: number;
@@ -29,7 +31,8 @@ export interface CaptionStyle {
 export interface CaptionSettings {
   enabled: boolean;
   style: CaptionStyle;
-  wordEdits?: Record<string, string>; // key: "start-end" (timestamps), value: edited text (empty string = deleted)
+  /** key: the word's original "start-end"; value: new text (empty = deleted), or text plus corrected timing. */
+  wordEdits?: Record<string, WordEdit>;
   /** ISO-639-1 of the captions currently shown / exported. Defaults to original. */
   activeLanguage?: string;
 }

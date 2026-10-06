@@ -66,6 +66,57 @@ export function isDeletedCaptionWord(value: string | null | undefined): boolean 
   return captionWordText(value) === "";
 }
 
+/**
+ * A saved word edit, keyed by the word's original transcript timing
+ * (`wordEditKey`). A string replaces the text (empty = deleted); an object
+ * also moves the word to corrected `start` / `end` seconds.
+ */
+export type WordEdit = string | { value: string; start: number; end: number };
+
+export function wordEditKey(word: { start: number; end: number }): string {
+  return `${word.start}-${word.end}`;
+}
+
+/** The word with its edit applied. A text-only edit keeps the original timing. */
+export function editedWord(word: GroupableWord, edit: WordEdit | undefined): GroupableWord {
+  if (edit === undefined || edit === null) {
+    return { start: word.start, end: word.end, value: word.value };
+  }
+  if (typeof edit === "string") return { start: word.start, end: word.end, value: edit };
+  return { start: edit.start, end: edit.end, value: edit.value };
+}
+
+/**
+ * An edit that typed several words into one ("the big") becomes one word each,
+ * splitting its time evenly. That is how a missing word is added: type it next
+ * to a neighbour, then fix the timing if needed.
+ */
+export function splitEditedWord(word: GroupableWord): GroupableWord[] {
+  const parts = captionWordText(word.value).split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return [{ start: word.start, end: word.end, value: word.value }];
+  const step = (word.end - word.start) / parts.length;
+  return parts.map((value, i) => ({
+    start: word.start + step * i,
+    end: i === parts.length - 1 ? word.end : word.start + step * (i + 1),
+    value,
+  }));
+}
+
+/** Transcript words with every edit applied and split, in time order. */
+export function applyWordEdits(
+  words: readonly GroupableWord[],
+  wordEdits?: Record<string, WordEdit> | null,
+): GroupableWord[] {
+  const edits = wordEdits ?? {};
+  return words
+    .flatMap((word) => {
+      const key = wordEditKey(word);
+      const edit = Object.prototype.hasOwnProperty.call(edits, key) ? edits[key] : undefined;
+      return splitEditedWord(editedWord(word, edit));
+    })
+    .sort((a, b) => a.start - b.start);
+}
+
 /** Output frame for a project aspect ratio (matches the Remotion compositions). */
 export function outputFrameForAspect(aspectRatio: string | null | undefined): {
   width: number;
