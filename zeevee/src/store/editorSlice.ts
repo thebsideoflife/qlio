@@ -834,6 +834,8 @@ export const editorSlice = createSlice({
         value?: string;
         start?: number;
         end?: number;
+        /** Put the word back on its transcribed timing. */
+        resetTiming?: boolean;
       }>,
     ) => {
       const { key } = action.payload;
@@ -842,8 +844,9 @@ export const editorSlice = createSlice({
       if (!source || !current) return;
 
       const value = action.payload.value ?? current.value;
-      const start = action.payload.start ?? current.start;
-      const end = action.payload.end ?? current.end;
+      const { resetTiming } = action.payload;
+      const start = resetTiming ? source.start : action.payload.start ?? current.start;
+      const end = resetTiming ? source.end : action.payload.end ?? current.end;
       if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) return;
 
       if (!state.captionSettings.wordEdits) {
