@@ -1053,9 +1053,6 @@ function TranscriptSkeleton() {
 
 /** Seconds a −/+ press moves a word edge. Arrow keys in a field move 0.01s (Shift: 0.1s). */
 const NUDGE_SECONDS = 0.05;
-/** Replay a little before and after the word so its placement can be heard in context. */
-const REPLAY_LEAD_SECONDS = 0.75;
-const REPLAY_TAIL_SECONDS = 0.4;
 
 /**
  * Start / end of the word being edited. Every change applies immediately and
@@ -1319,7 +1316,8 @@ function TranscriptPanel({
 
   const replayWord = React.useCallback(
     (word: TranscriptWord) =>
-      onPlayRange(word.start - REPLAY_LEAD_SECONDS, word.end + REPLAY_TAIL_SECONDS),
+      // Exactly the word's bounds, so what plays is what Start / End say.
+      onPlayRange(word.start, word.end),
     [onPlayRange],
   );
 
