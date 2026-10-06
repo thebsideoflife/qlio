@@ -2,6 +2,7 @@ import React, { useCallback } from "react";
 import {
   captionWordText,
   isDeletedCaptionWord,
+  wordEditKey,
 } from "@/remotion/captionGrouping";
 import { Timeline } from "@/components/editor/Timeline";
 import { IQAgentPanel } from "@/components/editor/iq-agent/IQAgentPanel";
@@ -31,6 +32,7 @@ import {
   resetEditor,
   updateFramingKeyframe,
   updateCaptionWord,
+  type TranscriptWord,
   setGlobalAspectRatio,
   setSquareTopEnabled,
   setAgentRunActive,
@@ -51,6 +53,7 @@ import {
   Clock,
   Pencil,
   PanelTop,
+  Crosshair,
 } from "lucide-react";
 import { getEffectiveKeyframes } from "@/remotion/types";
 import {
@@ -1011,6 +1014,111 @@ function TranscriptSkeleton() {
   );
 }
 
+/**
+ * Start / end of the word being edited, in seconds. Each can be typed or set
+ * to the playhead; "Reset" puts the word back on its transcribed timing.
+ */
+function WordTimingBar({
+  word,
+  currentTime,
+  onChange,
+}: {
+  word: TranscriptWord;
+  currentTime: number;
+  onChange: (timing: { start?: number; end?: number; resetTiming?: boolean }) => void;
+}) {
+  const [error, setError] = React.useState<string | null>(null);
+  React.useEffect(() => setError(null), [word.key, word.start, word.end]);
+  const retimed = word.key !== wordEditKey(word);
+
+  /** Validate here so a bad value is explained instead of silently dropped. */
+  const apply = (name: "start" | "end", seconds: number): boolean => {
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      setError("Enter a time in seconds");
+      return false;
+    }
+    const start = name === "start" ? seconds : word.start;
+    const end = name === "end" ? seconds : word.end;
+    if (end <= start) {
+      setError("End must be after start");
+      return false;
+    }
+    setError(null);
+    if (Math.abs(seconds - word[name]) >= 0.005) onChange({ [name]: seconds });
+    return true;
+  };
+
+  const field = (label: string, name: "start" | "end") => (
+    <label className="flex items-center gap-1">
+      <span className="font-semibold">{label}</span>
+      <input
+        // Remount when the saved value changes so the field shows it.
+        key={`${word.key}-${word[name]}`}
+        type="number"
+        inputMode="decimal"
+        step={0.01}
+        min={0}
+        defaultValue={word[name].toFixed(2)}
+        onKeyDown={(e) => {
+          // Keep editor shortcuts (space = play, arrows, delete) out of the field.
+          e.stopPropagation();
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          if (e.key === "Escape") {
+            (e.target as HTMLInputElement).value = word[name].toFixed(2);
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
+        onBlur={(e) => {
+          const text = e.target.value.trim();
+          if (text === "" || !apply(name, Number(text))) {
+            e.target.value = word[name].toFixed(2);
+          }
+        }}
+        className="h-6 w-20 rounded border border-border bg-background px-1.5 font-mono"
+      />
+      <button
+        type="button"
+        title={`Set ${name} to the playhead (${currentTime.toFixed(2)}s)`}
+        onClick={() => apply(name, Number(currentTime.toFixed(2)))}
+        className="rounded p-1 hover:bg-muted"
+      >
+        <Crosshair className="h-3 w-3" />
+      </button>
+    </label>
+  );
+
+  return (
+    <div className={cn(WORD_TIMING_BAR_CLASS, "gap-1")}>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="max-w-[8rem] shrink-0 truncate font-semibold">
+          “{captionWordText(word.value) || "[deleted]"}”
+        </span>
+        <span className="min-w-0 flex-1 truncate text-red-600 dark:text-red-400">
+          {error}
+        </span>
+        <button
+          type="button"
+          onClick={() => onChange({ resetTiming: true })}
+          className={cn(
+            "shrink-0 rounded px-1.5 font-semibold hover:bg-muted",
+            !retimed && "invisible",
+          )}
+        >
+          Reset timing
+        </button>
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        {field("Start", "start")}
+        {field("End", "end")}
+      </div>
+    </div>
+  );
+}
+
+/** Fixed height, so picking a word or showing an error never shifts the transcript. */
+const WORD_TIMING_BAR_CLASS =
+  "mt-2 flex h-[3.75rem] flex-col justify-center rounded-md bg-muted/60 px-2 py-1.5 text-[11px]";
+
 interface TranscriptPanelProps {
   segments: Array<{ id: string; startTime: number; endTime: number }>;
   currentTime: number;
@@ -1041,6 +1149,12 @@ function TranscriptPanel({
 
   // Edit mode state
   const [editMode, setEditMode] = React.useState(false);
+  // The word whose timing the edit bar shows (its word-edit key).
+  const [selectedKey, setSelectedKey] = React.useState<string | null>(null);
+  const selectedWord = React.useMemo(
+    () => (editMode && selectedKey ? transcription.find((w) => w.key === selectedKey) ?? null : null),
+    [editMode, selectedKey, transcription],
+  );
 
   // Handle word click - either seek or edit
   const handleWordClick = React.useCallback(
@@ -1056,16 +1170,23 @@ function TranscriptPanel({
 
   // Save edited word on blur.
   const handleWordBlur = React.useCallback(
-    (word: { start: number; end: number; value: string }, newValue: string) => {
+    (word: TranscriptWord, newValue: string) => {
       dispatch(
         updateCaptionWord({
-          start: word.start,
-          end: word.end,
-          newValue: captionWordText(newValue),
+          key: word.key,
+          value: captionWordText(newValue),
         }),
       );
     },
     [dispatch],
+  );
+
+  const setSelectedTiming = React.useCallback(
+    (timing: { start?: number; end?: number; resetTiming?: boolean }) => {
+      if (!selectedWord) return;
+      dispatch(updateCaptionWord({ key: selectedWord.key, ...timing }));
+    },
+    [dispatch, selectedWord],
   );
 
   // Handle keydown in contentEditable
@@ -1131,7 +1252,10 @@ function TranscriptPanel({
           <div className="flex items-center gap-3">
             {transcription.length > 0 && (
               <button
-                onClick={() => setEditMode(!editMode)}
+                onClick={() => {
+                  setEditMode(!editMode);
+                  setSelectedKey(null);
+                }}
                 className={cn(
                   "flex items-center gap-1.5 px-2 py-1 rounded-md font-semibold transition-colors",
                   editMode
@@ -1151,10 +1275,22 @@ function TranscriptPanel({
         </div>
         {editMode && (
           <div className="text-[11px] text-muted-foreground">
-            Click a word to edit it. <kbd className="font-mono">Enter</kbd> saves.
-            Clearing a word deletes it.
+            Click a word to edit its text or timing. <kbd className="font-mono">Enter</kbd> saves;
+            clearing a word deletes it. To add a missing word, type it into the word beside it.
           </div>
         )}
+        {editMode &&
+          (selectedWord ? (
+            <WordTimingBar
+              word={selectedWord}
+              currentTime={currentTime}
+              onChange={setSelectedTiming}
+            />
+          ) : (
+            <div className={cn(WORD_TIMING_BAR_CLASS, "text-muted-foreground")}>
+              Select a word to adjust when it appears.
+            </div>
+          ))}
       </div>
 
       {/* Scrollable content */}
@@ -1220,8 +1356,13 @@ function TranscriptPanel({
 
                     return (
                       <span
-                        key={`${word.start}-${word.end}-${wordIdx}`}
+                        key={`${word.key}-${wordIdx}`}
                         onClick={() => !editMode && handleWordClick(word)}
+                        onFocus={() => {
+                          if (!editMode) return;
+                          setSelectedKey(word.key);
+                          onWordClick(word.start);
+                        }}
                         onBlur={(e) => {
                           if (!editMode) return;
                           const target = e.target as HTMLElement;
@@ -1231,12 +1372,18 @@ function TranscriptPanel({
                         }}
                         onKeyDown={editMode ? (e) => handleWordKeyDown(e, word) : undefined}
                         contentEditable={editMode}
+                        title={
+                          editMode
+                            ? `${word.start.toFixed(2)}s – ${word.end.toFixed(2)}s`
+                            : undefined
+                        }
                         suppressContentEditableWarning
                         className={cn(
                           "rounded px-0.5 outline-none",
                           !editMode && "cursor-pointer hover:bg-blue-500/20",
                           !editMode && isActive && "bg-blue-600 text-white",
                           editMode && "cursor-text border-b border-dashed border-blue-400 focus:border-solid focus:border-blue-500 focus:bg-blue-500/10",
+                          editMode && word.key === selectedKey && "border-solid border-blue-500 bg-blue-500/10",
                           isEmpty && "text-muted-foreground opacity-50",
                         )}
                       >

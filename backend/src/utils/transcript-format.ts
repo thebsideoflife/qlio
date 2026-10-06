@@ -5,9 +5,11 @@
  *   - translation: { language, sourceLanguage, lines: CaptionLine[] }
  */
 import {
+  applyWordEdits,
   groupWordsIntoCaptions as groupCaptions,
   holdCaptions,
   type CaptionGroupingOptions,
+  type WordEdit,
 } from "./caption-grouping";
 
 
@@ -353,18 +355,15 @@ export function translationUriMatchesVersion(
 
 export function applyWordEditsToWords(
   words: CaptionWord[],
-  wordEdits?: Record<string, string> | null,
+  wordEdits?: Record<string, WordEdit> | null,
 ): CaptionWord[] {
   if (!wordEdits || Object.keys(wordEdits).length === 0) return words;
-  return words.map((word) => {
-    const key = `${word.start}-${word.end}`;
-    return key in wordEdits ? { ...word, value: wordEdits[key] } : word;
-  });
+  return applyWordEdits(words, wordEdits);
 }
 
 export function captionsFromParsedTranscript(
   parsed: ParsedTranscriptFile,
-  wordEdits?: Record<string, string> | null,
+  wordEdits?: Record<string, WordEdit> | null,
   options: CaptionGroupingOptions = {},
 ): CaptionLine[] {
   // Translation lines were grouped when translated; only the hold applies.

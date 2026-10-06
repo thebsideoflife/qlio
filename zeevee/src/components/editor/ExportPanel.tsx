@@ -10,6 +10,7 @@ import {
 } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
+import { saveProject } from "@/store/syncMiddleware";
 import {
   setLastSegmentRenders,
   setSegments,
@@ -32,7 +33,6 @@ import {
   getProjectJobStatus,
   generateExportMetadata,
   pollExportMetadataStatus,
-  updateProject,
   startExportPackage,
   pollExportPackage,
   getSceneVideoDownload,
@@ -927,12 +927,11 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
 
   const flushProjectForExport = useCallback(async () => {
     if (localVersion <= syncedVersion) return;
-    await updateProject(projectId, {
-      segments,
-      captionSettings,
-      globalFraming,
-      ...(generationMetadata ? { metadata: generationMetadata } : {}),
-    });
+    // Queued behind any autosave in flight, so an older copy never lands after it.
+    await saveProject(
+      { projectId, segments, captionSettings, globalFraming, generationMetadata },
+      true,
+    );
     dispatch(markSynced(localVersion));
   }, [
     projectId,

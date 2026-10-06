@@ -59,4 +59,15 @@ assert(narrow.length > wide.length, `portrait L font makes more captions (${narr
 const edited = captionsFromParsedTranscript(original, { "0.3-0.5": "quick\n" });
 assert(edited[0].text.startsWith("extraordinary quick demonstrate"), `legacy marker ignored: ${JSON.stringify(edited[0].text)}`);
 
+// The export applies word edits the same way: timing moves a word, typed-in words split.
+const exported = captionsFromParsedTranscript(
+  { kind: "original", language: "en", words: [w("a", 0), w("b", 0.3), w("c", 0.6)] },
+  { "0-0.2": { value: "a", start: 0.9, end: 1.1 }, "0.3-0.5": "b plus" },
+);
+const exportedWords = exported.flatMap((c) => c.words ?? []);
+assert(
+  exportedWords.map((x) => x.value).join(" ") === "b plus c a",
+  `export applies timing and split edits (got ${exportedWords.map((x) => x.value).join(" ")})`,
+);
+
 console.log("caption-grouping tests passed");

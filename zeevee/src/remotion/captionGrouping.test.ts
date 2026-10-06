@@ -1,4 +1,5 @@
 import {
+  applyWordEdits,
   CAPTION_HOLD_SECONDS,
   captionCharsPerLine,
   captionGroupingOptions,
@@ -114,5 +115,23 @@ assert(close(twice[0].endTime, 2 + CAPTION_HOLD_SECONDS) && close(twice[0].speec
 // --- renderer content: deleted words hidden, legacy markers ignored
 const content = resolveCaptionContent({ text: "", words: [w("a\n"), w("\n"), w("b")] });
 assert(content.mode === "words" && content.words.length === 2, "legacy marker-only word is a deletion");
+
+// --- word edits: text, timing, and typed-in missing words
+const source = [
+  { start: 1, end: 1.5, value: "hello" },
+  { start: 2, end: 2.4, value: "wurld" },
+  { start: 3, end: 3.6, value: "the" },
+];
+const applied = applyWordEdits(source, {
+  "1-1.5": { value: "hello", start: 2.5, end: 2.9 },
+  "2-2.4": "world",
+  "3-3.6": "the big",
+});
+assert(applied.map((x) => x.value).join(" ") === "world hello the big", "timing edit reorders by start");
+assert(applied[1].start === 2.5 && applied[1].end === 2.9, "timing edit moves the word");
+assert(applied[0].start === 2 && applied[0].end === 2.4, "text edit keeps the original timing");
+assert(close(applied[2].end, 3.3) && close(applied[3].start, 3.3) && applied[3].end === 3.6, "typed-in words split the time evenly");
+assert(applyWordEdits(source, { "2-2.4": "" })[1].value === "", "empty edit still deletes");
+assert(applyWordEdits(source, null).length === 3, "no edits leaves the words alone");
 
 console.log("captionGrouping tests passed");

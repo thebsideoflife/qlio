@@ -10,6 +10,7 @@
  * zeevee/src/remotion/types.ts (the frontend is the source of truth for what
  * the editor shows); keep the two in sync.
  */
+import type { WordEdit } from "./caption-grouping";
 import { ORIGINAL_CAPTION_LANGUAGE } from "./transcript-source";
 
 export interface CaptionStyle {
@@ -26,7 +27,7 @@ export interface CaptionStyle {
 export interface CaptionSettings {
   enabled: boolean;
   style: CaptionStyle;
-  wordEdits?: Record<string, string>;
+  wordEdits?: Record<string, WordEdit>;
   activeLanguage?: string;
 }
 

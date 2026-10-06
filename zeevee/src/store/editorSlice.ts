@@ -17,8 +17,11 @@ import {
 } from "@/remotion/types";
 import {
   captionGroupingOptions,
+  editedWord,
   groupWordsIntoCaptions,
   holdCaptions,
+  splitEditedWord,
+  wordEditKey,
 } from "@/remotion/captionGrouping";
 import { isOriginalCaptionLanguage } from "@/lib/transcript";
 import { reanchorKeyframesToTimeline } from "@/lib/timelineKeyframes";
@@ -61,7 +64,10 @@ interface EditorState {
   /** While the IQ agent is running it owns the cut server-side — autosave stands down. */
   agentRunActive: boolean;
   // Caption state
-  transcriptWords: CaptionWord[];
+  /** The transcript as transcribed (deduped), before word edits. */
+  sourceWords: CaptionWord[];
+  /** sourceWords with edits applied, in time order. `key` is the word-edit key. */
+  transcriptWords: TranscriptWord[];
   captions: CaptionLine[];
   captionSettings: CaptionSettings;
   originalLanguage: string | null;
@@ -139,6 +145,7 @@ const initialState: EditorState = {
   isSyncing: false,
   agentRunActive: false,
   // Caption state
+  sourceWords: [],
   transcriptWords: [],
   captions: [],
   captionSettings: DEFAULT_CAPTION_SETTINGS,
@@ -157,6 +164,9 @@ const initialState: EditorState = {
   generationMetadata: null,
 };
 
+/** A transcript word as the editor shows it; `key` addresses its word edit. */
+export type TranscriptWord = CaptionWord & { key: string };
+
 // Helper to mark state as edited
 // Note: Does NOT clear lastSegmentRenders - user decides when to re-render
 /** Original-language captions are grouped from the transcript words; translations are line text. */
@@ -174,9 +184,19 @@ const showingOriginalCaptions = (state: EditorState): boolean => {
  * caption box for the current style and output aspect (see captionGrouping).
  */
 const regroupOriginalCaptions = (state: EditorState) => {
+  const wordEdits = state.captionSettings.wordEdits ?? {};
+  state.transcriptWords = state.sourceWords
+    .map((word) => {
+      const key = wordEditKey(word);
+      const edit = Object.prototype.hasOwnProperty.call(wordEdits, key)
+        ? wordEdits[key]
+        : undefined;
+      return { ...editedWord(word, edit), key };
+    })
+    .sort((a, b) => a.start - b.start);
   if (!showingOriginalCaptions(state)) return;
   state.captions = groupWordsIntoCaptions(
-    state.transcriptWords,
+    state.transcriptWords.flatMap(splitEditedWord),
     captionGroupingOptions(
       state.captionSettings.style,
       state.globalFraming.aspectRatio,
@@ -697,17 +717,8 @@ export const editorSlice = createSlice({
         return true;
       });
 
-      // Apply any existing word edits to the transcript
-      const wordEdits = state.captionSettings.wordEdits || {};
-      const transcriptWithEdits = dedupedWords.map((word) => {
-        const key = `${word.start}-${word.end}`;
-        // Check if key exists (not just truthy) to handle empty string deletions
-        if (key in wordEdits) {
-          return { ...word, value: wordEdits[key] };
-        }
-        return word;
-      });
-      state.transcriptWords = transcriptWithEdits;
+      state.sourceWords = dedupedWords;
+      // Applies the word edits too.
       regroupOriginalCaptions(state);
     },
     setCaptionLanguageMeta: (
@@ -811,28 +822,38 @@ export const editorSlice = createSlice({
       state.captionSettings.style.position = action.payload;
       markEdited(state);
     },
+    /**
+     * Edit one transcript word's text and/or timing. Saved in
+     * captionSettings.wordEdits under the word's original timing, so it syncs,
+     * fingerprints and migrates like any other word edit.
+     */
     updateCaptionWord: (
       state,
       action: PayloadAction<{
-        start: number;
-        end: number;
-        newValue: string;
+        key: string;
+        value?: string;
+        start?: number;
+        end?: number;
+        /** Put the word back on its transcribed timing. */
+        resetTiming?: boolean;
       }>,
     ) => {
-      const { start, end, newValue } = action.payload;
-      const transcriptWord = state.transcriptWords.find(
-        (word) =>
-          Math.abs(word.start - start) < 0.01 &&
-          Math.abs(word.end - end) < 0.01,
-      );
-      if (!transcriptWord) return;
+      const { key } = action.payload;
+      const source = state.sourceWords.find((word) => wordEditKey(word) === key);
+      const current = state.transcriptWords.find((word) => word.key === key);
+      if (!source || !current) return;
 
-      transcriptWord.value = newValue;
-      const key = `${transcriptWord.start}-${transcriptWord.end}`;
+      const value = action.payload.value ?? current.value;
+      const { resetTiming } = action.payload;
+      const start = resetTiming ? source.start : action.payload.start ?? current.start;
+      const end = resetTiming ? source.end : action.payload.end ?? current.end;
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) return;
+
       if (!state.captionSettings.wordEdits) {
         state.captionSettings.wordEdits = {};
       }
-      state.captionSettings.wordEdits[key] = newValue;
+      state.captionSettings.wordEdits[key] =
+        start === source.start && end === source.end ? value : { value, start, end };
       regroupOriginalCaptions(state);
       markEdited(state);
     },
