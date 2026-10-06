@@ -69,9 +69,13 @@ export function isDeletedCaptionWord(value: string | null | undefined): boolean 
 /**
  * A saved word edit, keyed by the word's original transcript timing
  * (`wordEditKey`). A string replaces the text (empty = deleted); an object
- * also moves the word to corrected `start` / `end` seconds.
+ * also moves the word to corrected `start` / `end` seconds. `estimated` marks
+ * timing that was guessed (an even split of typed-in words) and still needs
+ * a person to check it.
  */
-export type WordEdit = string | { value: string; start: number; end: number };
+export type WordEdit =
+  | string
+  | { value: string; start: number; end: number; estimated?: boolean };
 
 export function wordEditKey(word: { start: number; end: number }): string {
   return `${word.start}-${word.end}`;
@@ -102,18 +106,92 @@ export function splitEditedWord(word: GroupableWord): GroupableWord[] {
   }));
 }
 
-/** Transcript words with every edit applied and split, in time order. */
+/**
+ * Words the user added (not in the transcript) are saved in wordEdits under
+ * keys starting with "+", always as { value, start, end }.
+ */
+export function isAddedWordKey(key: string): boolean {
+  return key.startsWith("+");
+}
+
+/** The added words in `wordEdits`, each with its key. */
+export function addedWords(
+  wordEdits?: Record<string, WordEdit> | null,
+): Array<GroupableWord & { key: string; estimated?: boolean }> {
+  const out: Array<GroupableWord & { key: string; estimated?: boolean }> = [];
+  for (const [key, edit] of Object.entries(wordEdits ?? {})) {
+    if (!isAddedWordKey(key) || !edit || typeof edit !== "object") continue;
+    out.push({
+      key,
+      start: edit.start,
+      end: edit.end,
+      value: edit.value,
+      ...(edit.estimated ? { estimated: true } : {}),
+    });
+  }
+  return out;
+}
+
+/** The transcript timing a word-edit key was made from ("start-end"). */
+function timingFromKey(key: string): { start: number; end: number } | null {
+  const parts = key.split("-");
+  if (parts.length !== 2) return null;
+  const start = Number(parts[0]);
+  const end = Number(parts[1]);
+  return Number.isFinite(start) && Number.isFinite(end) && end > start ? { start, end } : null;
+}
+
+const roundMs = (seconds: number) => Math.round(seconds * 1000) / 1000;
+
+/**
+ * Give every word typed into one word its own entry, so each can be timed and
+ * edited on its own. The first word stays on its key; the rest become added
+ * words. Their time is split evenly, exactly as the captions already showed
+ * them, and every one is marked `estimated` until a person checks it.
+ * Returns `wordEdits` itself when there is nothing to separate.
+ */
+export function separateTypedWords(
+  wordEdits: Record<string, WordEdit>,
+): Record<string, WordEdit> {
+  let out: Record<string, WordEdit> | null = null;
+  for (const [key, edit] of Object.entries(wordEdits)) {
+    const text = typeof edit === "string" ? edit : edit?.value;
+    const parts = captionWordText(text).split(/\s+/).filter(Boolean);
+    if (parts.length < 2) continue;
+    const timing = typeof edit === "string" ? timingFromKey(key) : edit;
+    if (!timing || !(timing.end > timing.start)) continue;
+
+    out ??= { ...wordEdits };
+    const step = (timing.end - timing.start) / parts.length;
+    const edge = (i: number) =>
+      i === 0 ? timing.start : i === parts.length ? timing.end : roundMs(timing.start + step * i);
+    out[key] = { value: parts[0], start: edge(0), end: edge(1), estimated: true };
+    const base = `+${key.replace(/^\+/, "")}`;
+    let n = 1;
+    for (let i = 1; i < parts.length; i++) {
+      while (`${base}.${n}` in out) n++;
+      out[`${base}.${n}`] = { value: parts[i], start: edge(i), end: edge(i + 1), estimated: true };
+    }
+  }
+  return out ?? wordEdits;
+}
+
+/** Transcript words with every edit applied (added words included), in time order. */
 export function applyWordEdits(
   words: readonly GroupableWord[],
   wordEdits?: Record<string, WordEdit> | null,
 ): GroupableWord[] {
   const edits = wordEdits ?? {};
-  return words
-    .flatMap((word) => {
+  return [
+    ...words.map((word) => {
       const key = wordEditKey(word);
       const edit = Object.prototype.hasOwnProperty.call(edits, key) ? edits[key] : undefined;
-      return splitEditedWord(editedWord(word, edit));
-    })
+      return editedWord(word, edit);
+    }),
+    ...addedWords(edits).map(({ start, end, value }) => ({ start, end, value })),
+  ]
+    // Edits saved before words were separated still split evenly.
+    .flatMap(splitEditedWord)
     .sort((a, b) => a.start - b.start);
 }
 

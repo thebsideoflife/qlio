@@ -16,8 +16,12 @@ import {
   getEffectiveKeyframes,
 } from "@/remotion/types";
 import {
+  addedWords,
   captionGroupingOptions,
+  captionWordText,
   editedWord,
+  isAddedWordKey,
+  separateTypedWords,
   groupWordsIntoCaptions,
   holdCaptions,
   splitEditedWord,
@@ -165,7 +169,11 @@ const initialState: EditorState = {
 };
 
 /** A transcript word as the editor shows it; `key` addresses its word edit. */
-export type TranscriptWord = CaptionWord & { key: string };
+export type TranscriptWord = CaptionWord & {
+  key: string;
+  /** Timing was guessed (typed-in words split evenly) and needs checking. */
+  estimated?: boolean;
+};
 
 // Helper to mark state as edited
 // Note: Does NOT clear lastSegmentRenders - user decides when to re-render
@@ -185,15 +193,17 @@ const showingOriginalCaptions = (state: EditorState): boolean => {
  */
 const regroupOriginalCaptions = (state: EditorState) => {
   const wordEdits = state.captionSettings.wordEdits ?? {};
-  state.transcriptWords = state.sourceWords
-    .map((word) => {
+  state.transcriptWords = [
+    ...state.sourceWords.map((word) => {
       const key = wordEditKey(word);
       const edit = Object.prototype.hasOwnProperty.call(wordEdits, key)
         ? wordEdits[key]
         : undefined;
-      return { ...editedWord(word, edit), key };
-    })
-    .sort((a, b) => a.start - b.start);
+      const estimated = !!edit && typeof edit === "object" && !!edit.estimated;
+      return { ...editedWord(word, edit), key, ...(estimated ? { estimated } : {}) };
+    }),
+    ...addedWords(wordEdits),
+  ].sort((a, b) => a.start - b.start);
   if (!showingOriginalCaptions(state)) return;
   state.captions = groupWordsIntoCaptions(
     state.transcriptWords.flatMap(splitEditedWord),
@@ -796,8 +806,14 @@ export const editorSlice = createSlice({
     },
     setCaptionSettings: (state, action: PayloadAction<CaptionSettings>) => {
       state.captionSettings = action.payload;
+      // Older edits held several typed words in one; give each its own entry.
+      const edits = action.payload.wordEdits;
+      const separated = edits ? separateTypedWords(edits) : edits;
+      if (separated !== edits) state.captionSettings.wordEdits = separated;
       regroupOriginalCaptions(state);
-      // Note: setCaptionSettings from API load should NOT set dirty
+      // Note: setCaptionSettings from API load should NOT set dirty — unless
+      // words were separated, which must be saved so they stay separate.
+      if (separated !== edits) markEdited(state);
     },
     updateCaptionStyle: (
       state,
@@ -824,8 +840,10 @@ export const editorSlice = createSlice({
     },
     /**
      * Edit one transcript word's text and/or timing. Saved in
-     * captionSettings.wordEdits under the word's original timing, so it syncs,
-     * fingerprints and migrates like any other word edit.
+     * captionSettings.wordEdits (transcript words under their original
+     * timing, added words under a "+" key), so it syncs, fingerprints and
+     * migrates like any other word edit. Several words typed into one become
+     * separate words; clearing an added word removes it.
      */
     updateCaptionWord: (
       state,
@@ -836,24 +854,39 @@ export const editorSlice = createSlice({
         end?: number;
         /** Put the word back on its transcribed timing. */
         resetTiming?: boolean;
+        /** A person checked the (estimated) timing and it is right. */
+        confirmTiming?: boolean;
       }>,
     ) => {
-      const { key } = action.payload;
-      const source = state.sourceWords.find((word) => wordEditKey(word) === key);
+      const { key, resetTiming, confirmTiming } = action.payload;
+      const added = isAddedWordKey(key);
+      const source = added
+        ? undefined
+        : state.sourceWords.find((word) => wordEditKey(word) === key);
       const current = state.transcriptWords.find((word) => word.key === key);
-      if (!source || !current) return;
+      if (!current || (!added && !source)) return;
 
       const value = action.payload.value ?? current.value;
-      const { resetTiming } = action.payload;
-      const start = resetTiming ? source.start : action.payload.start ?? current.start;
-      const end = resetTiming ? source.end : action.payload.end ?? current.end;
+      const start = resetTiming && source ? source.start : action.payload.start ?? current.start;
+      const end = resetTiming && source ? source.end : action.payload.end ?? current.end;
       if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) return;
 
-      if (!state.captionSettings.wordEdits) {
-        state.captionSettings.wordEdits = {};
+      // Estimated timing stays flagged until the timing is set or confirmed.
+      const timingTouched =
+        resetTiming || confirmTiming ||
+        action.payload.start !== undefined || action.payload.end !== undefined;
+      const estimated = !!current.estimated && !timingTouched;
+      const timed = { value, start, end, ...(estimated ? { estimated: true } : {}) };
+
+      const edits = { ...(state.captionSettings.wordEdits ?? {}) };
+      if (added) {
+        if (captionWordText(value) === "") delete edits[key];
+        else edits[key] = timed;
+      } else {
+        edits[key] =
+          start === source!.start && end === source!.end && !estimated ? value : timed;
       }
-      state.captionSettings.wordEdits[key] =
-        start === source.start && end === source.end ? value : { value, start, end };
+      state.captionSettings.wordEdits = separateTypedWords(edits);
       regroupOriginalCaptions(state);
       markEdited(state);
     },
