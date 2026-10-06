@@ -1,4 +1,5 @@
 import { useRef, useState, useCallback, useEffect, useMemo } from "react";
+import { formatTimecode } from "@/lib/timecode";
 import { flushSync } from "react-dom";
 import { useSelector, useDispatch } from "react-redux";
 import { useParams } from "react-router-dom";
@@ -1473,7 +1474,7 @@ export function Timeline({
             {isPlaying ? <Pause /> : <Play className="ml-0.5" />}
           </ToolbarIconButton>
           <span className="text-base text-foreground font-mono font-bold tabular-nums">
-            {formatTime(effectiveCurrentTime)} / {formatTime(effectiveDuration)}
+            {formatTimecode(effectiveCurrentTime)} / {formatTime(effectiveDuration)}
           </span>
         </div>
 

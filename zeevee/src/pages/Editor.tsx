@@ -40,6 +40,12 @@ import {
   updateProjectTitle,
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
+import {
+  formatTimecode,
+  parseTimecode,
+  previewToSourceTime,
+  sourceToPreviewTime,
+} from "@/lib/timecode";
 import { useRef, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useProjectData } from "@/hooks/useProjectData";
@@ -1062,11 +1068,16 @@ function WordTimingBar({
   currentTime,
   onChange,
   onReplay,
+  toClock,
+  fromClock,
 }: {
   word: TranscriptWord | null;
   currentTime: number;
   onChange: (timing: { start?: number; end?: number; resetTiming?: boolean }) => void;
   onReplay: (word: TranscriptWord) => void;
+  /** Source seconds -> the playhead clock (preview time in Preview mode). */
+  toClock: (seconds: number, word: TranscriptWord) => number;
+  fromClock: (clockSeconds: number, word: TranscriptWord) => number;
 }) {
   const [error, setError] = React.useState<string | null>(null);
   const retimed = word !== null && word.key !== wordEditKey(word);
@@ -1088,7 +1099,7 @@ function WordTimingBar({
     if (!word) return false;
     const rounded = Math.round(seconds * 100) / 100;
     if (!Number.isFinite(rounded) || rounded < 0) {
-      setError("Enter a time in seconds");
+      setError("Enter a time like 1:36.55");
       return false;
     }
     const start = name === "start" ? rounded : word.start;
@@ -1123,7 +1134,7 @@ function WordTimingBar({
           type="text"
           inputMode="decimal"
           disabled={!word}
-          defaultValue={word ? word[name].toFixed(2) : ""}
+          defaultValue={word ? formatTimecode(toClock(word[name], word)) : ""}
           aria-label={`${label} (seconds)`}
           onKeyDown={(e) => {
             // Keep editor shortcuts (space = play, arrows, delete) out of the field.
@@ -1131,7 +1142,7 @@ function WordTimingBar({
             const input = e.target as HTMLInputElement;
             if (e.key === "Enter") input.blur();
             if (e.key === "Escape" && word) {
-              input.value = word[name].toFixed(2);
+              input.value = formatTimecode(toClock(word[name], word));
               input.blur();
             }
             if ((e.key === "ArrowUp" || e.key === "ArrowDown") && word) {
@@ -1142,12 +1153,16 @@ function WordTimingBar({
           }}
           onBlur={(e) => {
             if (!word) return;
+            const shown = formatTimecode(toClock(word[name], word));
             const text = e.target.value.trim();
-            if (text === "" || !apply(name, Number(text))) {
-              e.target.value = word[name].toFixed(2);
+            if (text === shown) return;
+            const clock = parseTimecode(text);
+            if (clock === null) setError("Enter a time like 1:36.55");
+            if (clock === null || !apply(name, fromClock(clock, word))) {
+              e.target.value = shown;
             }
           }}
-          className="h-6 w-16 min-w-0 rounded border border-border bg-background px-1.5 text-center font-mono disabled:opacity-40"
+          className="h-6 w-[5.5rem] min-w-0 rounded border border-border bg-background px-1.5 text-center font-mono tabular-nums disabled:opacity-40"
         />
         <button
           type="button"
@@ -1161,7 +1176,7 @@ function WordTimingBar({
         <button
           type="button"
           disabled={!word}
-          title={`Set ${name} to the playhead (${currentTime.toFixed(2)}s)`}
+          title={`Set ${name} to the playhead${word ? ` (${formatTimecode(toClock(currentTime, word))})` : ""}`}
           onClick={() => apply(name, currentTime)}
           className={iconButton}
         >
@@ -1209,7 +1224,7 @@ function WordTimingBar({
           error ? "text-red-600 dark:text-red-400" : "text-muted-foreground",
         )}
       >
-        {error ?? (word ? "−/+ move 0.05s · ↑/↓ in a field move 0.01s" : "")}
+        {error ?? (word ? "Same clock as the playhead · −/+ move 0.05s · ↑/↓ move 0.01s" : "")}
       </div>
     </div>
   );
@@ -1278,6 +1293,28 @@ function TranscriptPanel({
       );
     },
     [dispatch],
+  );
+
+  // Word times are source-video seconds; show them on the playhead's clock,
+  // which in Preview mode runs over the segments back to back.
+  const toClock = React.useCallback(
+    (seconds: number, word: TranscriptWord) =>
+      previewMode ? sourceToPreviewTime(segments, word.start, seconds) ?? seconds : seconds,
+    [previewMode, segments],
+  );
+  const fromClock = React.useCallback(
+    (clockSeconds: number, word: TranscriptWord) =>
+      previewMode
+        ? previewToSourceTime(segments, word.start, clockSeconds) ?? clockSeconds
+        : clockSeconds,
+    [previewMode, segments],
+  );
+
+  // Card badges on the same clock (anchor: a time inside the segment).
+  const cardClock = React.useCallback(
+    (seconds: number, anchor: number) =>
+      previewMode ? sourceToPreviewTime(segments, anchor, seconds) ?? seconds : seconds,
+    [previewMode, segments],
   );
 
   const replayWord = React.useCallback(
@@ -1390,6 +1427,8 @@ function TranscriptPanel({
             currentTime={currentTime}
             onChange={setSelectedTiming}
             onReplay={replayWord}
+            toClock={toClock}
+            fromClock={fromClock}
           />
         )}
       </div>
@@ -1428,7 +1467,7 @@ function TranscriptPanel({
                         : "bg-muted text-muted-foreground",
                     )}
                   >
-                    {formatTime(chunk.startTime)}
+                    {formatTime(cardClock(chunk.startTime, chunk.startTime))}
                   </span>
                   <div className="flex-1 h-px bg-border" />
                   <span
@@ -1439,7 +1478,7 @@ function TranscriptPanel({
                         : "bg-muted text-muted-foreground",
                     )}
                   >
-                    {formatTime(chunk.endTime)}
+                    {formatTime(cardClock(chunk.endTime, chunk.endTime - 0.001))}
                   </span>
                 </div>
 
@@ -1475,7 +1514,7 @@ function TranscriptPanel({
                         contentEditable={editMode}
                         title={
                           editMode
-                            ? `${word.start.toFixed(2)}s – ${word.end.toFixed(2)}s`
+                            ? `${formatTimecode(toClock(word.start, word))} – ${formatTimecode(toClock(word.end, word))}`
                             : undefined
                         }
                         suppressContentEditableWarning
