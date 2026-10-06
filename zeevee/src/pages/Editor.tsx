@@ -54,6 +54,9 @@ import {
   Pencil,
   PanelTop,
   Crosshair,
+  Minus,
+  Plus,
+  Play,
 } from "lucide-react";
 import { getEffectiveKeyframes } from "@/remotion/types";
 import {
@@ -622,6 +625,33 @@ export default function Editor() {
     video.currentTime = startTime;
   };
 
+  // Play a short stretch (a word being retimed), then pause at its end.
+  const playRangeFrame = useRef<number | null>(null);
+  const handlePlayRange = useCallback((from: number, to: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (playRangeFrame.current !== null) cancelAnimationFrame(playRangeFrame.current);
+    const start = Math.max(0, from);
+    video.currentTime = start;
+    video.play().catch((error) => {
+      if (error.name !== "AbortError") console.error("Playback error:", error);
+    });
+    const watch = () => {
+      // Stop watching if the user paused or jumped elsewhere.
+      if (video.paused || video.currentTime < start - 0.5) {
+        playRangeFrame.current = null;
+        return;
+      }
+      if (video.currentTime >= to) {
+        video.pause();
+        playRangeFrame.current = null;
+        return;
+      }
+      playRangeFrame.current = requestAnimationFrame(watch);
+    };
+    playRangeFrame.current = requestAnimationFrame(watch);
+  }, []);
+
   if (loading) {
     return (
       <div className="flex h-[calc(100vh-4rem)] min-h-0 overflow-hidden">
@@ -970,6 +1000,7 @@ export default function Editor() {
                       duration={duration}
                       previewMode={previewMode}
                       onWordClick={handleWordClick}
+                      onPlayRange={handlePlayRange}
                       loading={loading}
                     />
                   </div>
@@ -1014,110 +1045,175 @@ function TranscriptSkeleton() {
   );
 }
 
+/** Seconds a −/+ press moves a word edge. Arrow keys in a field move 0.01s (Shift: 0.1s). */
+const NUDGE_SECONDS = 0.05;
+/** Replay a little before and after the word so its placement can be heard in context. */
+const REPLAY_LEAD_SECONDS = 0.75;
+const REPLAY_TAIL_SECONDS = 0.4;
+
 /**
- * Start / end of the word being edited, in seconds. Each can be typed or set
- * to the playhead; "Reset" puts the word back on its transcribed timing.
+ * Start / end of the word being edited. Every change applies immediately and
+ * replays the word in the preview, so its timing can be tuned by ear and eye.
+ * With no word selected the same layout is shown disabled, so picking a word
+ * never shifts the transcript.
  */
 function WordTimingBar({
   word,
   currentTime,
   onChange,
+  onReplay,
 }: {
-  word: TranscriptWord;
+  word: TranscriptWord | null;
   currentTime: number;
   onChange: (timing: { start?: number; end?: number; resetTiming?: boolean }) => void;
+  onReplay: (word: TranscriptWord) => void;
 }) {
   const [error, setError] = React.useState<string | null>(null);
-  React.useEffect(() => setError(null), [word.key, word.start, word.end]);
-  const retimed = word.key !== wordEditKey(word);
+  const retimed = word !== null && word.key !== wordEditKey(word);
+
+  // Replay after every timing change to the selected word (not on selecting it).
+  const lastTiming = React.useRef<{ key: string; start: number; end: number } | null>(null);
+  React.useEffect(() => {
+    setError(null);
+    const prev = lastTiming.current;
+    lastTiming.current = word ? { key: word.key, start: word.start, end: word.end } : null;
+    if (word && prev && prev.key === word.key && (prev.start !== word.start || prev.end !== word.end)) {
+      onReplay(word);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [word?.key, word?.start, word?.end]);
 
   /** Validate here so a bad value is explained instead of silently dropped. */
   const apply = (name: "start" | "end", seconds: number): boolean => {
-    if (!Number.isFinite(seconds) || seconds < 0) {
+    if (!word) return false;
+    const rounded = Math.round(seconds * 100) / 100;
+    if (!Number.isFinite(rounded) || rounded < 0) {
       setError("Enter a time in seconds");
       return false;
     }
-    const start = name === "start" ? seconds : word.start;
-    const end = name === "end" ? seconds : word.end;
+    const start = name === "start" ? rounded : word.start;
+    const end = name === "end" ? rounded : word.end;
     if (end <= start) {
       setError("End must be after start");
       return false;
     }
     setError(null);
-    if (Math.abs(seconds - word[name]) >= 0.005) onChange({ [name]: seconds });
+    if (Math.abs(rounded - word[name]) >= 0.005) onChange({ [name]: rounded });
     return true;
   };
 
+  const iconButton = "flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border bg-background hover:bg-muted disabled:opacity-40";
+
   const field = (label: string, name: "start" | "end") => (
-    <label className="flex items-center gap-1">
+    <>
       <span className="font-semibold">{label}</span>
-      <input
-        // Remount when the saved value changes so the field shows it.
-        key={`${word.key}-${word[name]}`}
-        type="number"
-        inputMode="decimal"
-        step={0.01}
-        min={0}
-        defaultValue={word[name].toFixed(2)}
-        onKeyDown={(e) => {
-          // Keep editor shortcuts (space = play, arrows, delete) out of the field.
-          e.stopPropagation();
-          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-          if (e.key === "Escape") {
-            (e.target as HTMLInputElement).value = word[name].toFixed(2);
-            (e.target as HTMLInputElement).blur();
-          }
-        }}
-        onBlur={(e) => {
-          const text = e.target.value.trim();
-          if (text === "" || !apply(name, Number(text))) {
-            e.target.value = word[name].toFixed(2);
-          }
-        }}
-        className="h-6 w-20 rounded border border-border bg-background px-1.5 font-mono"
-      />
-      <button
-        type="button"
-        title={`Set ${name} to the playhead (${currentTime.toFixed(2)}s)`}
-        onClick={() => apply(name, Number(currentTime.toFixed(2)))}
-        className="rounded p-1 hover:bg-muted"
-      >
-        <Crosshair className="h-3 w-3" />
-      </button>
-    </label>
+      <div className="flex min-w-0 items-center gap-1">
+        <button
+          type="button"
+          disabled={!word}
+          title={`${label} ${NUDGE_SECONDS}s earlier`}
+          onClick={() => word && apply(name, word[name] - NUDGE_SECONDS)}
+          className={iconButton}
+        >
+          <Minus className="h-3 w-3" />
+        </button>
+        <input
+          // Remount when the saved value changes so the field shows it.
+          key={word ? `${word.key}-${word[name]}` : "none"}
+          type="text"
+          inputMode="decimal"
+          disabled={!word}
+          defaultValue={word ? word[name].toFixed(2) : ""}
+          aria-label={`${label} (seconds)`}
+          onKeyDown={(e) => {
+            // Keep editor shortcuts (space = play, arrows, delete) out of the field.
+            e.stopPropagation();
+            const input = e.target as HTMLInputElement;
+            if (e.key === "Enter") input.blur();
+            if (e.key === "Escape" && word) {
+              input.value = word[name].toFixed(2);
+              input.blur();
+            }
+            if ((e.key === "ArrowUp" || e.key === "ArrowDown") && word) {
+              e.preventDefault();
+              const step = (e.shiftKey ? 0.1 : 0.01) * (e.key === "ArrowUp" ? 1 : -1);
+              apply(name, word[name] + step);
+            }
+          }}
+          onBlur={(e) => {
+            if (!word) return;
+            const text = e.target.value.trim();
+            if (text === "" || !apply(name, Number(text))) {
+              e.target.value = word[name].toFixed(2);
+            }
+          }}
+          className="h-6 w-16 min-w-0 rounded border border-border bg-background px-1.5 text-center font-mono disabled:opacity-40"
+        />
+        <button
+          type="button"
+          disabled={!word}
+          title={`${label} ${NUDGE_SECONDS}s later`}
+          onClick={() => word && apply(name, word[name] + NUDGE_SECONDS)}
+          className={iconButton}
+        >
+          <Plus className="h-3 w-3" />
+        </button>
+        <button
+          type="button"
+          disabled={!word}
+          title={`Set ${name} to the playhead (${currentTime.toFixed(2)}s)`}
+          onClick={() => apply(name, currentTime)}
+          className={iconButton}
+        >
+          <Crosshair className="h-3 w-3" />
+        </button>
+      </div>
+    </>
   );
 
   return (
-    <div className={cn(WORD_TIMING_BAR_CLASS, "gap-1")}>
+    <div className="mt-2 flex flex-col gap-1.5 rounded-md bg-muted/60 px-2 py-2 text-[11px]">
       <div className="flex min-w-0 items-center gap-2">
-        <span className="max-w-[8rem] shrink-0 truncate font-semibold">
-          “{captionWordText(word.value) || "[deleted]"}”
+        <span className={cn("min-w-0 flex-1 truncate font-semibold", !word && "font-normal text-muted-foreground")}>
+          {word ? `“${captionWordText(word.value) || "[deleted]"}”` : "Select a word to adjust its timing"}
         </span>
-        <span className="min-w-0 flex-1 truncate text-red-600 dark:text-red-400">
-          {error}
-        </span>
+        <button
+          type="button"
+          disabled={!word}
+          onClick={() => word && onReplay(word)}
+          title="Play this word in the preview"
+          className="flex h-6 shrink-0 items-center gap-1 rounded border border-border bg-background px-1.5 font-semibold hover:bg-muted disabled:opacity-40"
+        >
+          <Play className="h-3 w-3" />
+          Play
+        </button>
         <button
           type="button"
           onClick={() => onChange({ resetTiming: true })}
           className={cn(
-            "shrink-0 rounded px-1.5 font-semibold hover:bg-muted",
-            !retimed && "invisible",
+            "h-6 shrink-0 rounded px-1.5 font-semibold hover:bg-muted",
+            !retimed && "hidden",
           )}
         >
-          Reset timing
+          Reset
         </button>
       </div>
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
         {field("Start", "start")}
         {field("End", "end")}
+      </div>
+      {/* Always present, so an error never shifts the transcript. */}
+      <div
+        className={cn(
+          "min-h-[1rem]",
+          error ? "text-red-600 dark:text-red-400" : "text-muted-foreground",
+        )}
+      >
+        {error ?? (word ? "−/+ move 0.05s · ↑/↓ in a field move 0.01s" : "")}
       </div>
     </div>
   );
 }
-
-/** Fixed height, so picking a word or showing an error never shifts the transcript. */
-const WORD_TIMING_BAR_CLASS =
-  "mt-2 flex h-[3.75rem] flex-col justify-center rounded-md bg-muted/60 px-2 py-1.5 text-[11px]";
 
 interface TranscriptPanelProps {
   segments: Array<{ id: string; startTime: number; endTime: number }>;
@@ -1125,6 +1221,8 @@ interface TranscriptPanelProps {
   duration: number;
   previewMode: boolean;
   onWordClick: (startTime: number) => void;
+  /** Play [from, to] in the preview, then pause. */
+  onPlayRange: (from: number, to: number) => void;
   loading: boolean;
 }
 
@@ -1134,6 +1232,7 @@ function TranscriptPanel({
   duration,
   previewMode,
   onWordClick,
+  onPlayRange,
   loading,
 }: TranscriptPanelProps) {
   const dispatch = useDispatch();
@@ -1179,6 +1278,12 @@ function TranscriptPanel({
       );
     },
     [dispatch],
+  );
+
+  const replayWord = React.useCallback(
+    (word: TranscriptWord) =>
+      onPlayRange(word.start - REPLAY_LEAD_SECONDS, word.end + REPLAY_TAIL_SECONDS),
+    [onPlayRange],
   );
 
   const setSelectedTiming = React.useCallback(
@@ -1279,18 +1384,14 @@ function TranscriptPanel({
             clearing a word deletes it. To add a missing word, type it into the word beside it.
           </div>
         )}
-        {editMode &&
-          (selectedWord ? (
-            <WordTimingBar
-              word={selectedWord}
-              currentTime={currentTime}
-              onChange={setSelectedTiming}
-            />
-          ) : (
-            <div className={cn(WORD_TIMING_BAR_CLASS, "text-muted-foreground")}>
-              Select a word to adjust when it appears.
-            </div>
-          ))}
+        {editMode && (
+          <WordTimingBar
+            word={selectedWord}
+            currentTime={currentTime}
+            onChange={setSelectedTiming}
+            onReplay={replayWord}
+          />
+        )}
       </div>
 
       {/* Scrollable content */}

@@ -133,5 +133,16 @@ assert(applied[0].start === 2 && applied[0].end === 2.4, "text edit keeps the or
 assert(close(applied[2].end, 3.3) && close(applied[3].start, 3.3) && applied[3].end === 3.6, "typed-in words split the time evenly");
 assert(applyWordEdits(source, { "2-2.4": "" })[1].value === "", "empty edit still deletes");
 assert(applyWordEdits(source, null).length === 3, "no edits leaves the words alone");
+// Editing one word never touches any other word's text or timing.
+{
+  const many = Array.from({ length: 6 }, (_, i) => ({ start: i, end: i + 0.5, value: `w${i}` }));
+  const before = applyWordEdits(many, null);
+  const after = applyWordEdits(many, { "2-2.5": { value: "w2", start: 2.3, end: 3.4 } });
+  for (const word of before.filter((x) => x.value !== "w2")) {
+    const same = after.find((x) => x.value === word.value)!;
+    assert(same.start === word.start && same.end === word.end, `${word.value} keeps its timing`);
+  }
+  assert(after.length === before.length, "no words added or lost");
+}
 
 console.log("captionGrouping tests passed");
