@@ -1040,7 +1040,7 @@ function WordTimingBar({
 }: {
   word: TranscriptWord | null;
   currentTime: number;
-  onChange: (timing: { start?: number; end?: number; resetTiming?: boolean }) => void;
+  onChange: (timing: { start?: number; end?: number; resetTiming?: boolean; confirmTiming?: boolean }) => void;
   /** Source seconds -> the playhead clock (preview time in Preview mode). */
   toClock: (seconds: number, word: TranscriptWord) => number;
   fromClock: (clockSeconds: number, word: TranscriptWord) => number;
@@ -1149,6 +1149,21 @@ function WordTimingBar({
         <span className={cn("min-w-0 flex-1 truncate font-semibold", !word && "font-normal text-muted-foreground")}>
           {word ? `“${captionWordText(word.value) || "[deleted]"}”` : "Select a word to adjust its timing"}
         </span>
+        {word?.estimated && (
+          <>
+            <span className="shrink-0 rounded bg-amber-500/20 px-1.5 py-0.5 font-semibold text-amber-700 dark:text-amber-300">
+              Estimated timing
+            </span>
+            <button
+              type="button"
+              onClick={() => onChange({ confirmTiming: true })}
+              title="The timing is right; stop flagging this word"
+              className="h-6 shrink-0 rounded border border-border bg-background px-1.5 font-semibold hover:bg-muted"
+            >
+              Timing OK
+            </button>
+          </>
+        )}
         <button
           type="button"
           onClick={() => onChange({ resetTiming: true })}
@@ -1261,8 +1276,32 @@ function TranscriptPanel({
     [previewMode, segments],
   );
 
+  // Words whose timing was estimated, in time order.
+  const estimatedWords = React.useMemo(
+    () => transcription.filter((word) => word.estimated),
+    [transcription],
+  );
+  const estimatedCount = estimatedWords.length;
+
+  /** Open edit mode on the next estimated word after the selected one. */
+  const selectNextEstimated = React.useCallback(() => {
+    if (estimatedWords.length === 0) return;
+    const index = estimatedWords.findIndex((word) => word.key === selectedKey);
+    const next = estimatedWords[(index + 1) % estimatedWords.length];
+    setEditMode(true);
+    setSelectedKey(next.key);
+    onWordClick(next.start);
+    // After edit mode renders, bring the word into view.
+    requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLElement>(
+        `[data-word-key="${CSS.escape(next.key)}"]`,
+      );
+      el?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+  }, [estimatedWords, selectedKey, onWordClick]);
+
   const setSelectedTiming = React.useCallback(
-    (timing: { start?: number; end?: number; resetTiming?: boolean }) => {
+    (timing: { start?: number; end?: number; resetTiming?: boolean; confirmTiming?: boolean }) => {
       if (!selectedWord) return;
       dispatch(updateCaptionWord({ key: selectedWord.key, ...timing }));
     },
@@ -1330,6 +1369,15 @@ function TranscriptPanel({
             {originalLanguage ? ` · ${languageLabel(originalLanguage)}` : ""}
           </span>
           <div className="flex items-center gap-3">
+            {estimatedCount > 0 && (
+              <button
+                onClick={selectNextEstimated}
+                title="Words whose timing was estimated. Click to go to the next one."
+                className="flex items-center gap-1 px-2 py-1 rounded-md font-semibold bg-amber-500/20 text-amber-700 dark:text-amber-300 hover:bg-amber-500/30"
+              >
+                {estimatedCount} to check
+              </button>
+            )}
             {transcription.length > 0 && (
               <button
                 onClick={() => {
@@ -1451,10 +1499,13 @@ function TranscriptPanel({
                         }}
                         onKeyDown={editMode ? (e) => handleWordKeyDown(e, word) : undefined}
                         contentEditable={editMode}
+                        data-word-key={word.key}
                         title={
                           editMode
-                            ? `${formatTimecode(toClock(word.start, word))} – ${formatTimecode(toClock(word.end, word))}`
-                            : undefined
+                            ? `${formatTimecode(toClock(word.start, word))} – ${formatTimecode(toClock(word.end, word))}${word.estimated ? " · estimated timing, check it" : ""}`
+                            : word.estimated
+                              ? "Estimated timing, check it"
+                              : undefined
                         }
                         suppressContentEditableWarning
                         className={cn(
@@ -1463,6 +1514,7 @@ function TranscriptPanel({
                           !editMode && isActive && "bg-blue-600 text-white",
                           editMode && "cursor-text border-b border-dashed border-blue-400 focus:border-solid focus:border-blue-500 focus:bg-blue-500/10",
                           editMode && word.key === selectedKey && "border-solid border-blue-500 bg-blue-500/10",
+                          word.estimated && !(editMode && word.key === selectedKey) && "bg-amber-500/25",
                           isEmpty && "text-muted-foreground opacity-50",
                         )}
                       >

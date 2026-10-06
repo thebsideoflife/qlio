@@ -154,10 +154,10 @@ assert(applyWordEdits(source, null).length === 3, "no edits leaves the words alo
     "24.18-24.3": "Daddy! Help",
     "5-6": "fine",
   });
-  assert(JSON.stringify(separated["99.2-100.1"]) === JSON.stringify({ value: "songwriter,", start: 97.5, end: 97.8 }), "first word keeps the key");
-  assert(JSON.stringify(separated["+99.2-100.1.1"]) === JSON.stringify({ value: "Waddy", start: 97.8, end: 98.1 }), "second word is added");
-  assert(JSON.stringify(separated["+99.2-100.1.2"]) === JSON.stringify({ value: "White.", start: 98.1, end: 98.4 }), "third word is added");
-  assert(JSON.stringify(separated["24.18-24.3"]) === JSON.stringify({ value: "Daddy!", start: 24.18, end: 24.24 }), "string edit uses the key's timing");
+  assert(JSON.stringify(separated["99.2-100.1"]) === JSON.stringify({ value: "songwriter,", start: 97.5, end: 97.8, estimated: true }), "first word keeps the key");
+  assert(JSON.stringify(separated["+99.2-100.1.1"]) === JSON.stringify({ value: "Waddy", start: 97.8, end: 98.1, estimated: true }), "second word is added");
+  assert(JSON.stringify(separated["+99.2-100.1.2"]) === JSON.stringify({ value: "White.", start: 98.1, end: 98.4, estimated: true }), "third word is added");
+  assert(JSON.stringify(separated["24.18-24.3"]) === JSON.stringify({ value: "Daddy!", start: 24.18, end: 24.24, estimated: true }), "string edit uses the key's timing");
   assert(separated["5-6"] === "fine", "single words untouched");
   assert(addedWords(separated).length === 3, "three added words");
   const plain = { "5-6": "fine" };

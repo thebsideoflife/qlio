@@ -69,9 +69,13 @@ export function isDeletedCaptionWord(value: string | null | undefined): boolean 
 /**
  * A saved word edit, keyed by the word's original transcript timing
  * (`wordEditKey`). A string replaces the text (empty = deleted); an object
- * also moves the word to corrected `start` / `end` seconds.
+ * also moves the word to corrected `start` / `end` seconds. `estimated` marks
+ * timing that was guessed (an even split of typed-in words) and still needs
+ * a person to check it.
  */
-export type WordEdit = string | { value: string; start: number; end: number };
+export type WordEdit =
+  | string
+  | { value: string; start: number; end: number; estimated?: boolean };
 
 export function wordEditKey(word: { start: number; end: number }): string {
   return `${word.start}-${word.end}`;
@@ -113,11 +117,17 @@ export function isAddedWordKey(key: string): boolean {
 /** The added words in `wordEdits`, each with its key. */
 export function addedWords(
   wordEdits?: Record<string, WordEdit> | null,
-): Array<GroupableWord & { key: string }> {
-  const out: Array<GroupableWord & { key: string }> = [];
+): Array<GroupableWord & { key: string; estimated?: boolean }> {
+  const out: Array<GroupableWord & { key: string; estimated?: boolean }> = [];
   for (const [key, edit] of Object.entries(wordEdits ?? {})) {
     if (!isAddedWordKey(key) || !edit || typeof edit !== "object") continue;
-    out.push({ key, start: edit.start, end: edit.end, value: edit.value });
+    out.push({
+      key,
+      start: edit.start,
+      end: edit.end,
+      value: edit.value,
+      ...(edit.estimated ? { estimated: true } : {}),
+    });
   }
   return out;
 }
@@ -137,7 +147,8 @@ const roundMs = (seconds: number) => Math.round(seconds * 1000) / 1000;
  * Give every word typed into one word its own entry, so each can be timed and
  * edited on its own. The first word stays on its key; the rest become added
  * words. Their time is split evenly, exactly as the captions already showed
- * them. Returns `wordEdits` itself when there is nothing to separate.
+ * them, and every one is marked `estimated` until a person checks it.
+ * Returns `wordEdits` itself when there is nothing to separate.
  */
 export function separateTypedWords(
   wordEdits: Record<string, WordEdit>,
@@ -154,12 +165,12 @@ export function separateTypedWords(
     const step = (timing.end - timing.start) / parts.length;
     const edge = (i: number) =>
       i === 0 ? timing.start : i === parts.length ? timing.end : roundMs(timing.start + step * i);
-    out[key] = { value: parts[0], start: edge(0), end: edge(1) };
+    out[key] = { value: parts[0], start: edge(0), end: edge(1), estimated: true };
     const base = `+${key.replace(/^\+/, "")}`;
     let n = 1;
     for (let i = 1; i < parts.length; i++) {
       while (`${base}.${n}` in out) n++;
-      out[`${base}.${n}`] = { value: parts[i], start: edge(i), end: edge(i + 1) };
+      out[`${base}.${n}`] = { value: parts[i], start: edge(i), end: edge(i + 1), estimated: true };
     }
   }
   return out ?? wordEdits;

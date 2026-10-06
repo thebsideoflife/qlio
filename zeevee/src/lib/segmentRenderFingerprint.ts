@@ -29,7 +29,16 @@ function sortedWordEdits(
   if (!wordEdits) return [];
   return Object.keys(wordEdits)
     .sort()
-    .map((key) => [key, wordEdits[key]] as [string, WordEdit]);
+    .map((key) => {
+      const edit = wordEdits[key];
+      // `estimated` is a review flag; it never changes the burn-in.
+      return [
+        key,
+        edit && typeof edit === "object"
+          ? { value: edit.value, start: edit.start, end: edit.end }
+          : edit,
+      ] as [string, WordEdit];
+    });
 }
 
 function normalizeFraming(framing: SegmentFraming | undefined) {
