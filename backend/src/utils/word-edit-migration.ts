@@ -19,7 +19,7 @@
  * for a person to review.
  */
 
-import { wordEditKey, type WordEdit } from "./caption-grouping";
+import { isAddedWordKey, wordEditKey, type WordEdit } from "./caption-grouping";
 
 export interface MigratableWord {
   start: number;
@@ -100,7 +100,13 @@ export function migrateWordEdits(
     placed.set(targetKey, { key, value, distance });
   };
 
+  const kept: Record<string, WordEdit> = {};
   for (const [key, value] of Object.entries(wordEdits)) {
+    // Added words carry their own timing and belong to no transcript word.
+    if (isAddedWordKey(key)) {
+      kept[key] = value;
+      continue;
+    }
     const previous = previousByKey.get(key);
     if (!previous) {
       dropped.push({ key, value, previousText: null, reason: "not-in-previous-transcript" });
@@ -118,7 +124,7 @@ export function migrateWordEdits(
     dropped.push({ key, value, previousText: previous.value, reason: "no-matching-word" });
   }
 
-  const migrated: Record<string, WordEdit> = {};
+  const migrated: Record<string, WordEdit> = { ...kept };
   for (const [targetKey, { value }] of placed) migrated[targetKey] = value;
-  return { wordEdits: migrated, migrated: placed.size, dropped };
+  return { wordEdits: migrated, migrated: placed.size + Object.keys(kept).length, dropped };
 }

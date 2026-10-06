@@ -1,5 +1,7 @@
 import {
+  addedWords,
   applyWordEdits,
+  separateTypedWords,
   CAPTION_HOLD_SECONDS,
   captionCharsPerLine,
   captionGroupingOptions,
@@ -143,6 +145,35 @@ assert(applyWordEdits(source, null).length === 3, "no edits leaves the words alo
     assert(same.start === word.start && same.end === word.end, `${word.value} keeps its timing`);
   }
   assert(after.length === before.length, "no words added or lost");
+}
+
+// --- typed-in words become separate, individually timed words
+{
+  const separated = separateTypedWords({
+    "99.2-100.1": { value: "songwriter, Waddy White.", start: 97.5, end: 98.4 },
+    "24.18-24.3": "Daddy! Help",
+    "5-6": "fine",
+  });
+  assert(JSON.stringify(separated["99.2-100.1"]) === JSON.stringify({ value: "songwriter,", start: 97.5, end: 97.8 }), "first word keeps the key");
+  assert(JSON.stringify(separated["+99.2-100.1.1"]) === JSON.stringify({ value: "Waddy", start: 97.8, end: 98.1 }), "second word is added");
+  assert(JSON.stringify(separated["+99.2-100.1.2"]) === JSON.stringify({ value: "White.", start: 98.1, end: 98.4 }), "third word is added");
+  assert(JSON.stringify(separated["24.18-24.3"]) === JSON.stringify({ value: "Daddy!", start: 24.18, end: 24.24 }), "string edit uses the key's timing");
+  assert(separated["5-6"] === "fine", "single words untouched");
+  assert(addedWords(separated).length === 3, "three added words");
+  const plain = { "5-6": "fine" };
+  assert(separateTypedWords(plain) === plain, "nothing to separate returns the same object");
+  // Separating never changes what the captions show.
+  const words = [{ start: 24.18, end: 24.3, value: "x" }, { start: 99.2, end: 100.1, value: "y" }];
+  const legacy = { "99.2-100.1": { value: "songwriter, Waddy White.", start: 97.5, end: 98.4 }, "24.18-24.3": "Daddy! Help" };
+  const show = (e: Record<string, unknown>) =>
+    applyWordEdits(words, e as never).map((x) => `${x.value}@${x.start.toFixed(3)}-${x.end.toFixed(3)}`).join(" ");
+  assert(show(legacy) === show(separateTypedWords(legacy)), `same captions (${show(legacy)} vs ${show(separateTypedWords(legacy))})`);
+  // A second split of an added word picks a free key.
+  const again = separateTypedWords({ ...separated, "+99.2-100.1.1": { value: "Waddy Waddy", start: 97.8, end: 98.1 } });
+  assert(
+    (again["+99.2-100.1.1.1"] as { value: string }).value === "Waddy" && Object.keys(again).length === 7,
+    `splitting an added word adds one more (${Object.keys(again).join(", ")})`,
+  );
 }
 
 console.log("captionGrouping tests passed");

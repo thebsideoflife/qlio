@@ -69,4 +69,16 @@ assert(e.migrated === 0, "no match outside the window");
   assert(JSON.stringify(result.wordEdits) === JSON.stringify({ "5.02-5.31": timed }), "timing edit migrates");
 }
 
+// Added words keep their own key and timing across a re-transcribe.
+{
+  const added = { value: "Waddy", start: 97.8, end: 98.1 };
+  const result = migrateWordEdits(
+    [{ start: 5, end: 5.3, value: "Mere" }],
+    [{ start: 5.02, end: 5.31, value: "Mere" }],
+    { "5-5.3": "Mayor", "+5-5.3.1": added },
+  );
+  assert(JSON.stringify(result.wordEdits["+5-5.3.1"]) === JSON.stringify(added), "added word kept");
+  assert(result.wordEdits["5.02-5.31"] === "Mayor" && result.dropped.length === 0, "transcript edit still moves");
+}
+
 console.log("word-edit-migration tests passed");
