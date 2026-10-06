@@ -132,6 +132,17 @@ export function addedWords(
   return out;
 }
 
+/** A free key for a word added after the word saved under `afterKey`. */
+export function nextAddedWordKey(
+  wordEdits: Record<string, WordEdit>,
+  afterKey: string,
+): string {
+  const base = `+${afterKey.replace(/^\+/, "")}`;
+  let n = 1;
+  while (`${base}.${n}` in wordEdits) n++;
+  return `${base}.${n}`;
+}
+
 /** The transcript timing a word-edit key was made from ("start-end"). */
 function timingFromKey(key: string): { start: number; end: number } | null {
   const parts = key.split("-");
@@ -166,11 +177,13 @@ export function separateTypedWords(
     const edge = (i: number) =>
       i === 0 ? timing.start : i === parts.length ? timing.end : roundMs(timing.start + step * i);
     out[key] = { value: parts[0], start: edge(0), end: edge(1), estimated: true };
-    const base = `+${key.replace(/^\+/, "")}`;
-    let n = 1;
     for (let i = 1; i < parts.length; i++) {
-      while (`${base}.${n}` in out) n++;
-      out[`${base}.${n}`] = { value: parts[i], start: edge(i), end: edge(i + 1), estimated: true };
+      out[nextAddedWordKey(out, key)] = {
+        value: parts[i],
+        start: edge(i),
+        end: edge(i + 1),
+        estimated: true,
+      };
     }
   }
   return out ?? wordEdits;

@@ -3,6 +3,7 @@ import {
   captionWordText,
   isAddedWordKey,
   isDeletedCaptionWord,
+  nextAddedWordKey,
   wordEditKey,
 } from "@/remotion/captionGrouping";
 import { Timeline } from "@/components/editor/Timeline";
@@ -33,6 +34,7 @@ import {
   resetEditor,
   updateFramingKeyframe,
   updateCaptionWord,
+  addCaptionWord,
   type TranscriptWord,
   setGlobalAspectRatio,
   setSquareTopEnabled,
@@ -1037,6 +1039,7 @@ function WordTimingBar({
   onChange,
   toClock,
   fromClock,
+  onAddWord,
 }: {
   word: TranscriptWord | null;
   currentTime: number;
@@ -1044,6 +1047,8 @@ function WordTimingBar({
   /** Source seconds -> the playhead clock (preview time in Preview mode). */
   toClock: (seconds: number, word: TranscriptWord) => number;
   fromClock: (clockSeconds: number, word: TranscriptWord) => number;
+  /** Insert word(s) right after this word. */
+  onAddWord: (value: string) => void;
 }) {
   const [error, setError] = React.useState<string | null>(null);
   // Added words have no transcribed timing to go back to.
@@ -1178,6 +1183,34 @@ function WordTimingBar({
       <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
         {field("Start", "start")}
         {field("End", "end")}
+        <span className="font-semibold">Add</span>
+        <form
+          className="flex min-w-0 items-center gap-1"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const input = e.currentTarget.elements.namedItem("word") as HTMLInputElement;
+            onAddWord(input.value);
+            input.value = "";
+          }}
+        >
+          <input
+            name="word"
+            disabled={!word}
+            placeholder={word ? "missing word(s) after this one" : ""}
+            aria-label="Add word(s) after this word"
+            // Keep editor shortcuts (space = play, arrows, delete) out of the field.
+            onKeyDown={(e) => e.stopPropagation()}
+            className="h-6 min-w-0 flex-1 rounded border border-border bg-background px-1.5 disabled:opacity-40"
+          />
+          <button
+            type="submit"
+            disabled={!word}
+            className="flex h-6 shrink-0 items-center gap-1 rounded border border-border bg-background px-1.5 font-semibold hover:bg-muted disabled:opacity-40"
+          >
+            <Plus className="h-3 w-3" />
+            Add
+          </button>
+        </form>
       </div>
       {/* Always present, so an error never shifts the transcript. */}
       <div
@@ -1242,6 +1275,8 @@ function TranscriptPanel({
   );
 
   // Save edited word on blur.
+  // How often each word was saved; part of its box's key (see the word span).
+  const [savedTimes, setSavedTimes] = React.useState<Record<string, number>>({});
   const handleWordBlur = React.useCallback(
     (word: TranscriptWord, newValue: string) => {
       dispatch(
@@ -1250,8 +1285,22 @@ function TranscriptPanel({
           value: captionWordText(newValue),
         }),
       );
+      setSavedTimes((prev) => ({ ...prev, [word.key]: (prev[word.key] ?? 0) + 1 }));
     },
     [dispatch],
+  );
+
+  // Insert word(s) after the selected word, then select the first new one.
+  const wordEdits = useSelector((state: RootState) => state.editor.captionSettings.wordEdits);
+  const addWordAfterSelected = React.useCallback(
+    (value: string) => {
+      if (!selectedWord || captionWordText(value) === "") return;
+      const newKey = nextAddedWordKey(wordEdits ?? {}, selectedWord.key);
+      dispatch(addCaptionWord({ afterKey: selectedWord.key, value }));
+      setSelectedKey(newKey);
+      onWordClick(selectedWord.end);
+    },
+    [dispatch, selectedWord, wordEdits, onWordClick],
   );
 
   // Word times are source-video seconds; show them on the playhead's clock,
@@ -1404,7 +1453,7 @@ function TranscriptPanel({
         {editMode && (
           <div className="text-[11px] text-muted-foreground">
             Click a word to edit its text or timing. <kbd className="font-mono">Enter</kbd> saves;
-            clearing a word deletes it. To add a missing word, type it into the word beside it (it becomes its own word).
+            clearing a word deletes it. To add a missing word, select the word before it and use Add.
           </div>
         )}
         {editMode && (
@@ -1414,6 +1463,7 @@ function TranscriptPanel({
             onChange={setSelectedTiming}
             toClock={toClock}
             fromClock={fromClock}
+            onAddWord={addWordAfterSelected}
           />
         )}
       </div>
@@ -1481,9 +1531,10 @@ function TranscriptPanel({
 
                     return (
                       <span
-                        // Includes the text: a saved edit remounts the span, so the
-                        // typed DOM can never linger next to the saved words.
-                        key={`${word.key}-${word.value}-${wordIdx}`}
+                        // Rebuilt after every save of this word, so what was typed
+                        // (e.g. "the big", now split into "the" + "big") can never
+                        // linger in the box and be saved again.
+                        key={`${word.key}-${savedTimes[word.key] ?? 0}-${wordIdx}`}
                         onClick={() => !editMode && handleWordClick(word)}
                         onFocus={() => {
                           if (!editMode) return;

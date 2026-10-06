@@ -21,6 +21,8 @@ import {
   captionWordText,
   editedWord,
   isAddedWordKey,
+  isDeletedCaptionWord,
+  nextAddedWordKey,
   separateTypedWords,
   groupWordsIntoCaptions,
   holdCaptions,
@@ -891,6 +893,55 @@ export const editorSlice = createSlice({
       markEdited(state);
     },
 
+    /**
+     * Insert word(s) right after the word saved under `afterKey`, each as its
+     * own added word. They fill the gap before the next word (or a short
+     * stretch after the word when there is none) and are flagged estimated
+     * so the timing gets checked.
+     */
+    addCaptionWord: (
+      state,
+      action: PayloadAction<{ afterKey: string; value: string }>,
+    ) => {
+      const { afterKey } = action.payload;
+      const parts = captionWordText(action.payload.value).split(/\s+/).filter(Boolean);
+      const index = state.transcriptWords.findIndex((word) => word.key === afterKey);
+      if (parts.length === 0 || index < 0) return;
+      const after = state.transcriptWords[index];
+      const next = state.transcriptWords
+        .slice(index + 1)
+        .find((word) => word.start >= after.end && !isDeletedCaptionWord(word.value));
+
+      // New words must land between this word and the next one, so they stay
+      // in order. Use the gap before the next word (at most 0.6s a word); with
+      // no usable gap, share the second half of this word's time. Either way
+      // they are flagged for checking.
+      const PER_WORD = 0.3;
+      let start = after.end;
+      let end = next
+        ? Math.min(next.start, start + PER_WORD * 2 * parts.length)
+        : start + PER_WORD * parts.length;
+      if (end - start < 0.05 * parts.length) {
+        start = (after.start + after.end) / 2;
+        end = after.end;
+      }
+      const step = (end - start) / parts.length;
+      const round = (t: number) => Math.round(t * 1000) / 1000;
+
+      const edits = { ...(state.captionSettings.wordEdits ?? {}) };
+      parts.forEach((value, i) => {
+        edits[nextAddedWordKey(edits, afterKey)] = {
+          value,
+          start: round(start + step * i),
+          end: i === parts.length - 1 ? round(end) : round(start + step * (i + 1)),
+          estimated: true,
+        };
+      });
+      state.captionSettings.wordEdits = edits;
+      regroupOriginalCaptions(state);
+      markEdited(state);
+    },
+
     // Framing actions
     setGlobalFraming: (state, action: PayloadAction<GlobalFramingSettings>) => {
       state.globalFraming = action.payload;
@@ -1300,6 +1351,7 @@ export const {
   setCaptionsEnabled,
   updateCaptionPosition,
   updateCaptionWord,
+  addCaptionWord,
   // Framing actions
   setGlobalFraming,
   setGlobalAspectRatio,
