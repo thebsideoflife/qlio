@@ -61,9 +61,14 @@ export function captionWordText(value: string | null | undefined): string {
   return String(value ?? "").replace(/\n+$/, "").trim();
 }
 
-/** A word edit whose visible text is empty is a deletion. */
+// The editor used to show deleted words as a "[deleted]" placeholder, and
+// blurring one could save that placeholder as the word's text.
+const LEGACY_DELETED_PLACEHOLDER = "[deleted]";
+
+/** A word edit whose visible text is empty (or the old placeholder) is a deletion. */
 export function isDeletedCaptionWord(value: string | null | undefined): boolean {
-  return captionWordText(value) === "";
+  const text = captionWordText(value);
+  return text === "" || text === LEGACY_DELETED_PLACEHOLDER;
 }
 
 /**

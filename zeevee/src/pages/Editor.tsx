@@ -1279,6 +1279,9 @@ function TranscriptPanel({
   const [savedTimes, setSavedTimes] = React.useState<Record<string, number>>({});
   const handleWordBlur = React.useCallback(
     (word: TranscriptWord, newValue: string) => {
+      // Leaving a word without changing it saves nothing, so whatever the
+      // box displays can never be written back as the word by accident.
+      if (captionWordText(newValue) === captionWordText(word.value)) return;
       dispatch(
         updateCaptionWord({
           key: word.key,
@@ -1522,10 +1525,9 @@ function TranscriptPanel({
                   {chunk.words.map((word, wordIdx) => {
                     const isActive =
                       currentTime >= word.start && currentTime <= word.end;
-                    const isEmpty = isDeletedCaptionWord(word.value);
 
-                    // Skip rendering empty words entirely (they were deleted)
-                    if (isEmpty && !editMode) {
+                    // Deleted words (empty text) are not shown at all
+                    if (isDeletedCaptionWord(word.value)) {
                       return null;
                     }
 
@@ -1545,7 +1547,7 @@ function TranscriptPanel({
                           if (!editMode) return;
                           const target = e.target as HTMLElement;
                           const newVal = target.textContent || "";
-                          // Always save, even if empty (deletion) or same value
+                          // Saves only a real change; empty text deletes the word
                           handleWordBlur(word, newVal);
                         }}
                         onKeyDown={editMode ? (e) => handleWordKeyDown(e, word) : undefined}
@@ -1566,10 +1568,9 @@ function TranscriptPanel({
                           editMode && "cursor-text border-b border-dashed border-blue-400 focus:border-solid focus:border-blue-500 focus:bg-blue-500/10",
                           editMode && word.key === selectedKey && "border-solid border-blue-500 bg-blue-500/10",
                           word.estimated && !(editMode && word.key === selectedKey) && "bg-amber-500/25",
-                          isEmpty && "text-muted-foreground opacity-50",
                         )}
                       >
-                        {isEmpty ? "[deleted]" : captionWordText(word.value)}
+                        {captionWordText(word.value)}
                       </span>
                     );
                   }).reduce<React.ReactNode[]>((acc, node) => {
