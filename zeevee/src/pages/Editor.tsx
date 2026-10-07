@@ -1279,6 +1279,9 @@ function TranscriptPanel({
   const [savedTimes, setSavedTimes] = React.useState<Record<string, number>>({});
   const handleWordBlur = React.useCallback(
     (word: TranscriptWord, newValue: string) => {
+      // Leaving a word without changing it saves nothing, so whatever the
+      // box displays can never be written back as the word by accident.
+      if (captionWordText(newValue) === captionWordText(word.value)) return;
       dispatch(
         updateCaptionWord({
           key: word.key,
@@ -1544,7 +1547,7 @@ function TranscriptPanel({
                           if (!editMode) return;
                           const target = e.target as HTMLElement;
                           const newVal = target.textContent || "";
-                          // Always save, even if empty (deletion) or same value
+                          // Saves only a real change; empty text deletes the word
                           handleWordBlur(word, newVal);
                         }}
                         onKeyDown={editMode ? (e) => handleWordKeyDown(e, word) : undefined}
