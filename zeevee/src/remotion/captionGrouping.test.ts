@@ -28,6 +28,7 @@ assert(captionWordText("tonight\n") === "tonight", "legacy marker stripped from 
 assert(captionWordText("  hi \n") === "hi", "text is trimmed");
 assert(isDeletedCaptionWord("") && isDeletedCaptionWord("\n") && isDeletedCaptionWord("  "), "empty text is deleted");
 assert(!isDeletedCaptionWord("a"), "non-empty is kept");
+assert(isDeletedCaptionWord("[deleted]") && isDeletedCaptionWord("[deleted]\n"), "legacy placeholder text is deleted");
 
 // --- fit budget
 assert(outputFrameForAspect("9:16").height === 1920, "portrait frame");
@@ -81,6 +82,7 @@ const noStrandedSentence = groupWordsIntoCaptions(strandedSentence, { holdSecond
 assert(noStrandedSentence.every((c) => c.words!.length > 1), "a sentence boundary cannot strand a single word");
 
 // deleted words are dropped and do not count
+assert(groupWordsIntoCaptions([w("a", 0), w("[deleted]", 0.3), w("b", 0.6)], { minPauseBetweenLines: Number.POSITIVE_INFINITY })[0].text === "a b", "legacy placeholder is dropped from captions");
 const withDeleted = groupWordsIntoCaptions(
   [w("a", 0), w("", 0.3), w("", 0.6), w("b", 0.9)],
   { maxWords: 2, minPauseBetweenLines: Number.POSITIVE_INFINITY, holdSeconds: 0 },
