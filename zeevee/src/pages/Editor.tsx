@@ -77,6 +77,7 @@ import { probeSourceFps } from "@/lib/sourceFps";
 import type { AspectRatio } from "@/remotion/types";
 import {
   groupWordsForTranscript,
+  wordsOverlappingSegments,
   languageLabel,
 } from "@/lib/transcript";
 
@@ -1152,7 +1153,7 @@ function WordTimingBar({
     <div className="mt-2 flex flex-col gap-1.5 rounded-md bg-muted/60 px-2 py-2 text-[11px]">
       <div className="flex min-w-0 items-center gap-2">
         <span className={cn("min-w-0 flex-1 truncate font-semibold", !word && "font-normal text-muted-foreground")}>
-          {word ? `“${captionWordText(word.value) || "[deleted]"}”` : "Select a word to adjust its timing"}
+          {word ? `“${captionWordText(word.value)}”` : "Select a word to adjust its timing"}
         </span>
         {word?.estimated && (
           <>
@@ -1258,7 +1259,11 @@ function TranscriptPanel({
   // The word whose timing the edit bar shows (its word-edit key).
   const [selectedKey, setSelectedKey] = React.useState<string | null>(null);
   const selectedWord = React.useMemo(
-    () => (editMode && selectedKey ? transcription.find((w) => w.key === selectedKey) ?? null : null),
+    // A deleted word is hidden, so it cannot stay selected.
+    () =>
+      editMode && selectedKey
+        ? transcription.find((w) => w.key === selectedKey && !isDeletedCaptionWord(w.value)) ?? null
+        : null,
     [editMode, selectedKey, transcription],
   );
 
@@ -1330,7 +1335,7 @@ function TranscriptPanel({
 
   // Words whose timing was estimated, in time order.
   const estimatedWords = React.useMemo(
-    () => transcription.filter((word) => word.estimated),
+    () => transcription.filter((word) => word.estimated && !isDeletedCaptionWord(word.value)),
     [transcription],
   );
   const estimatedCount = estimatedWords.length;
@@ -1384,16 +1389,16 @@ function TranscriptPanel({
   // NOT on every currentTime change (which happens 60fps)
   const filteredTranscription = React.useMemo(() => {
     if (!previewMode) return transcription;
-    return transcription.filter((word) =>
-      segments.some(
-        (seg) => word.start >= seg.startTime && word.end <= seg.endTime,
-      ),
-    );
+    return wordsOverlappingSegments(transcription, segments);
   }, [transcription, segments, previewMode]);
 
   // Display grouping never changes the short caption lines used by video/export.
+  // Deleted words are left out first, so no card is ever all-deleted and empty.
   const wordCards = React.useMemo(
-    () => groupWordsForTranscript(filteredTranscription),
+    () =>
+      groupWordsForTranscript(
+        filteredTranscription.filter((word) => !isDeletedCaptionWord(word.value)),
+      ),
     [filteredTranscription],
   );
   const hasTranscript = wordCards.length > 0;
