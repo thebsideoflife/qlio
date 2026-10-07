@@ -64,3 +64,20 @@ export function previewToSourceTime(
   const zero = sourceToPreviewTime(segments, anchor, 0);
   return zero === null ? null : previewTime - zero;
 }
+
+/**
+ * A time inside the segment that [start, end) overlaps, to anchor
+ * sourceToPreviewTime for a word (or a card's first/last word) that a segment
+ * edge cuts through. Its start can sit just before the segment, which is in
+ * no segment at all. Null when [start, end) overlaps no segment.
+ */
+export function anchorInSegments(
+  segments: readonly TimelineSegment[],
+  start: number,
+  end: number,
+): number | null {
+  for (const seg of [...segments].sort((a, b) => a.startTime - b.startTime)) {
+    if (end > seg.startTime && start < seg.endTime) return Math.max(start, seg.startTime);
+  }
+  return null;
+}

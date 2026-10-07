@@ -1,4 +1,5 @@
 import {
+  anchorInSegments,
   formatTimecode,
   parseTimecode,
   previewToSourceTime,
@@ -35,5 +36,16 @@ assert(sourceToPreviewTime(segments, 105, 105.5) === 15.5, "second segment offse
 assert(sourceToPreviewTime(segments, 105, 111) === 21, "edge past the segment end stays linear");
 assert(sourceToPreviewTime(segments, 50, 50) === null, "outside every segment");
 assert(previewToSourceTime(segments, 105, 15.5) === 105.5, "inverse");
+
+// A word cut by a segment edge anchors inside the segment it overlaps.
+// Real case: "We" 233.82-234.18, segment starts 233.8626.
+const cut = [{ startTime: 139.6, endTime: 227.7 }, { startTime: 233.8626, endTime: 329.5 }];
+const we = anchorInSegments(cut, 233.82, 234.18)!;
+assert(we === 233.8626, "anchor clamps to the segment start");
+const wePreview = sourceToPreviewTime(cut, we, 233.82)!;
+assert(Math.abs(wePreview - (88.1 - 0.0426)) < 1e-9, `"We" maps to the preview clock, just before the cut (${wePreview})`);
+assert(previewToSourceTime(cut, we, wePreview)! - 233.82 < 1e-9, "and back");
+assert(anchorInSegments(cut, 229, 230) === null, "a word between segments has no anchor");
+assert(anchorInSegments(cut, 227.5, 227.9) === 227.5, "a word over a segment end anchors at its start");
 
 console.log("timecode tests passed");

@@ -44,6 +44,7 @@ import {
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
 import {
+  anchorInSegments,
   formatTimecode,
   parseTimecode,
   previewToSourceTime,
@@ -997,6 +998,8 @@ export default function Editor() {
 
 // Helper to format time as MM:SS
 function formatTime(seconds: number): string {
+  // A word starting just before the first segment maps slightly below zero.
+  seconds = Math.max(0, seconds);
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${secs.toString().padStart(2, "0")}`;
@@ -1041,6 +1044,7 @@ function WordTimingBar({
   toClock,
   fromClock,
   onAddWord,
+  timingProblem,
 }: {
   word: TranscriptWord | null;
   currentTime: number;
@@ -1050,6 +1054,8 @@ function WordTimingBar({
   fromClock: (clockSeconds: number, word: TranscriptWord) => number;
   /** Insert word(s) right after this word. */
   onAddWord: (value: string) => void;
+  /** Why a timing cannot be used (e.g. it leaves the cut), or null. */
+  timingProblem: (start: number, end: number) => string | null;
 }) {
   const [error, setError] = React.useState<string | null>(null);
   // Added words have no transcribed timing to go back to.
@@ -1069,6 +1075,11 @@ function WordTimingBar({
     const end = name === "end" ? rounded : word.end;
     if (end <= start) {
       setError("End must be after start");
+      return false;
+    }
+    const problem = timingProblem(start, end);
+    if (problem) {
+      setError(problem);
       return false;
     }
     setError(null);
@@ -1312,25 +1323,56 @@ function TranscriptPanel({
   );
 
   // Word times are source-video seconds; show them on the playhead's clock,
-  // which in Preview mode runs over the segments back to back.
+  // which in Preview mode runs over the segments back to back. The word's
+  // segment is the one it overlaps, even when its start sits just before it.
+  const wordAnchor = React.useCallback(
+    (word: { start: number; end: number }) =>
+      anchorInSegments(segments, word.start, word.end) ?? word.start,
+    [segments],
+  );
   const toClock = React.useCallback(
     (seconds: number, word: TranscriptWord) =>
-      previewMode ? sourceToPreviewTime(segments, word.start, seconds) ?? seconds : seconds,
-    [previewMode, segments],
+      previewMode ? sourceToPreviewTime(segments, wordAnchor(word), seconds) ?? seconds : seconds,
+    [previewMode, segments, wordAnchor],
   );
   const fromClock = React.useCallback(
     (clockSeconds: number, word: TranscriptWord) =>
       previewMode
-        ? previewToSourceTime(segments, word.start, clockSeconds) ?? clockSeconds
+        ? previewToSourceTime(segments, wordAnchor(word), clockSeconds) ?? clockSeconds
         : clockSeconds,
-    [previewMode, segments],
+    [previewMode, segments, wordAnchor],
   );
 
-  // Card badges on the same clock (anchor: a time inside the segment).
+  // Preview shows only what is in the cut. A word moved entirely outside every
+  // segment would silently vanish from it, so refuse that and say why.
+  // Timing also never moves a word past its neighbours, which would silently
+  // reorder the sentence in the transcript and the captions.
+  const timingProblem = React.useCallback(
+    (start: number, end: number) => {
+      if (previewMode && anchorInSegments(segments, start, end) === null) {
+        return "That time is outside every segment, so the word would be cut. Extend the segment first, or edit in Full Transcript.";
+      }
+      if (!selectedWord) return null;
+      const words = transcription.filter((word) => !isDeletedCaptionWord(word.value));
+      const index = words.findIndex((word) => word.key === selectedWord.key);
+      const prev = index > 0 ? words[index - 1] : undefined;
+      const next = index >= 0 ? words[index + 1] : undefined;
+      if (prev && start < prev.start) {
+        return `That puts it before “${captionWordText(prev.value)}”, which would reorder the sentence.`;
+      }
+      if (next && start > next.start) {
+        return `That puts it after “${captionWordText(next.value)}”, which would reorder the sentence.`;
+      }
+      return null;
+    },
+    [previewMode, segments, selectedWord, transcription],
+  );
+
+  // Card badges on the same clock, anchored on the card's first / last word.
   const cardClock = React.useCallback(
-    (seconds: number, anchor: number) =>
-      previewMode ? sourceToPreviewTime(segments, anchor, seconds) ?? seconds : seconds,
-    [previewMode, segments],
+    (seconds: number, word: { start: number; end: number }) =>
+      previewMode ? sourceToPreviewTime(segments, wordAnchor(word), seconds) ?? seconds : seconds,
+    [previewMode, segments, wordAnchor],
   );
 
   // Words whose timing was estimated, in time order.
@@ -1472,6 +1514,7 @@ function TranscriptPanel({
             toClock={toClock}
             fromClock={fromClock}
             onAddWord={addWordAfterSelected}
+            timingProblem={timingProblem}
           />
         )}
       </div>
@@ -1510,7 +1553,7 @@ function TranscriptPanel({
                         : "bg-muted text-muted-foreground",
                     )}
                   >
-                    {formatTime(cardClock(chunk.startTime, chunk.startTime))}
+                    {formatTime(cardClock(chunk.startTime, chunk.words[0]))}
                   </span>
                   <div className="flex-1 h-px bg-border" />
                   <span
@@ -1521,7 +1564,7 @@ function TranscriptPanel({
                         : "bg-muted text-muted-foreground",
                     )}
                   >
-                    {formatTime(cardClock(chunk.endTime, chunk.endTime - 0.001))}
+                    {formatTime(cardClock(chunk.endTime, chunk.words[chunk.words.length - 1]))}
                   </span>
                 </div>
 
