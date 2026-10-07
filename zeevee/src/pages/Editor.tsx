@@ -1044,7 +1044,6 @@ function WordTimingBar({
   toClock,
   fromClock,
   onAddWord,
-  timingProblem,
 }: {
   word: TranscriptWord | null;
   currentTime: number;
@@ -1054,8 +1053,6 @@ function WordTimingBar({
   fromClock: (clockSeconds: number, word: TranscriptWord) => number;
   /** Insert word(s) right after this word. */
   onAddWord: (value: string) => void;
-  /** Why a timing cannot be used (e.g. it leaves the cut), or null. */
-  timingProblem: (start: number, end: number) => string | null;
 }) {
   const [error, setError] = React.useState<string | null>(null);
   // Added words have no transcribed timing to go back to.
@@ -1075,11 +1072,6 @@ function WordTimingBar({
     const end = name === "end" ? rounded : word.end;
     if (end <= start) {
       setError("End must be after start");
-      return false;
-    }
-    const problem = timingProblem(start, end);
-    if (problem) {
-      setError(problem);
       return false;
     }
     setError(null);
@@ -1343,31 +1335,6 @@ function TranscriptPanel({
     [previewMode, segments, wordAnchor],
   );
 
-  // Preview shows only what is in the cut. A word moved entirely outside every
-  // segment would silently vanish from it, so refuse that and say why.
-  // Timing also never moves a word past its neighbours, which would silently
-  // reorder the sentence in the transcript and the captions.
-  const timingProblem = React.useCallback(
-    (start: number, end: number) => {
-      if (previewMode && anchorInSegments(segments, start, end) === null) {
-        return "That time is outside every segment, so the word would be cut. Extend the segment first, or edit in Full Transcript.";
-      }
-      if (!selectedWord) return null;
-      const words = transcription.filter((word) => !isDeletedCaptionWord(word.value));
-      const index = words.findIndex((word) => word.key === selectedWord.key);
-      const prev = index > 0 ? words[index - 1] : undefined;
-      const next = index >= 0 ? words[index + 1] : undefined;
-      if (prev && start < prev.start) {
-        return `That puts it before “${captionWordText(prev.value)}”, which would reorder the sentence.`;
-      }
-      if (next && start > next.start) {
-        return `That puts it after “${captionWordText(next.value)}”, which would reorder the sentence.`;
-      }
-      return null;
-    },
-    [previewMode, segments, selectedWord, transcription],
-  );
-
   // Card badges on the same clock, anchored on the card's first / last word.
   const cardClock = React.useCallback(
     (seconds: number, word: { start: number; end: number }) =>
@@ -1514,7 +1481,6 @@ function TranscriptPanel({
             toClock={toClock}
             fromClock={fromClock}
             onAddWord={addWordAfterSelected}
-            timingProblem={timingProblem}
           />
         )}
       </div>
