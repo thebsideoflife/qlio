@@ -44,6 +44,7 @@ import {
 } from "@/store/editorSlice";
 import { useParams } from "react-router-dom";
 import {
+  anchorInSegments,
   formatTimecode,
   parseTimecode,
   previewToSourceTime,
@@ -997,6 +998,8 @@ export default function Editor() {
 
 // Helper to format time as MM:SS
 function formatTime(seconds: number): string {
+  // A word starting just before the first segment maps slightly below zero.
+  seconds = Math.max(0, seconds);
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${secs.toString().padStart(2, "0")}`;
@@ -1312,25 +1315,31 @@ function TranscriptPanel({
   );
 
   // Word times are source-video seconds; show them on the playhead's clock,
-  // which in Preview mode runs over the segments back to back.
+  // which in Preview mode runs over the segments back to back. The word's
+  // segment is the one it overlaps, even when its start sits just before it.
+  const wordAnchor = React.useCallback(
+    (word: { start: number; end: number }) =>
+      anchorInSegments(segments, word.start, word.end) ?? word.start,
+    [segments],
+  );
   const toClock = React.useCallback(
     (seconds: number, word: TranscriptWord) =>
-      previewMode ? sourceToPreviewTime(segments, word.start, seconds) ?? seconds : seconds,
-    [previewMode, segments],
+      previewMode ? sourceToPreviewTime(segments, wordAnchor(word), seconds) ?? seconds : seconds,
+    [previewMode, segments, wordAnchor],
   );
   const fromClock = React.useCallback(
     (clockSeconds: number, word: TranscriptWord) =>
       previewMode
-        ? previewToSourceTime(segments, word.start, clockSeconds) ?? clockSeconds
+        ? previewToSourceTime(segments, wordAnchor(word), clockSeconds) ?? clockSeconds
         : clockSeconds,
-    [previewMode, segments],
+    [previewMode, segments, wordAnchor],
   );
 
-  // Card badges on the same clock (anchor: a time inside the segment).
+  // Card badges on the same clock, anchored on the card's first / last word.
   const cardClock = React.useCallback(
-    (seconds: number, anchor: number) =>
-      previewMode ? sourceToPreviewTime(segments, anchor, seconds) ?? seconds : seconds,
-    [previewMode, segments],
+    (seconds: number, word: { start: number; end: number }) =>
+      previewMode ? sourceToPreviewTime(segments, wordAnchor(word), seconds) ?? seconds : seconds,
+    [previewMode, segments, wordAnchor],
   );
 
   // Words whose timing was estimated, in time order.
@@ -1510,7 +1519,7 @@ function TranscriptPanel({
                         : "bg-muted text-muted-foreground",
                     )}
                   >
-                    {formatTime(cardClock(chunk.startTime, chunk.startTime))}
+                    {formatTime(cardClock(chunk.startTime, chunk.words[0]))}
                   </span>
                   <div className="flex-1 h-px bg-border" />
                   <span
@@ -1521,7 +1530,7 @@ function TranscriptPanel({
                         : "bg-muted text-muted-foreground",
                     )}
                   >
-                    {formatTime(cardClock(chunk.endTime, chunk.endTime - 0.001))}
+                    {formatTime(cardClock(chunk.endTime, chunk.words[chunk.words.length - 1]))}
                   </span>
                 </div>
 
