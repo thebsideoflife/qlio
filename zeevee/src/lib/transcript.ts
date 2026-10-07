@@ -298,3 +298,18 @@ export function parseTranscriptPayload(data: unknown): {
         : [];
   return { language, words: wordSource as CaptionWord[], lines: [] };
 }
+
+/**
+ * Words heard in the cut: any word that overlaps a segment, using the word's
+ * current (possibly user-adjusted) timing. A word a segment edge cuts through
+ * is still heard and captioned, so it stays, like captionsOverlappingRange
+ * does for caption lines.
+ */
+export function wordsOverlappingSegments<W extends { start: number; end: number }>(
+  words: readonly W[],
+  segments: ReadonlyArray<{ startTime: number; endTime: number }>,
+): W[] {
+  return words.filter((word) =>
+    segments.some((seg) => word.end > seg.startTime && word.start < seg.endTime),
+  );
+}

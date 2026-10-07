@@ -4,6 +4,7 @@ import {
   isOriginalCaptionLanguage,
   orderedOriginalTranscriptUrls,
   parseTranscriptPayload,
+  wordsOverlappingSegments,
 } from "./transcript";
 import type { CaptionLine, CaptionWord } from "../remotion/types";
 
@@ -134,3 +135,15 @@ assert(
 );
 
 console.log("transcript.test: ok");
+
+// --- words in the cut: overlap, not containment
+{
+  // Real case: "We" (233.82-234.18) starts 0.04s before the segment (233.8626).
+  const cut = wordsOverlappingSegments(
+    words([[233.42, 233.64, "x"], [233.82, 234.18, "We"], [234.2, 234.4, "got"], [329.4, 329.7, "end"], [329.5, 330, "after"]]),
+    [{ startTime: 233.8626, endTime: 329.5 }],
+  );
+  const values = cut.map((w) => w.value).join(" ");
+  assert(values === "We got end", `a word cut by a segment edge stays (got "${values}")`);
+  assert(wordsOverlappingSegments(words([[1, 2, "touch"]]), [{ startTime: 2, endTime: 3 }]).length === 0, "a word ending exactly at the segment start is outside");
+}
