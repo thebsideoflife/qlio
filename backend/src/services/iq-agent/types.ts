@@ -439,6 +439,10 @@ export interface PromptOverrides {
   brief?: string;
   guardedFinish?: string;
   compaction?: string;
+  formatCompact?: string;
+  formatHighlights?: string;
+  formatEpisodeRecap?: string;
+  formatFullVideo?: string;
 }
 
 export interface ThreadState {

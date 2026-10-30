@@ -1,7 +1,7 @@
 # Jockey v3 — Self-Directed Cutting (No Preprocess)
 
 **Status:** Draft — direction for the next implementation round
-**Companion docs:** `SPEC-jockey-v2-loop.md`, `SPEC-jockey-product-ux.md`, `SPEC-jockey-compact-recap.md`, `backend/EVAL-SUITE.md`, `Jockey-docs.md`
+**Companion docs:** `SPEC-jockey-v2-loop.md`, `SPEC-jockey-product-ux.md`, `SPEC-jockey-compact-recap.md`, `backend/EVAL-SUITE.md`
 **Supersedes:** `SPEC-jockey-v2-loop.md` §14 (scene-boundary snapping from `scene-cache`) and the Claude-brief + windowed-Pegasus + enforcer post-processing chain for Jockey runs.
 
 ---

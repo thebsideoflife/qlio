@@ -529,7 +529,9 @@ async function handleApi(
   const projectId = event.pathParameters?.projectId;
   if (!projectId) return json(400, { error: "Missing projectId" });
 
-  const method = event.requestContext?.http?.method || event.httpMethod;
+  const method =
+    (event as unknown as { requestContext?: { http?: { method?: string } } })
+      .requestContext?.http?.method || event.httpMethod;
   if (method === "GET") {
     const query = event.queryStringParameters || {};
     if (query.sceneVideo) return handleSceneVideoDownload(projectId, query);

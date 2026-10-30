@@ -84,6 +84,8 @@ export default function Dashboard() {
       .slice(0, 3)
       .map(([id]) => id);
     return new Map(ranked.map((id, index) => [id, index]));
+    // recencyVersion re-reads recent assets from localStorage when it changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recencyVersion]);
 
   const handleCreateProject = (assetId: string) => {

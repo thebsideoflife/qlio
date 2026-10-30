@@ -3,7 +3,7 @@
 ## Context · persona · why now
 
 - **Product:** zeevee (a.k.a. Qlio) — short-form video editor. Frontend in `zeevee/` (Vite + React 19 + Redux Toolkit + Remotion 4); deploys via Vercel on merge to `main` (human-gated product — agents do not deploy).
-- **Repository:** `ColemanIsner/zeevee`.
+- **Repository:** `thebsideoflife/zeevee`.
 - **Persona:** a producer fine-tuning framing and scrubbing the transcript in the editor. Two click-through bugs keep breaking their flow:
   1. They grab a **lateral adjuster drag bar** (the left/right or up/down `FramingSlider` pills overlaid on the video preview) and the video **randomly starts/stops playing** on mouse release.
   2. They **click a caption word** in the Script tab to inspect a frame while paused, and the video **starts playing** instead of staying parked on the frame.
@@ -162,7 +162,7 @@ cd zeevee && npm run build   # tsc -b && vite build
 
 **PR / ship close-out (human gate — do NOT merge or deploy):**
 ```bash
-gh pr view <PR_NUMBER> --repo ColemanIsner/zeevee --json url,mergeable,state,baseRefName,headRefName
+gh pr view <PR_NUMBER> --repo thebsideoflife/zeevee --json url,mergeable,state,baseRefName,headRefName
 ```
 - Confirm the PR is open into `main`, `mergeable` is not `CONFLICTING`, `state` is `OPEN`. Cite the PR URL. Do not merge; do not deploy.
 

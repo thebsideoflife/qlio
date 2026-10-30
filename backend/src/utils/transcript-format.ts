@@ -454,5 +454,6 @@ export function groupWordsIntoCaptions(
   words: CaptionWord[],
   options: CaptionGroupingOptions = {},
 ): CaptionLine[] {
-  return groupCaptions(words, options);
+  // groupCaptions always fills `words`; its shared type only marks it optional.
+  return groupCaptions(words, options) as CaptionLine[];
 }
