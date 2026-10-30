@@ -4,9 +4,10 @@
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { groupWordsIntoCaptions, captionGroupingOptions } from "./caption-grouping";
+import { captionGroupingOptions } from "./caption-grouping";
 import {
   captionsFromParsedTranscript,
+  groupWordsIntoCaptions,
   captionsOverlappingRange,
   shiftCaptionsBy,
 } from "./transcript-format";

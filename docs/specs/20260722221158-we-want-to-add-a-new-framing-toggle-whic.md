@@ -3,7 +3,7 @@
 ## Context · persona · why now
 
 - **Product:** zeevee (a.k.a. Qlio) — short-form video editor. Source video is 16:9; the editor reframes it into 9:16 / 1:1 / 16:9 outputs via Remotion.
-- **Repository:** `ColemanIsner/zeevee`. Frontend in `zeevee/` (Vite + React 19 + Redux Toolkit + Remotion 4); serverless backend in `backend/` (Lambda + DynamoDB + Remotion Lambda). Frontend deploys via Vercel on merge to `main`; backend deploys via `./deploy.sh` (human-gated product — agents do not deploy).
+- **Repository:** `thebsideoflife/zeevee`. Frontend in `zeevee/` (Vite + React 19 + Redux Toolkit + Remotion 4); serverless backend in `backend/` (Lambda + DynamoDB + Remotion Lambda). Frontend deploys via Vercel on merge to `main`; backend deploys via `./deploy.sh` (human-gated product — agents do not deploy).
 - **Persona:** a producer who needs a fast, no-AI way to ship a portrait clip where the talking-head video sits as a square at the top of the frame (e.g. for a platform that wants 9:16 with a square video region up top and space below).
 - **Why now:** today the only way to control framing/aspect is the "Dist. Platform" selector buried inside the AI generation (`MicroseriesGenerator` / "IQ") panel, which only maps to `9:16` vs `16:9` and offers no square-top layout. The operator asked for a clean, single-click toggle that wipes out all other framing. No new AI, no subject detection — just Remotion layout math.
 
@@ -115,7 +115,7 @@ cd zeevee && npm run build   # = tsc -b && vite build
 ```
 **PR / ship close-out (human gate — do NOT merge or deploy):**
 ```bash
-gh pr view <PR_NUMBER> --repo ColemanIsner/zeevee --json url,mergeable,state,baseRefName,headRefName
+gh pr view <PR_NUMBER> --repo thebsideoflife/zeevee --json url,mergeable,state,baseRefName,headRefName
 ```
 - Confirm a PR is open from `factory/mission-45b8fa40-8cd` → `main`, `mergeable` is not `CONFLICTING`, and `state` is `OPEN`.
 - Cite the PR URL. Do not merge. Do not run `./deploy.sh` or trigger Vercel deploy.

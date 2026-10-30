@@ -67,7 +67,7 @@ user ID number that differs per account, and using the wrong ID attributes the
 commit to a different user.
 
 ```bash
-git remote set-url origin https://github.com/ColemanIsner/zeevee.git   # clean URL, no embedded token
+git remote set-url origin https://github.com/thebsideoflife/zeevee.git   # clean URL, no embedded token
 gh auth setup-git
 ```
 
@@ -81,7 +81,7 @@ and `AWS_SECRET_ACCESS_KEY` set as GitHub Actions secrets on the repo.
 ### Via sandbox (manual)
 ```bash
 cd <repo root>
-git remote set-url origin https://github.com/ColemanIsner/zeevee.git
+git remote set-url origin https://github.com/thebsideoflife/zeevee.git
 gh auth setup-git                              # sets correct user identity
 export AWS_SHARED_CREDENTIALS_FILE=/etc/agent-harness/zeevee/aws-credentials
 export AWS_CONFIG_FILE=/etc/agent-harness/zeevee/aws-config

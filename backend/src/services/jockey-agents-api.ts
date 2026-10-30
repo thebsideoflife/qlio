@@ -1,6 +1,6 @@
 /**
  * TwelveLabs Agents API (v1.3) client for jockey1.0 Responses.
- * @see Jockey-docs.md Quickstart
+ * @see https://docs.twelvelabs.io (Agents API quickstart, v1.3)
  */
 
 import type { NarrativeBrief } from "./storyiq/jockey/types";
