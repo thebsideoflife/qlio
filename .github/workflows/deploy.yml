@@ -62,6 +62,9 @@ jobs:
         run: npm ci
         working-directory: backend
 
+      - name: Install FFmpeg (video clip tests shell out to it)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
       - name: Test backend
         run: npm test
         working-directory: backend
