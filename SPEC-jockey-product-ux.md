@@ -1,5 +1,7 @@
 # Jockey Pipeline — Product, UX & Operations Spec
 
+> **Status (Nov 2026):** Implemented, then superseded by the IQ Agent. The Jockey UI toggle has been removed.
+
 **Status:** Eval-validated locally; **ship on next deploy**  
 **Companion docs:** `SOW-jockey-compact-recap.md`, `SPEC-jockey-compact-recap.md`, `backend/EVAL-SUITE.md`  
 **Last validated:** July 2026 — Philadelphia compact + Murdoch recap

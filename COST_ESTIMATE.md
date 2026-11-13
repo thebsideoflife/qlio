@@ -1,5 +1,7 @@
 # ZeeVee Cost Estimate: 1-Hour Microdrama Output
 
+> **Status (Nov 2026):** Historical (Feb 2026). It predates Whisper transcription, SporeLabs and the IQ Agent, so treat the per-video figures as rough.
+
 **Workflow:** Compact Video (50% condensation)  
 **Source:** 2-hour video → 1 hour of microdrama output  
 **Date:** February 2026

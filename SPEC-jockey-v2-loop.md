@@ -1,5 +1,7 @@
 # Jockey v2 — Loop Until Right
 
+> **Status (Nov 2026):** Not built. Superseded by Jockey v3 and then the IQ Agent.
+
 **Status:** Draft — direction for post-launch iteration  
 **Supersedes (partially):** `SPEC-jockey-product-ux.md` §2 post-process steps, `SPEC-jockey-compact-recap.md` Phase 4 trim logic  
 **Companion:** `SPEC-jockey-product-ux.md` (deploy/rollback, UX, defaults), `backend/EVAL-SUITE.md`  

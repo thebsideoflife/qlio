@@ -1,5 +1,7 @@
 # ZeeVee Architecture Report
 
+> **Status (Nov 2026):** Historical (Sept 2026), written for a client audience. Transcription has since moved to Whisper on SporeLabs, segment selection to the IQ Agent, and all LLM calls to SporeLabs. See the root README for the current picture.
+
 _"We don't just wrap the LLM - we give it a film degree."_
 
 ---

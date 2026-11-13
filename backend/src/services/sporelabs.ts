@@ -10,7 +10,7 @@
  *
  * Sampling parameters are passed through only when the caller sets them, so
  * each call keeps the provider defaults it had before the move. Whisper
- * transcription is not here yet: it still runs through ./openrouter.
+ * transcription also runs on SporeLabs, in ./sporelabs-transcribe.
  */
 
 import {
