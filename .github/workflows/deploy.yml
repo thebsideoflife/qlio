@@ -1,8 +1,9 @@
 name: Deploy backend
 
+# main deploys production; dev deploys the dev environment.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'backend/**'
       - 'infrastructure/**'
@@ -17,6 +18,7 @@ concurrency:
 env:
   AWS_REGION: us-west-2
   TF_VAR_profile: zeevee
+  DEPLOY_ENV: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
 
 jobs:
   deploy:
@@ -98,7 +100,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .ffmpeg-image-stamp
-          key: ffmpeg-image-${{ hashFiles('backend/Dockerfile.ffmpeg', 'backend/package-lock.json', 'backend/dist/cutSegments.js', 'backend/dist/splitVideo.js') }}
+          # Per environment: each has its own ECR repo, so dev must not skip
+          # its first image build because prod already built the same inputs.
+          key: ffmpeg-image-${{ env.DEPLOY_ENV }}-${{ hashFiles('backend/Dockerfile.ffmpeg', 'backend/package-lock.json', 'backend/dist/cutSegments.js', 'backend/dist/splitVideo.js') }}
 
       - name: Record FFmpeg image stamp
         if: steps.ffmpeg-image.outputs.cache-hit != 'true'
@@ -108,8 +112,8 @@ jobs:
         run: |
           if [ "${{ steps.ffmpeg-image.outputs.cache-hit }}" = "true" ]; then
             echo "FFmpeg image inputs unchanged; skipping Docker rebuild"
-            bash ./deploy.sh --skip-docker
+            bash ./deploy.sh --env "$DEPLOY_ENV" --skip-docker
           else
             echo "FFmpeg image inputs changed; rebuilding Docker image"
-            bash ./deploy.sh
+            bash ./deploy.sh --env "$DEPLOY_ENV"
           fi
