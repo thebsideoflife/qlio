@@ -3,6 +3,20 @@ import { spawn } from "child_process";
 /** Rough input seek before accurate output trim (seconds). */
 export const PRE_SEEK_WINDOW_SEC = 2;
 
+/**
+ * Longest short side (px) an accurate clip keeps. A 4K source re-encoded at
+ * full size produced ~64 Mbps clips that exhausted Remotion's disk, memory and
+ * per-chunk time; every export crops to at most 1080 px on the short side, so
+ * the extra pixels never reach the output. Smaller sources pass through as-is.
+ */
+export const MAX_CLIP_SHORT_SIDE_PX = 1080;
+
+/** Downscale so min(w, h) <= MAX_CLIP_SHORT_SIDE_PX, keeping aspect and even dims. */
+export const CLIP_SCALE_FILTER =
+  `scale=w='trunc(iw*min(1\\,${MAX_CLIP_SHORT_SIDE_PX}/min(iw\\,ih))/2)*2'` +
+  `:h='trunc(ih*min(1\\,${MAX_CLIP_SHORT_SIDE_PX}/min(iw\\,ih))/2)*2'` +
+  `:flags=lanczos`;
+
 export type ExtractClipMode = "accurate" | "fast";
 
 export function formatFfmpegSeconds(seconds: number): string {
@@ -93,6 +107,8 @@ export function buildExtractClipArgs(
     "-map",
     "0:a:0?",
     "-dn",
+    "-vf",
+    CLIP_SCALE_FILTER,
     "-c:v",
     "libx264",
     "-preset",
