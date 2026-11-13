@@ -152,7 +152,7 @@ Eval today still shows `(Part N)` on compact — **fix before or as part of laun
 
 | Item | Spec |
 |------|------|
-| Model | **Claude Sonnet** via **Bedrock** (`us.anthropic.claude-sonnet-4-5-20250929-v1:0` inference profile) |
+| Model | **Claude Sonnet** — now `anthropic/claude-sonnet-5.5` via SporeLabs (`SPORELABS_SONNET_MODEL`); originally Bedrock `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
 | Fallback | Direct Anthropic API if Bedrock fails (same pattern as `export-metadata-enrich.ts`) |
 | IAM | `bedrock:InvokeModel` — already on `generateSegments` Lambda role |
 | Secret | `ANTHROPIC_SECRET_ARN` — already on Lambda; **Gemini not required for Jockey** |

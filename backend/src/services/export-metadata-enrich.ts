@@ -102,7 +102,8 @@ async function invokeClaudeForEnrichment(
   const text = await sporelabsChatText({
     model: SPORELABS_SONNET_MODEL,
     user: prompt,
-    maxTokens: 1024,
+    // Headroom for Sonnet 5.5's default thinking, which counts against this.
+    maxTokens: 4096,
     timeoutMs: ENRICHMENT_TIMEOUT_MS,
   });
   return { text, source: "sporelabs" };

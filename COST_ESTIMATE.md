@@ -10,10 +10,10 @@
 
 | Metric                                          | Cost       |
 | ----------------------------------------------- | ---------- |
-| **First microdrama from a source video**        | **$10.93** |
-| **Each additional microdrama from same source** | **~$2.99** |
+| **First microdrama from a source video**        | **$10.77** |
+| **Each additional microdrama from same source** | **~$2.83** |
 
-The first microdrama includes one-time video indexing costs. Subsequent microdramas from the same source video cost ~73% less since the video only needs to be indexed once.
+The first microdrama includes one-time video indexing costs. Subsequent microdramas from the same source video cost ~74% less since the video only needs to be indexed once.
 
 ---
 
@@ -22,10 +22,10 @@ The first microdrama includes one-time video indexing costs. Subsequent microdra
 | Component                       | First Video | Additional Videos |
 | ------------------------------- | ----------- | ----------------- |
 | 12Labs (Video Understanding)    | $9.00       | $1.26             |
-| Anthropic Claude (AI Reasoning) | $0.35       | $0.35             |
+| Anthropic Claude (AI Reasoning) | $0.19       | $0.19             |
 | AWS (Storage & Compute)         | $0.68       | $0.48             |
 | Remotion (Video Rendering)      | $0.90       | $0.90             |
-| **Total**                       | **$10.93**  | **~$2.99**        |
+| **Total**                       | **$10.77**  | **~$2.83**        |
 
 ---
 
@@ -67,15 +67,15 @@ The first microdrama includes one-time video indexing costs. Subsequent microdra
 
 | Operation                                      | Input Tokens | Output Tokens | Cost      |
 | ---------------------------------------------- | ------------ | ------------- | --------- |
-| Planning (analyze transcript, select segments) | ~25,000      | ~3,000        | $0.12     |
-| Review (verify segment quality)                | ~15,000      | ~1,000        | $0.06     |
-| Revision (adjust if needed)                    | ~20,000      | ~3,000        | $0.11     |
-| **Subtotal**                                   | ~60,000      | ~7,000        | **$0.35** |
+| Planning (analyze transcript, select segments) | ~25,000      | ~3,000        | $0.08     |
+| Review (verify segment quality)                | ~15,000      | ~1,000        | $0.04     |
+| Revision (adjust if needed)                    | ~20,000      | ~3,000        | $0.07     |
+| **Subtotal**                                   | ~60,000      | ~7,000        | **$0.19** |
 
-**Token Rates (Claude Sonnet 4.5):**
+**Token Rates (Claude Sonnet 5.5, via SporeLabs/OpenRouter):**
 
-- Input: $3.00 per 1M tokens
-- Output: $15.00 per 1M tokens
+- Input: $2.00 per 1M tokens
+- Output: $10.00 per 1M tokens
 
 This cost applies to each microdrama generated.
 
@@ -116,11 +116,11 @@ This cost applies to each microdrama generated.
 
 | Service   | First Video | Share |
 | --------- | ----------- | ----- |
-| 12Labs    | $9.00       | 82%   |
+| 12Labs    | $9.00       | 84%   |
 | Remotion  | $0.90       | 8%    |
 | AWS       | $0.68       | 6%    |
-| Claude    | $0.35       | 3%    |
-| **Total** | **$10.93**  | 100%  |
+| Claude    | $0.19       | 2%    |
+| **Total** | **$10.77**  | 100%  |
 
 ---
 
@@ -128,10 +128,10 @@ This cost applies to each microdrama generated.
 
 | Scenario                            | Cost                          |
 | ----------------------------------- | ----------------------------- |
-| 1 microdrama (first from source)    | $10.93                        |
-| 2 microdramas from same source      | $10.93 + $2.99 = $13.92       |
-| 5 microdramas from same source      | $10.93 + (4 × $2.99) = $22.89 |
-| 10 different source videos (1 each) | 10 × $10.93 = $109.30         |
+| 1 microdrama (first from source)    | $10.77                        |
+| 2 microdramas from same source      | $10.77 + $2.83 = $13.60       |
+| 5 microdramas from same source      | $10.77 + (4 × $2.83) = $22.09 |
+| 10 different source videos (1 each) | 10 × $10.77 = $107.70         |
 
 **Note:** Volume discounts from 12Labs are available for high-volume contracts.
 

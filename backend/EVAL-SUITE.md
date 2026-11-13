@@ -18,7 +18,7 @@ export TWELVE_LABS_INDEX_ID=6934df867a1ec630b5fb65bd
 # Agents API jockey1.0 — for agents-* approaches
 export JOCKEY_TWELVE_LABS_SECRET_ID=zeevee/coleman-jockey-12labs-key
 
-# Jockey preprocess uses Claude Sonnet 4.5 via SporeLabs
+# Jockey preprocess uses Claude Sonnet 5.5 via SporeLabs
 export SPORELABS_SECRET_ARN=$(aws secretsmanager describe-secret \
   --secret-id zeevee/sporelabs-api-key --query ARN --output text)
 ```

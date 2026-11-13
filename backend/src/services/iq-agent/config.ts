@@ -84,6 +84,14 @@ export const TURN_WINDOW = 8;
 /** Compaction escalates once the assembled context passes this estimate. */
 export const CONTEXT_SOFT_TOKEN_CAP = 120_000;
 
+/**
+ * What one image block is counted as against that cap. Claude bills an image by
+ * its pixel area, not by the size of its base64 — a 768px frame is well under
+ * this — so counting the serialized data would make one view_frames result
+ * look like ~300k tokens and compact on every iteration.
+ */
+export const IMAGE_TOKEN_ESTIMATE = 1_600;
+
 export const MAX_OUTPUT_TOKENS = 8192;
 export const MODEL_TEMPERATURE = 0.4;
 

@@ -10,7 +10,7 @@ Owner: TBD · Target: replace `jockeyEnabled` path end-to-end
 
 Today "Enhanced Cut" is a one-shot black box. The user fills in the IQ panel, hits Generate, stares at a spinner for 3–10 minutes with a 30-second blind delay at the front, and gets a segment list they can only fix by hand. The model doing the cutting is TwelveLabs `jockey1.0` behind a JSON-schema request — we cannot see its reasoning, cannot steer it, and cannot ask it to revise.
 
-This spec replaces that with **our own agent**: Claude Sonnet 4.5 as the reasoning core, TwelveLabs Marengo + Pegasus 1.5 + the transcript + extracted frames as its senses, and a small set of well-designed tools for editing the cut. The interaction becomes a conversation in the IQ panel — live prose, visible tool calls, a running statistics box, and genuine back-and-forth. The user can say "the third segment drags, tighten it" and the agent will go look and fix it.
+This spec replaces that with **our own agent**: Claude Sonnet (originally 4.5; Sonnet 5.5 via SporeLabs since 2026-10) as the reasoning core, TwelveLabs Marengo + Pegasus 1.5 + the transcript + extracted frames as its senses, and a small set of well-designed tools for editing the cut. The interaction becomes a conversation in the IQ panel — live prose, visible tool calls, a running statistics box, and genuine back-and-forth. The user can say "the third segment drags, tighten it" and the agent will go look and fix it.
 
 Three things drive every decision below:
 
@@ -541,7 +541,7 @@ rehydrate(threadId) → assembleContext() → callClaude()
 
 **Continuation.** Because the agent is stateless and all state is externalized, hitting the 15-minute Lambda ceiling is not a failure — the worker persists, self-invokes with `{isContinuation: true, runId}`, and the new invocation rehydrates and carries on. The event log is continuous, so the client never notices; its cursor just keeps advancing.
 
-**Model.** `us.anthropic.claude-sonnet-4-5-20250929-v1:0` via Bedrock `InvokeModel` (already the model used in `claude-brief.ts`, and already covered by the existing `bedrock:InvokeModel` grant — **no IAM change needed**). Falls back to the Anthropic SDK with `ANTHROPIC_SECRET_ARN` on Bedrock throttling, the same dual-path pattern `export-metadata-enrich.ts` already uses.
+**Model.** *(Superseded: every model call now goes through SporeLabs, pinned to `anthropic/claude-sonnet-5.5` — see `backend/src/services/sporelabs.ts`. Original plan follows.)* `us.anthropic.claude-sonnet-4-5-20250929-v1:0` via Bedrock `InvokeModel` (already the model used in `claude-brief.ts`, and already covered by the existing `bedrock:InvokeModel` grant — **no IAM change needed**). Falls back to the Anthropic SDK with `ANTHROPIC_SECRET_ARN` on Bedrock throttling, the same dual-path pattern `export-metadata-enrich.ts` already uses.
 
 **Retries.** Bedrock throttling → exponential backoff (1s, 2s, 4s, 8s), max 4 attempts. Tool errors are *not* retried by code; they are returned to the model as structured errors so it can adapt (12-factor #11).
 

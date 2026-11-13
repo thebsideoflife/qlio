@@ -167,7 +167,7 @@ Validate with Zod. Reject beats whose timestamps don't align with transcript seg
 ## Phase 0: Claude Preprocess (Bedrock Sonnet)
 
 **Input:** transcript, `userInstructions`, title, `durationSec`, purpose, `targetDurationSec`  
-**Model:** Claude Sonnet via Bedrock (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`); Anthropic API fallback  
+**Model:** Claude Sonnet — now `anthropic/claude-sonnet-5.5` via SporeLabs (`SPORELABS_SONNET_MODEL`); originally Bedrock `us.anthropic.claude-sonnet-4-5-20250929-v1:0` with an Anthropic API fallback  
 **Key rules in prompt:**
 
 - Timestamps must come from ASR segments — never invent times
