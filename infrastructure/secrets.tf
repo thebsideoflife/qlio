@@ -49,8 +49,9 @@ resource "aws_secretsmanager_secret" "twelve_labs_signing_secret" {
 # aws --profile zeevee --region us-west-2 secretsmanager create-secret \
 #   --name zeevee/openrouter-api-key \
 #   --secret-string 'sk-or-...'
+# Dev reuses prod's secret by setting openrouter_secret_name.
 data "aws_secretsmanager_secret" "openrouter_api_key" {
-  name = "${var.project_name}/openrouter-api-key"
+  name = coalesce(var.openrouter_secret_name, "${var.project_name}/openrouter-api-key")
 }
 
 # We don't set the version/value here to keep it out of git.

@@ -1,8 +1,21 @@
 # IAM users for people who need scoped AWS access (not application roles).
+# IAM user names are account-wide, so only one environment (prod) creates
+# them; dev sets create_external_users = false.
+
+moved {
+  from = aws_iam_user.jt_white_s3
+  to   = aws_iam_user.jt_white_s3[0]
+}
+
+moved {
+  from = aws_iam_user_policy.jt_white_s3
+  to   = aws_iam_user_policy.jt_white_s3[0]
+}
 
 resource "aws_iam_user" "jt_white_s3" {
-  name = "jt-white-s3"
-  path = "/external/"
+  count = var.create_external_users ? 1 : 0
+  name  = "jt-white-s3"
+  path  = "/external/"
 
   tags = {
     Name    = "JT White"
@@ -57,17 +70,18 @@ data "aws_iam_policy_document" "jt_white_s3" {
 }
 
 resource "aws_iam_user_policy" "jt_white_s3" {
+  count  = var.create_external_users ? 1 : 0
   name   = "${var.project_name}-jt-white-s3"
-  user   = aws_iam_user.jt_white_s3.name
+  user   = aws_iam_user.jt_white_s3[0].name
   policy = data.aws_iam_policy_document.jt_white_s3.json
 }
 
 output "jt_white_s3_user_name" {
   description = "IAM user name for JT White (create access keys separately)."
-  value       = aws_iam_user.jt_white_s3.name
+  value       = one(aws_iam_user.jt_white_s3[*].name)
 }
 
 output "jt_white_s3_user_arn" {
   description = "IAM user ARN for JT White."
-  value       = aws_iam_user.jt_white_s3.arn
+  value       = one(aws_iam_user.jt_white_s3[*].arn)
 }

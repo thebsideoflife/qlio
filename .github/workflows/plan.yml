@@ -1,0 +1,106 @@
+name: Plan infrastructure
+
+# Read-only check on PRs: shows what a merge would change in prod and dev.
+# Never applies anything.
+on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'infrastructure/**'
+      - 'deploy.sh'
+      - 'build-ffmpeg-layer.sh'
+      - '.github/workflows/plan.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-west-2
+  TF_VAR_profile: zeevee
+
+jobs:
+  plan:
+    # Forks get no secrets; only same-repo PRs can plan.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - env: prod
+            workspace: default
+          - env: dev
+            workspace: dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create zeevee AWS profile
+        run: |
+          mkdir -p ~/.aws
+          cat >> ~/.aws/credentials <<'EOF'
+          [zeevee]
+          aws_access_key_id = ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key = ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          EOF
+          cat >> ~/.aws/config <<'EOF'
+          [profile zeevee]
+          region = us-west-2
+          output = json
+          EOF
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      # The plan hashes the built Lambda bundles, so build them first.
+      - name: Build backend
+        working-directory: backend
+        run: |
+          npm ci
+          npm run build
+          bash ./package-render.sh
+
+      - name: Restore cached FFmpeg layer
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: infrastructure/layers/ffmpeg-layer.zip
+          key: ffmpeg-layer-${{ hashFiles('build-ffmpeg-layer.sh') }}
+
+      - name: Build FFmpeg layer
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: bash ./build-ffmpeg-layer.sh
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.10.x
+          tofu_wrapper: false
+
+      - name: Init OpenTofu
+        run: tofu init -input=false
+        working-directory: infrastructure
+
+      - name: Plan ${{ matrix.env }}
+        working-directory: infrastructure
+        run: |
+          if [ "${{ matrix.workspace }}" = "default" ]; then
+            tofu workspace select default
+          else
+            tofu workspace select -or-create "${{ matrix.workspace }}"
+          fi
+          tofu plan -input=false -no-color -lock-timeout=5m \
+            -var-file="envs/${{ matrix.env }}.tfvars" | tee plan.txt
+          {
+            echo "### ${{ matrix.env }}"
+            echo '```'
+            grep -E '^(Plan:|No changes\.|  # .* (has moved|will be created|will be destroyed|must be replaced|will be updated))' plan.txt | head -100
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

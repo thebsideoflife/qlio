@@ -30,6 +30,10 @@ metadata:
 | `backend/`, `infrastructure/` | **GitHub Actions** (`.github/workflows/deploy.yml`) on merge to `main`, or **`./deploy.sh`** from a sandbox. CI rebuilds the FFmpeg Docker image when `Dockerfile.ffmpeg`, backend lockfile, or the bundled `cutSegments`/`splitVideo` handlers change. | harness MCP `aws_error_summary` / `aws_get_log_events` with `product_id=zeevee`, `region=us-west-2` |
 | Both | PR review → merge (frontend goes out via Vercel, backend deploys via GHA) | Both of the above |
 
+- **Dev environment:** the same pipelines run from the `dev` branch and deploy
+  a separate copy named `qlio-dev-*` (OpenTofu workspace `dev`). Test there
+  first by merging PRs into `dev`; manual equivalent is `./deploy.sh --env dev`.
+  See `docs/DEV-ENVIRONMENT.md`.
 - Region is always **`us-west-2`**. Profile is always **`zeevee`** (`deploy.sh` defaults both).
 - Merging to `main` deploys **both** frontend (Vercel) and backend (GitHub Actions) automatically.
 - Do not run `aws lambda update-function-code`, `sam deploy`, or hand-rolled `tofu apply` invocations — `./deploy.sh` is the single backend deploy path (it builds the backend, packages Lambdas, and runs `tofu apply` in `infrastructure/`).
