@@ -2,6 +2,8 @@
 
 Qlio (formerly ZeeVee) turns long-form video into short vertical clips with captions. A producer uploads a master, works with the IQ Agent to choose scenes, tunes captions and framing in the editor, and exports a zip of MP4s plus metadata.
 
+New to the codebase? Start with [docs/HANDOFF.md](docs/HANDOFF.md): how the system works, the tradeoffs we made, how to run it, and known issues.
+
 | Folder | What it is | Deployed by |
 | --- | --- | --- |
 | `zeevee/` | React + Vite editor (package `qlio`) and the Remotion caption compositions | Vercel (app); GitHub Actions publishes the Remotion site |
