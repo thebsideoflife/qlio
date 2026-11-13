@@ -1,8 +1,9 @@
 name: Deploy Remotion site
 
+# main publishes prod's site (zeevee-renderer); dev publishes qlio-dev-renderer.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - "zeevee/src/remotion/**"
       - "zeevee/src/lib/zoomMath.ts"
@@ -42,7 +43,7 @@ jobs:
         working-directory: zeevee
 
       - name: Publish Remotion site
-        run: bash ./deploy-remotion-site.sh
+        run: bash ./deploy-remotion-site.sh "${{ github.ref_name == 'main' && 'prod' || 'dev' }}"
         working-directory: zeevee
         env:
           AWS_REGION: us-west-2

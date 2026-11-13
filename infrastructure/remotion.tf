@@ -48,7 +48,15 @@ resource "aws_s3_bucket_cors_configuration" "renders" {
 # Remotion CLI owns this bucket (site + working artifacts). The editor ZIP
 # builder fetch()es completed MP4s, so the bucket must emit CORS headers —
 # per-scene <a download> navigations do not need them.
+# The Remotion bucket is shared by every environment, so only prod manages
+# its CORS rules (dev sets manage_remotion_bucket_cors = false).
+moved {
+  from = aws_s3_bucket_cors_configuration.remotion_lambda
+  to   = aws_s3_bucket_cors_configuration.remotion_lambda[0]
+}
+
 resource "aws_s3_bucket_cors_configuration" "remotion_lambda" {
+  count  = var.manage_remotion_bucket_cors ? 1 : 0
   bucket = var.remotion_lambda_bucket
 
   cors_rule {
@@ -285,7 +293,7 @@ resource "aws_lambda_function" "get_render_status" {
       RENDERS_BUCKET          = aws_s3_bucket.renders.id
       PROJECTS_TABLE          = aws_dynamodb_table.projects.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-      REMOTION_FUNCTION_NAME  = "remotion-render-4-0-387-mem3008mb-disk10240mb-900sec"
+      REMOTION_FUNCTION_NAME  = var.remotion_function_name
       AWS_REGION_NAME         = var.aws_region
       # Relaunches scenes that failed on transient AWS errors
       STITCH_FUNCTION_NAME    = aws_lambda_function.stitch_segments.function_name
