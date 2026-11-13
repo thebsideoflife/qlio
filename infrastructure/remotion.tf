@@ -8,14 +8,16 @@
 # 2. Deploy the render function with OPTIMIZED settings:
 #    npx remotion lambda functions deploy \
 #      --memory=2048 \
-#      --disk=2048 \
+#      --disk=10240 \
+#      --custom-role-arn=arn:aws:iam::730898501390:role/zeevee-remotion-lambda-role \
 #      --timeout=240 \
 #      --architecture=arm64 \
 #      --region=us-west-2
 #
 # Configuration rationale (for 10-minute videos):
 # - memory=2048: Sweet spot - higher rarely helps, lower risks crashes
-# - disk=2048: Handles large source files without "No space left" errors
+# - disk=10240 (Lambda max): stitched clips can exceed 1 GB each, and Chrome
+#   caches them in /tmp; 2048 caused "Failed to fetch ... disk space is low"
 # - timeout=240: 4 minutes per chunk prevents zombie processes
 # - architecture=arm64: ~20% cheaper than x86, same performance
 #
@@ -279,7 +281,7 @@ resource "aws_lambda_function" "get_render_status" {
       RENDERS_BUCKET          = aws_s3_bucket.renders.id
       PROJECTS_TABLE          = aws_dynamodb_table.projects.name
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
-      REMOTION_FUNCTION_NAME  = "remotion-render-4-0-387-mem2048mb-disk2048mb-240sec"
+      REMOTION_FUNCTION_NAME  = "remotion-render-4-0-387-mem2048mb-disk10240mb-240sec"
       AWS_REGION_NAME         = var.aws_region
       # Relaunches scenes that failed on transient AWS errors
       STITCH_FUNCTION_NAME    = aws_lambda_function.stitch_segments.function_name
