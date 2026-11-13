@@ -247,10 +247,80 @@ async function testNonKeyframeRegression(): Promise<void> {
   }
 }
 
+function probeDimensions(clipPath: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("ffprobe", [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=width,height",
+      "-of", "csv=p=0",
+      clipPath,
+    ]);
+    let stdout = "";
+    child.stdout.on("data", (data: Buffer) => {
+      stdout += data.toString();
+    });
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`ffprobe exited with code ${code}`));
+        return;
+      }
+      const [width, height] = stdout.trim().split(",").map(Number);
+      resolve({ width, height });
+    });
+    child.on("error", reject);
+  });
+}
+
+/**
+ * A 3840x1920 source re-encoded at full size gave ~64 Mbps clips that ran
+ * Remotion out of disk, memory and per-chunk time. Accurate clips cap the
+ * short side at 1080 px; sources at or below that keep their size.
+ */
+async function testClipDownscale(): Promise<void> {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "video-clip-scale-"));
+  const cases: Array<{ size: string; expected: string }> = [
+    { size: "3840x1920", expected: "2160x1080" },
+    { size: "3840x2160", expected: "1920x1080" },
+    { size: "2160x3840", expected: "1080x1920" },
+    { size: "1920x1080", expected: "1920x1080" },
+    { size: "320x180", expected: "320x180" },
+  ];
+
+  try {
+    for (const { size, expected } of cases) {
+      const sourcePath = path.join(tmpDir, `source-${size}.mp4`);
+      const clipPath = path.join(tmpDir, `clip-${size}.mp4`);
+      await run("ffmpeg", [
+        "-v", "error",
+        "-f", "lavfi",
+        "-i", `testsrc2=size=${size}:rate=30`,
+        "-f", "lavfi",
+        "-i", "sine=frequency=440:sample_rate=44100",
+        "-t", "1",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-y", sourcePath,
+      ]);
+      await extractClip(sourcePath, clipPath, 0.2, 0.5, "accurate", 30);
+      const { width, height } = await probeDimensions(clipPath);
+      assert(
+        `${width}x${height}` === expected,
+        `downscale: ${size} source gave ${width}x${height}, expected ${expected}`,
+      );
+    }
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   await testArgumentConstruction();
   await testNonKeyframeRegression();
   await testEditListFrameAlignment();
+  await testClipDownscale();
   console.log("videoClip tests passed");
 }
 
