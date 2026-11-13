@@ -1,5 +1,7 @@
 # Jockey Evaluation Suite
 
+> **Status (Nov 2026):** Retired. The suite in `src/scripts/jockey-eval-suite/` no longer builds against current code and is not in the repo. `npm run jockey:eval` still works.
+
 Local comparison of segment-generation approaches. **No deploy required.**
 
 ## Setup

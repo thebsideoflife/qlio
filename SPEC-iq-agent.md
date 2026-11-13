@@ -1,5 +1,7 @@
 # SPEC — IQ Agent: a conversational cutting agent to replace the Jockey "Enhanced Cut" flow
 
+> **Status (Nov 2026):** Implemented. The IQ Agent is the only way the UI generates segments.
+
 Status: **Draft for approval**
 Supersedes: `SPEC-jockey-v2-loop.md`, `SPEC-jockey-v3-self-directed-cuts.md`, `SPEC-jockey-compact-recap.md`
 Owner: TBD · Target: replace `jockeyEnabled` path end-to-end

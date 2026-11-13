@@ -1,5 +1,7 @@
 # Implementation Spec: Jockey Pipeline for Compact & Episode Recap
 
+> **Status (Nov 2026):** Implemented as `jockey-pipeline.ts`, now superseded by the IQ Agent and kept only as a rollback path. Uses Claude via SporeLabs, not Gemini.
+
 **SOW:** `SOW-jockey-compact-recap.md`  
 **Status:** Ready for implementation  
 **Effort:** 40h across 4 milestones

@@ -55,10 +55,10 @@ const REMOTION_SERVE_URL = process.env.REMOTION_SERVE_URL!;
 const REMOTION_FUNCTION_NAME = process.env.REMOTION_FUNCTION_NAME!;
 const AWS_REGION_NAME = process.env.AWS_REGION_NAME!;
 const CUT_WORKER_COUNT = 10;
-// Remotion render Lambdas are deployed at 240s
-// (`remotion-render-...-240sec`). delayRender must stay below that so a
-// hung media fetch fails cleanly instead of SIGKILL. 180s leaves ~60s to
-// render the 300-frame chunk after a large clip has loaded.
+// Remotion render Lambdas are deployed at 900s
+// (`remotion-render-...-900sec`). delayRender must stay well below that so a
+// hung media fetch fails cleanly instead of SIGKILL, and a chunk that can't
+// load its clip in 3 minutes is retried rather than left waiting.
 const DELAY_RENDER_TIMEOUT_MS = 180_000;
 
 interface CutSegmentsEvent {

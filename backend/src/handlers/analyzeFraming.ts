@@ -40,9 +40,9 @@ const ASSETS_TABLE = process.env.ASSETS_TABLE!;
 const BUCKET_NAME = process.env.BUCKET_NAME!;
 const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME;
 const FFMPEG_PATH = "/opt/bin/ffmpeg";
-// "sporelabs": deterministic shot-hold service. "gemini" (default, and anything
-// unrecognised): the legacy per-segment TIME|ZOOM path below. Set by
-// infrastructure var.framing_engine; flip once the SporeLabs key is in place.
+// "sporelabs" (production default, set by infrastructure var.framing_engine):
+// the deterministic shot-hold service. "gemini", and any unrecognised value:
+// the legacy per-segment TIME|ZOOM path below, kept as a fallback.
 const FRAMING_ENGINE =
   process.env.FRAMING_ENGINE?.trim().toLowerCase() === "sporelabs"
     ? "sporelabs"

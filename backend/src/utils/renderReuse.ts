@@ -57,10 +57,12 @@ export const MAX_SEGMENT_RENDER_ATTEMPTS = 4;
 
 /**
  * A launched scene that hasn't finished by now is treated as stuck. Remotion's
- * main function is capped at 240s, so a healthy scene always ends (done or
- * fatal) well inside this; the message is transient so the scene is retried.
+ * main function is capped at 900s (Lambda's maximum), so a healthy scene always
+ * ends (done or fatal) inside 15 minutes; the extra 2 minutes cover launch and
+ * the last progress write. The message is transient so the scene is retried.
+ * Keep this above the Remotion function timeout in infrastructure/remotion.tf.
  */
-export const SCENE_RENDER_TIMEOUT_MS = 12 * 60 * 1000;
+export const SCENE_RENDER_TIMEOUT_MS = 17 * 60 * 1000;
 export const SCENE_RENDER_TIMEOUT_ERROR = "Scene render timed out";
 
 /**

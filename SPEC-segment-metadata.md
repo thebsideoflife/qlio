@@ -1,5 +1,7 @@
 # SPEC — Segment metadata at generation time
 
+> **Status (Nov 2026):** Implemented in `backend/src/services/iq-agent/metadata.ts`.
+
 Status: **Draft**
 Scope: IQ Agent path (primary); all other generation paths unchanged as fallback
 

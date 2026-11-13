@@ -5,9 +5,10 @@ import {
 import { type CaptionWord } from "../utils/transcript-format";
 
 /**
- * OpenRouter is now used only for Whisper transcription (transcribeAsset).
- * Chat and translation calls go through ./sporelabs. Transcription is moving to
- * a self-hosted SporeLabs Whisper endpoint separately; delete this file then.
+ * Legacy: no Lambda calls OpenRouter any more. Transcription runs on SporeLabs
+ * (./sporelabs-transcribe) and chat/translation go through ./sporelabs. Only
+ * src/scripts/test-transcript-format.ts still imports this file; move what it
+ * needs and delete this file.
  */
 
 const secretsClient = new SecretsManagerClient({});

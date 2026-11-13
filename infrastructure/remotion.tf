@@ -23,8 +23,10 @@
 #   scene; 240 timed out whole scenes when one chunk ran long
 # - architecture=arm64: ~20% cheaper than x86, same performance
 #
-# The framesPerLambda=150 setting in renderVideo.ts creates ~120 workers
-# for a 10-min video, fitting within the 1,000 concurrency limit.
+# framesPerLambda=300 (set in backend/src/handlers/cutSegments.ts) creates ~60
+# workers per 10 minutes of 30 fps footage, inside the 1,000 concurrency limit.
+# If you change the timeout, keep SCENE_RENDER_TIMEOUT_MS in
+# backend/src/utils/renderReuse.ts above it.
 
 # S3 bucket for Remotion renders
 resource "aws_s3_bucket" "renders" {
