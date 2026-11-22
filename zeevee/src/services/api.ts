@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { ShowInfo } from "@/lib/showInfo";
 import type { WordEdit } from "@/remotion/captionGrouping";
 
 const API_URL = import.meta.env.VITE_API_URL;
@@ -155,7 +156,7 @@ export const getAsset = async (assetId: string) => {
 
 export const updateAsset = async (
   assetId: string,
-  update: { title: string },
+  update: { title?: string; showInfo?: ShowInfo },
 ) => {
   const response = await axios.patch(`${API_URL}/assets/${assetId}`, update, {
     headers: getAuthHeaders(),
@@ -638,6 +639,13 @@ export const startExportPackage = async (
     /** For the date-time in the zip name. */
     timeZone?: string;
     metadataDocument?: unknown;
+    /** Search, targeting & AEO files to add to the zip. */
+    aeoFiles?: {
+      transcript?: boolean;
+      captions?: boolean;
+      schemaOrg?: boolean;
+      videoSitemap?: boolean;
+    };
   },
 ): Promise<ExportPackageResponse> => {
   const response = await axios.post(

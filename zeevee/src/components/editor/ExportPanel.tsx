@@ -24,6 +24,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import {
   startRender,
@@ -36,6 +37,8 @@ import {
   startExportPackage,
   pollExportPackage,
   getSceneVideoDownload,
+  getAsset,
+  updateAsset,
   type GenerateExportMetadataResponse,
   type SegmentDownload,
 } from "@/services/api";
@@ -59,8 +62,16 @@ import {
 import {
   isSegmentMetadataStale,
   filterIabTagsForFields,
+  type AeoOptions,
+  type AeoPlatform,
   type SegmentMetadataCache,
 } from "@/lib/segmentMetadataFingerprint";
+import {
+  computeShowInfoHash,
+  formatEpisodeLabel,
+  normalizeShowInfo,
+  type ShowInfo,
+} from "@/lib/showInfo";
 import {
   IAB_FORM_FACTOR_IDS,
   IAB_GENRE_IDS,
@@ -88,6 +99,93 @@ const DESCRIPTION_LENGTH_OPTIONS: {
   { value: "short", label: "Short" },
   { value: "two_sentences", label: "Two Sentences" },
   { value: "paragraph", label: "Paragraph" },
+];
+
+/** Search, targeting & AEO switches (IAB and content advisory live apart). */
+interface AeoFlags {
+  seriesEpisode: boolean;
+  characters: boolean;
+  cast: boolean;
+  locations: boolean;
+  searchTitle: boolean;
+  entityDescription: boolean;
+  fanAliases: boolean;
+  questions: boolean;
+  transcript: boolean;
+  keyQuotes: boolean;
+  captions: boolean;
+  schemaOrg: boolean;
+  videoSitemap: boolean;
+  contentRating: boolean;
+}
+
+const DEFAULT_AEO_FLAGS: AeoFlags = {
+  seriesEpisode: true,
+  characters: true,
+  cast: true,
+  locations: true,
+  searchTitle: true,
+  entityDescription: true,
+  fanAliases: true,
+  questions: true,
+  transcript: true,
+  keyQuotes: true,
+  captions: true,
+  schemaOrg: true,
+  videoSitemap: true,
+  contentRating: true,
+};
+
+const AEO_OPTION_GROUPS: Array<{
+  title: string;
+  items: Array<{ key: keyof AeoFlags; label: string }>;
+}> = [
+  {
+    title: "Entities",
+    items: [
+      { key: "seriesEpisode", label: "Series & Episode" },
+      { key: "characters", label: "Characters" },
+      { key: "cast", label: "Cast" },
+      { key: "locations", label: "Locations" },
+    ],
+  },
+  {
+    title: "Search copy",
+    items: [
+      { key: "searchTitle", label: "Search Title" },
+      { key: "entityDescription", label: "Entity-First Description" },
+      { key: "fanAliases", label: "Fan Aliases" },
+      { key: "questions", label: "Questions Answered" },
+    ],
+  },
+  {
+    title: "Text layer",
+    items: [
+      { key: "transcript", label: "Transcript" },
+      { key: "keyQuotes", label: "Key Quotes" },
+      { key: "captions", label: "Captions (SRT / VTT)" },
+    ],
+  },
+  {
+    title: "Structured data",
+    items: [
+      { key: "schemaOrg", label: "Schema.org JSON-LD" },
+      { key: "videoSitemap", label: "Video Sitemap Entry" },
+    ],
+  },
+];
+
+const PLATFORM_LABELS: Record<AeoPlatform, string> = {
+  youtube: "YouTube",
+  tiktok: "TikTok",
+  instagram_reels: "Instagram Reels",
+  youtube_shorts: "YouTube Shorts",
+};
+const PLATFORM_ORDER: AeoPlatform[] = [
+  "youtube",
+  "tiktok",
+  "instagram_reels",
+  "youtube_shorts",
 ];
 
 /** Scenes : Metadata : Configuration (Configuration was 1fr, now 0.75fr). */
@@ -259,9 +357,98 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   const [adPre, setAdPre] = useState(true);
   const [adMid, setAdMid] = useState(false);
   const [adPost, setAdPost] = useState(false);
-  const [includeIab, setIncludeIab] = useState(true);
   const [iabFormFactor, setIabFormFactor] = useState(true);
   const [iabGenres, setIabGenres] = useState(true);
+  const [iabTopics, setIabTopics] = useState(true);
+  const includeIab = iabTopics || iabFormFactor || iabGenres;
+
+  const [aeoEnabled, setAeoEnabled] = useState(true);
+  const [aeoFlags, setAeoFlags] = useState<AeoFlags>(DEFAULT_AEO_FLAGS);
+  const setAeoFlag = useCallback(
+    (key: keyof AeoFlags, value: boolean) =>
+      setAeoFlags((prev) => ({ ...prev, [key]: value })),
+    [],
+  );
+  const [aeoPlatforms, setAeoPlatforms] = useState<Set<AeoPlatform>>(
+    () => new Set<AeoPlatform>(["youtube", "tiktok"]),
+  );
+  const toggleAeoPlatform = useCallback((platform: AeoPlatform) => {
+    setAeoPlatforms((prev) => {
+      const next = new Set(prev);
+      if (next.has(platform)) next.delete(platform);
+      else next.add(platform);
+      return next;
+    });
+  }, []);
+
+  // Producer-entered show info, stored on the asset. `null` while loading:
+  // AEO options wait for it, because its hash decides AEO staleness.
+  const assetId = useSelector((state: RootState) => state.editor.assetId);
+  const editorCaptions = useSelector(
+    (state: RootState) => state.editor.captions,
+  );
+  const [showInfo, setShowInfo] = useState<ShowInfo | null>(null);
+  const [showInfoDraft, setShowInfoDraft] = useState<ShowInfo>({});
+  const [showInfoSaving, setShowInfoSaving] = useState(false);
+  const [showInfoError, setShowInfoError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!assetId) {
+      setShowInfo({});
+      return;
+    }
+    let cancelled = false;
+    getAsset(assetId)
+      .then((asset: { showInfo?: unknown } | null) => {
+        if (cancelled) return;
+        const info = normalizeShowInfo(asset?.showInfo);
+        setShowInfo(info);
+        setShowInfoDraft(info);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setShowInfo({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [assetId]);
+  const showInfoDirty =
+    computeShowInfoHash(showInfoDraft) !== computeShowInfoHash(showInfo ?? {});
+  const saveShowInfo = useCallback(async () => {
+    if (!assetId) return;
+    const info = normalizeShowInfo(showInfoDraft);
+    setShowInfoSaving(true);
+    setShowInfoError(null);
+    try {
+      await updateAsset(assetId, { showInfo: info });
+      setShowInfo(info);
+      setShowInfoDraft(info);
+      // New show info makes AEO stale; clear a past error so it regenerates.
+      setMetadataError(null);
+    } catch {
+      setShowInfoError("Couldn't save show info. Try again.");
+    } finally {
+      setShowInfoSaving(false);
+    }
+  }, [assetId, showInfoDraft]);
+
+  const aeoOptions = useMemo((): AeoOptions | undefined => {
+    if (!aeoEnabled || showInfo === null) return undefined;
+    const platforms = PLATFORM_ORDER.filter((p) => aeoPlatforms.has(p));
+    return {
+      characters: aeoFlags.characters,
+      cast: aeoFlags.cast,
+      locations: aeoFlags.locations,
+      searchTitle: aeoFlags.searchTitle,
+      entityDescription: aeoFlags.entityDescription,
+      fanAliases: aeoFlags.fanAliases,
+      questions: aeoFlags.questions,
+      keyQuotes: aeoFlags.keyQuotes,
+      contentRating: aeoFlags.contentRating,
+      platforms: platforms.length ? platforms : undefined,
+      showInfoHash: computeShowInfoHash(showInfo),
+    };
+  }, [aeoEnabled, showInfo, aeoFlags, aeoPlatforms]);
 
   const cachedRenderMap = useMemo(() => {
     const map = new Map<string, SegmentRenderCache>();
@@ -288,24 +475,33 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       includeTitles,
       includeDescriptions,
       descriptionLengths: Array.from(descriptionLengths),
-      descriptiveTags: descriptiveTab
-        ? {
-            contentAdvisory,
-            mood,
-            theme,
-            tone,
-          }
-        : undefined,
-      includeIab,
-      iabFields: includeIab
-        ? {
-            formFactor: iabFormFactor,
-            genres: iabGenres,
-          }
-        : undefined,
+      // Content advisory sits under Audience targeting now, but is still
+      // generated with the descriptive tags.
+      descriptiveTags:
+        descriptiveTab || (aeoEnabled && contentAdvisory)
+          ? {
+              contentAdvisory: aeoEnabled && contentAdvisory,
+              mood: descriptiveTab && mood,
+              theme: descriptiveTab && theme,
+              tone: descriptiveTab && tone,
+            }
+          : undefined,
+      includeIab: aeoEnabled && includeIab,
+      iabFields:
+        aeoEnabled && includeIab
+          ? {
+              formFactor: iabFormFactor,
+              genres: iabGenres,
+              topics: iabTopics,
+            }
+          : undefined,
       includeThumbnails,
+      aeo: aeoOptions,
     }),
     [
+      aeoEnabled,
+      aeoOptions,
+      iabTopics,
       includeTitles,
       includeDescriptions,
       descriptionLengths,
@@ -421,8 +617,13 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       selectedSegmentIds: includedSegmentIds,
       metadataBySegmentId: metaMap,
       options: metadataOptions,
+      showInfo:
+        aeoEnabled && aeoFlags.seriesEpisode && showInfo ? showInfo : undefined,
     });
   }, [
+    aeoEnabled,
+    aeoFlags.seriesEpisode,
+    showInfo,
     projectId,
     projectTitle,
     projectThumbnailUrl,
@@ -480,6 +681,15 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
           metadataDocument: metadataEnabled
             ? buildMetadataDocument(new Set(includedSegmentIds))
             : null,
+          aeoFiles:
+            metadataEnabled && aeoEnabled
+              ? {
+                  transcript: aeoFlags.transcript,
+                  captions: aeoFlags.captions,
+                  schemaOrg: aeoFlags.schemaOrg,
+                  videoSitemap: aeoFlags.videoSitemap,
+                }
+              : undefined,
         });
         if (controller.signal.aborted) return;
         if (started.status === "completed" && started.downloadUrl) {
@@ -525,6 +735,8 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
       metadataEnabled,
       includeThumbnails,
       buildMetadataDocument,
+      aeoEnabled,
+      aeoFlags,
     ],
   );
 
@@ -1227,7 +1439,7 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
 
   const metadataDisabled = !metadataEnabled || isProcessing || agentRunning;
   const descriptiveChildrenDisabled = !descriptiveTab || metadataDisabled;
-  const iabChildrenDisabled = !includeIab || metadataDisabled;
+  const aeoChildrenDisabled = !aeoEnabled || metadataDisabled;
 
   const selectedMetadataRows = useMemo(() => {
     return segments
@@ -1601,13 +1813,30 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                             includeThumbnails={includeThumbnails}
                             descriptionLengths={descriptionLengths}
                             descriptiveTab={descriptiveTab}
-                            contentAdvisory={contentAdvisory}
                             mood={mood}
                             theme={theme}
                             tone={tone}
-                            includeIab={includeIab}
+                            includeIab={aeoEnabled && includeIab}
                             iabFormFactor={iabFormFactor}
                             iabGenres={iabGenres}
+                            iabTopics={iabTopics}
+                            contentAdvisory={aeoEnabled && contentAdvisory}
+                            startTime={segment.startTime}
+                            endTime={segment.endTime}
+                            aeo={
+                              aeoEnabled
+                                ? {
+                                    flags: aeoFlags,
+                                    platforms: aeoPlatforms,
+                                    showInfo: showInfo ?? {},
+                                    wordCount: countWordsInRange(
+                                      editorCaptions,
+                                      segment.startTime,
+                                      segment.endTime,
+                                    ),
+                                  }
+                                : undefined
+                            }
                             error={metadataSegmentErrors.get(segment.id)}
                             warning={metadataSegmentWarnings.get(segment.id)}
                           />
@@ -1623,7 +1852,10 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
             <ExportColumn>
               <ColumnHeader title="Configuration" />
               <div className="px-4 py-4 space-y-6 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
-                <ConfigSection title="Metadata">
+                <ConfigSection
+                  title="Descriptive Metadata"
+                  subtitle="What the clip is and how it feels"
+                >
                   <div
                     className={cn(
                       "space-y-4",
@@ -1675,31 +1907,6 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                     />
                     <div className="space-y-2">
                       <OptionRow
-                        id="meta-iab"
-                        label="IAB"
-                        checked={includeIab}
-                        onCheckedChange={setIncludeIab}
-                        disabled={metadataDisabled}
-                      />
-                      <NestedGroup disabled={iabChildrenDisabled}>
-                        <OptionRow
-                          id="meta-iab-form-factor"
-                          label="Form Factor"
-                          checked={iabFormFactor}
-                          onCheckedChange={setIabFormFactor}
-                          disabled={iabChildrenDisabled}
-                        />
-                        <OptionRow
-                          id="meta-iab-genres"
-                          label="Genres"
-                          checked={iabGenres}
-                          onCheckedChange={setIabGenres}
-                          disabled={iabChildrenDisabled}
-                        />
-                      </NestedGroup>
-                    </div>
-                    <div className="space-y-2">
-                      <OptionRow
                         id="meta-descriptive"
                         label="Descriptive Tags"
                         checked={descriptiveTab}
@@ -1707,13 +1914,6 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                         disabled={metadataDisabled}
                       />
                       <NestedGroup disabled={descriptiveChildrenDisabled}>
-                        <OptionRow
-                          id="meta-advisory"
-                          label="Content Advisory"
-                          checked={contentAdvisory}
-                          onCheckedChange={setContentAdvisory}
-                          disabled={descriptiveChildrenDisabled}
-                        />
                         <OptionRow
                           id="meta-mood"
                           label="Mood"
@@ -1736,6 +1936,124 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                           disabled={descriptiveChildrenDisabled}
                         />
                       </NestedGroup>
+                    </div>
+                  </div>
+                </ConfigSection>
+
+                <Separator />
+
+                <ConfigSection
+                  title="Search, Targeting & AEO"
+                  subtitle="How engines, platforms and buyers find it"
+                  trailing={
+                    <Switch
+                      checked={aeoEnabled}
+                      onCheckedChange={setAeoEnabled}
+                      disabled={metadataDisabled}
+                      aria-label="Include search, targeting and AEO metadata"
+                    />
+                  }
+                >
+                  <div
+                    className={cn(
+                      "space-y-5",
+                      aeoChildrenDisabled && "opacity-50 pointer-events-none",
+                    )}
+                  >
+                    {AEO_OPTION_GROUPS.map((group) => (
+                      <div key={group.title} className="space-y-2.5">
+                        <ConfigSubheading>{group.title}</ConfigSubheading>
+                        {group.items.map((item) => (
+                          <OptionRow
+                            key={item.key}
+                            id={`aeo-${item.key}`}
+                            label={item.label}
+                            checked={aeoFlags[item.key]}
+                            onCheckedChange={(v) => setAeoFlag(item.key, v)}
+                            disabled={aeoChildrenDisabled}
+                          />
+                        ))}
+                        {group.title === "Entities" && (
+                          <ShowInfoForm
+                            value={showInfoDraft}
+                            onChange={setShowInfoDraft}
+                            onSave={saveShowInfo}
+                            loading={showInfo === null}
+                            saving={showInfoSaving}
+                            dirty={showInfoDirty}
+                            error={showInfoError}
+                            disabled={aeoChildrenDisabled || !assetId}
+                          />
+                        )}
+                      </div>
+                    ))}
+
+                    <div className="space-y-2.5">
+                      <ConfigSubheading>Platform packaging</ConfigSubheading>
+                      <p className="text-[11px] text-muted-foreground -mt-1">
+                        Per-platform titles, descriptions &amp; chapters
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {PLATFORM_ORDER.map((platform) => {
+                          const on = aeoPlatforms.has(platform);
+                          return (
+                            <button
+                              key={platform}
+                              type="button"
+                              aria-pressed={on}
+                              disabled={aeoChildrenDisabled}
+                              onClick={() => toggleAeoPlatform(platform)}
+                              className={cn(
+                                "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                                on
+                                  ? "border-primary/60 bg-primary/15 text-foreground"
+                                  : "border-border text-muted-foreground hover:text-foreground",
+                              )}
+                            >
+                              {PLATFORM_LABELS[platform]}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      <ConfigSubheading>Audience targeting</ConfigSubheading>
+                      <OptionRow
+                        id="aeo-iab-topics"
+                        label="IAB Topics"
+                        checked={iabTopics}
+                        onCheckedChange={setIabTopics}
+                        disabled={aeoChildrenDisabled}
+                      />
+                      <OptionRow
+                        id="meta-iab-form-factor"
+                        label="Form Factor"
+                        checked={iabFormFactor}
+                        onCheckedChange={setIabFormFactor}
+                        disabled={aeoChildrenDisabled}
+                      />
+                      <OptionRow
+                        id="meta-iab-genres"
+                        label="Genres"
+                        checked={iabGenres}
+                        onCheckedChange={setIabGenres}
+                        disabled={aeoChildrenDisabled}
+                      />
+                      <OptionRow
+                        id="meta-advisory"
+                        label="Content Advisory"
+                        checked={contentAdvisory}
+                        onCheckedChange={setContentAdvisory}
+                        disabled={aeoChildrenDisabled}
+                      />
+                      <OptionRow
+                        id="aeo-content-rating"
+                        label="Content Rating"
+                        checked={aeoFlags.contentRating}
+                        onCheckedChange={(v) => setAeoFlag("contentRating", v)}
+                        disabled={aeoChildrenDisabled}
+                      />
                     </div>
                   </div>
                 </ConfigSection>
@@ -1999,6 +2317,10 @@ function MetadataSceneCard({
   includeIab,
   iabFormFactor,
   iabGenres,
+  iabTopics,
+  startTime,
+  endTime,
+  aeo,
   error,
   warning,
 }: {
@@ -2019,6 +2341,10 @@ function MetadataSceneCard({
   includeIab: boolean;
   iabFormFactor: boolean;
   iabGenres: boolean;
+  iabTopics: boolean;
+  startTime: number;
+  endTime: number;
+  aeo?: AeoCardContext;
   error?: string;
   warning?: string;
 }) {
@@ -2030,9 +2356,7 @@ function MetadataSceneCard({
     ? filterIabTagsForFields(meta?.tags?.iab, {
         formFactor: iabFormFactor,
         genres: iabGenres,
-        // Not a panel toggle: topics only exist on agent-written metadata, and
-        // hiding them would make that metadata look emptier than it is.
-        topics: true,
+        topics: iabTopics,
       })
     : undefined;
 
@@ -2050,17 +2374,57 @@ function MetadataSceneCard({
   const hasDescriptiveFields =
     descriptiveTab &&
     !!meta?.tags &&
-    ((contentAdvisory && !!contentAdvisoryTag) ||
-      (mood && !!meta.tags.mood) ||
+    ((mood && !!meta.tags.mood) ||
       (theme && !!meta.tags.theme) ||
       (tone && !!meta.tags.tone));
 
-  const hasIabFields =
-    includeIab &&
-    (iabFormFactors.length > 0 ||
-      iabGenreTags.length > 0 ||
-      iabTopicTags.length > 0 ||
-      isGenerating);
+  const aeoData = meta?.aeo;
+  const flags = aeo?.flags;
+  const show = aeo?.showInfo ?? {};
+  const episodeLabel = formatEpisodeLabel(show);
+  const showLine =
+    flags?.seriesEpisode && (episodeLabel || show.series)
+      ? `${formatSceneDuration(0)}–${formatSceneDuration(Math.max(0, endTime - startTime))} of ${episodeLabel || show.series}`
+      : null;
+  // A field still being made shows "Generating…"; one generated empty shows
+  // a dash, so producers can tell "nothing found" from "not done yet".
+  const pending = (
+    <span className="italic text-muted-foreground">
+      {isGenerating ? "Generating…" : "—"}
+    </span>
+  );
+  const chipsOr = (items: string[] | undefined, empty = "None found") =>
+    items === undefined ? (
+      pending
+    ) : items.length ? (
+      <Chips items={items} />
+    ) : (
+      <span className="text-muted-foreground">{empty}</span>
+    );
+  const textOr = (value: string | undefined, className?: string) =>
+    value === undefined ? (
+      pending
+    ) : value ? (
+      <span className={className}>{value}</span>
+    ) : (
+      <span className="text-muted-foreground">—</span>
+    );
+  const schemaChain = [
+    "Clip",
+    show.episode || show.episodeTitle ? "partOfEpisode TVEpisode" : null,
+    show.series ? "partOfSeries TVSeries" : null,
+  ]
+    .filter(Boolean)
+    .join(" → ");
+  const platformsOn = aeo
+    ? (["youtube", "tiktok", "instagram_reels", "youtube_shorts"] as const).filter((p) =>
+        aeo.platforms.has(p),
+      )
+    : [];
+  const hasAudience =
+    (includeIab && (iabTopics || iabFormFactor || iabGenres)) ||
+    contentAdvisory ||
+    !!flags?.contentRating;
 
   return (
     <div
@@ -2100,6 +2464,9 @@ function MetadataSceneCard({
               {formatSegmentLabel(index, segmentTitle)}
             </p>
           )}
+          {showLine && (
+            <p className="text-[11px] text-muted-foreground">{showLine}</p>
+          )}
 
           {includeDescriptions && (
             <div className="space-y-1">
@@ -2135,16 +2502,10 @@ function MetadataSceneCard({
         )}
       </div>
 
-      {(hasDescriptiveFields || hasIabFields) && (
+      {(hasDescriptiveFields || aeo || hasAudience) && (
         <div className="space-y-3 pt-2 border-t border-border/60">
           {hasDescriptiveFields && meta?.tags && (
             <MetadataFieldGroup title="Descriptive">
-              {contentAdvisory && contentAdvisoryTag && (
-                <MetadataField
-                  label="Content Advisory"
-                  value={contentAdvisoryTag}
-                />
-              )}
               {mood && meta.tags.mood && (
                 <MetadataField label="Mood" value={meta.tags.mood} />
               )}
@@ -2157,55 +2518,235 @@ function MetadataSceneCard({
             </MetadataFieldGroup>
           )}
 
-          {hasIabFields && (
-            <MetadataFieldGroup title="IAB">
-              {iabEntries.length > 0 ? (
-                <>
-                  {iabTopicTags.length > 0 && (
-                    <MetadataField
-                      label="Topics"
-                      value={
-                        <span className="flex flex-wrap gap-1">
-                          {iabTopicTags.map((t) => (
-                            <span
-                              key={t.id}
-                              className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-foreground/90"
-                            >
-                              {t.label}
+          {aeo && flags && (
+            <div className="space-y-3">
+              <h4 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-primary">
+                <span className="size-1.5 rounded-[1px] bg-primary" />
+                Search, Targeting &amp; AEO
+              </h4>
+
+              {(flags.seriesEpisode || flags.characters || flags.cast || flags.locations) && (
+                <MetadataFieldGroup title="Entities">
+                  {flags.seriesEpisode && (
+                    <>
+                      <MetadataField
+                        label="Series"
+                        value={
+                          show.series || (
+                            <span className="text-muted-foreground">
+                              Not set (add show info)
                             </span>
-                          ))}
-                        </span>
+                          )
+                        }
+                      />
+                      {episodeLabel && (
+                        <MetadataField label="Episode" value={episodeLabel} />
+                      )}
+                    </>
+                  )}
+                  {flags.characters && (
+                    <MetadataField
+                      label="Characters"
+                      value={chipsOr(aeoData?.entities?.characters)}
+                    />
+                  )}
+                  {flags.cast && (
+                    <MetadataField
+                      label="Cast"
+                      value={
+                        show.series
+                          ? chipsOr(aeoData?.entities?.cast)
+                          : (
+                              <span className="text-muted-foreground">
+                                Needs the series in show info
+                              </span>
+                            )
                       }
                     />
                   )}
-                  {iabFormFactor && iabFormFactors.length > 0 && (
+                  {flags.locations && (
                     <MetadataField
-                      label="Form Factor"
-                      value={iabFormFactors.map((f) => f.label).join(", ")}
+                      label="Location"
+                      value={chipsOr(aeoData?.entities?.locations)}
                     />
                   )}
-                  {iabGenres && iabGenreTags.length > 0 && (
+                </MetadataFieldGroup>
+              )}
+
+              {(flags.searchTitle || flags.entityDescription || flags.fanAliases || flags.questions) && (
+                <MetadataFieldGroup title="Search copy">
+                  {flags.searchTitle && (
                     <MetadataField
-                      label="Genres"
+                      label="Search title"
+                      value={textOr(aeoData?.search?.title, "font-semibold")}
+                    />
+                  )}
+                  {flags.entityDescription && (
+                    <MetadataField
+                      label="Entity-first description"
+                      value={textOr(aeoData?.search?.entityDescription)}
+                    />
+                  )}
+                  {flags.fanAliases && (
+                    <MetadataField
+                      label="Fan aliases"
+                      value={chipsOr(aeoData?.search?.fanAliases)}
+                    />
+                  )}
+                  {flags.questions && (
+                    <MetadataField
+                      label="Questions answered"
                       value={
-                        <span className="flex flex-wrap gap-1">
-                          {iabGenreTags.map((g) => (
-                            <span
-                              key={g.id}
-                              className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-foreground/90"
-                            >
-                              {g.label}
-                            </span>
-                          ))}
-                        </span>
+                        aeoData?.search?.questions === undefined ? (
+                          pending
+                        ) : aeoData.search.questions.length ? (
+                          <span className="block space-y-0.5">
+                            {aeoData.search.questions.map((q) => (
+                              <span key={q} className="block">
+                                {q}
+                              </span>
+                            ))}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )
                       }
                     />
                   )}
-                </>
-              ) : (
-                <p className="text-[11px] text-muted-foreground italic">
-                  Generating…
-                </p>
+                </MetadataFieldGroup>
+              )}
+
+              {(flags.transcript || flags.captions || flags.keyQuotes || flags.schemaOrg || flags.videoSitemap) && (
+                <MetadataFieldGroup title="Text layer & structured data">
+                  {(flags.transcript || flags.captions) && (
+                    <MetadataField
+                      label="Transcript"
+                      value={[
+                        "In export",
+                        aeo.wordCount !== null ? `${aeo.wordCount} words` : null,
+                        flags.captions ? "SRT + VTT" : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    />
+                  )}
+                  {flags.keyQuotes && (
+                    <MetadataField
+                      label="Key quote"
+                      value={
+                        aeoData?.keyQuotes === undefined ? (
+                          pending
+                        ) : aeoData.keyQuotes.length ? (
+                          <span className="italic">“{aeoData.keyQuotes[0]}”</span>
+                        ) : (
+                          <span className="text-muted-foreground">
+                            No exact line found
+                          </span>
+                        )
+                      }
+                    />
+                  )}
+                  {flags.schemaOrg && (
+                    <MetadataField
+                      label="Schema.org"
+                      value={<code className="text-[10px]">{schemaChain}</code>}
+                    />
+                  )}
+                  {flags.videoSitemap && (
+                    <MetadataField label="Video sitemap" value="Entry in video-sitemap.xml" />
+                  )}
+                </MetadataFieldGroup>
+              )}
+
+              {platformsOn.length > 0 && (
+                <MetadataFieldGroup title="Platform packaging">
+                  {platformsOn.map((platform) => {
+                    const pkg = aeoData?.platforms?.[platform];
+                    return (
+                      <MetadataField
+                        key={platform}
+                        label={PLATFORM_LABELS[platform]}
+                        value={
+                          !pkg ? (
+                            pending
+                          ) : Object.keys(pkg).length === 0 ? (
+                            <span className="text-muted-foreground">—</span>
+                          ) : (
+                            <span className="block space-y-0.5">
+                              {pkg.title && (
+                                <span className="block font-medium">{pkg.title}</span>
+                              )}
+                              {pkg.description && (
+                                <span className="block text-muted-foreground line-clamp-2 whitespace-pre-line">
+                                  {pkg.description}
+                                </span>
+                              )}
+                              {(pkg.hashtags?.length || pkg.chapters?.length) && (
+                                <span className="block text-muted-foreground">
+                                  {[
+                                    pkg.hashtags?.join(" "),
+                                    pkg.chapters?.length
+                                      ? `${pkg.chapters.length} chapters`
+                                      : null,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" · ")}
+                                </span>
+                              )}
+                            </span>
+                          )
+                        }
+                      />
+                    );
+                  })}
+                </MetadataFieldGroup>
+              )}
+            </div>
+          )}
+
+          {hasAudience && (
+            <MetadataFieldGroup title="Audience targeting">
+              {includeIab && iabTopics && (
+                <MetadataField
+                  label="IAB topics"
+                  value={iabTopicTags.length ? <Chips items={iabTopicTags.map((t) => t.label)} /> : pending}
+                />
+              )}
+              {includeIab && iabFormFactor && (
+                <MetadataField
+                  label="Form factor"
+                  value={
+                    iabFormFactors.length
+                      ? iabFormFactors.map((f) => f.label).join(", ")
+                      : pending
+                  }
+                />
+              )}
+              {includeIab && iabGenres && (
+                <MetadataField
+                  label="Genres"
+                  value={iabGenreTags.length ? <Chips items={iabGenreTags.map((g) => g.label)} /> : pending}
+                />
+              )}
+              {contentAdvisory && (
+                <MetadataField
+                  label="Content advisory"
+                  value={
+                    contentAdvisoryTag ? (
+                      <Chips items={contentAdvisoryTag.split(/,\s*/)} />
+                    ) : meta?.tags?.content_advisory === undefined ? (
+                      pending
+                    ) : (
+                      <span className="text-muted-foreground">None</span>
+                    )
+                  }
+                />
+              )}
+              {flags?.contentRating && (
+                <MetadataField
+                  label="Content rating"
+                  value={textOr(aeoData?.contentRating)}
+                />
               )}
             </MetadataFieldGroup>
           )}
@@ -2217,6 +2758,40 @@ function MetadataSceneCard({
         <p className="text-xs text-amber-600 dark:text-amber-500">{warning}</p>
       )}
     </div>
+  );
+}
+
+interface AeoCardContext {
+  flags: AeoFlags;
+  platforms: Set<AeoPlatform>;
+  showInfo: ShowInfo;
+  /** Words in the scene's captions, or null when the transcript isn't loaded. */
+  wordCount: number | null;
+}
+
+function countWordsInRange(
+  captions: Array<{ startTime: number; endTime: number; speechEndTime?: number; text: string }> | undefined,
+  startTime: number,
+  endTime: number,
+): number | null {
+  if (!captions?.length) return null;
+  return captions
+    .filter((c) => (c.speechEndTime ?? c.endTime) > startTime && c.startTime < endTime)
+    .reduce((total, c) => total + c.text.split(/\s+/).filter(Boolean).length, 0);
+}
+
+function Chips({ items }: { items: string[] }) {
+  return (
+    <span className="flex flex-wrap gap-1">
+      {items.map((item) => (
+        <span
+          key={item}
+          className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-foreground/90"
+        >
+          {item}
+        </span>
+      ))}
+    </span>
   );
 }
 
@@ -2365,12 +2940,14 @@ function ColumnHeader({
 
 function ConfigSection({
   title,
+  subtitle,
   hint,
   disabled,
   trailing,
   children,
 }: {
   title: string;
+  subtitle?: string;
   hint?: string;
   disabled?: boolean;
   trailing?: ReactNode;
@@ -2378,19 +2955,96 @@ function ConfigSection({
 }) {
   return (
     <section className={cn(disabled && "opacity-60")}>
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold">{title}</h3>
-          {hint && (
-            <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-              {hint}
-            </span>
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold">{title}</h3>
+            {hint && (
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                {hint}
+              </span>
+            )}
+          </div>
+          {subtitle && (
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              {subtitle}
+            </p>
           )}
         </div>
         {trailing}
       </div>
       {children}
     </section>
+  );
+}
+
+function ConfigSubheading({ children }: { children: ReactNode }) {
+  return (
+    <h4 className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+      {children}
+    </h4>
+  );
+}
+
+/**
+ * Producer-entered facts the AEO metadata treats as true. Saved to the asset,
+ * so every project cut from the same video shares them.
+ */
+function ShowInfoForm({
+  value,
+  onChange,
+  onSave,
+  loading,
+  saving,
+  dirty,
+  error,
+  disabled,
+}: {
+  value: ShowInfo;
+  onChange: (value: ShowInfo) => void;
+  onSave: () => void;
+  loading: boolean;
+  saving: boolean;
+  dirty: boolean;
+  error: string | null;
+  disabled?: boolean;
+}) {
+  const field = (key: keyof ShowInfo, placeholder: string, className?: string) => (
+    <Input
+      value={value[key] ?? ""}
+      onChange={(e) => onChange({ ...value, [key]: e.target.value })}
+      placeholder={placeholder}
+      aria-label={placeholder}
+      disabled={disabled || loading || saving}
+      className={cn("h-7 text-xs", className)}
+    />
+  );
+  return (
+    <div className="rounded-md border border-border/70 bg-muted/30 p-2.5 space-y-1.5">
+      <p className="text-[11px] text-muted-foreground">
+        Show info, used as fact for cast, search copy and Schema.org
+      </p>
+      {field("series", "Series (e.g. Star Trek: The Original Series)")}
+      <div className="grid grid-cols-3 gap-1.5">
+        {field("season", "Season")}
+        {field("episode", "Episode")}
+        {field("year", "Year")}
+      </div>
+      {field("episodeTitle", "Episode title")}
+      <div className="flex items-center justify-between gap-2 pt-0.5">
+        <span className="text-[10px] text-destructive min-h-[1em]">{error}</span>
+        <Button
+          type="button"
+          size="sm"
+          variant={dirty ? "default" : "ghost"}
+          className="h-6 px-2 text-xs"
+          disabled={disabled || loading || saving || !dirty}
+          onClick={onSave}
+        >
+          {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : dirty ? "Save" : "Saved"}
+        </Button>
+      </div>
+    </div>
   );
 }
 

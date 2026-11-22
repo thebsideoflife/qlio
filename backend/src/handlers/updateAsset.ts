@@ -2,6 +2,7 @@ import { APIGatewayProxyHandler } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { checkAuth } from "../utils/auth";
+import { normalizeShowInfo } from "../services/show-info";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -28,29 +29,54 @@ export const handler: APIGatewayProxyHandler = async (event) => {
 
     // The display name lives in the top-level `title`, which listAssetsStatus
     // reads. (It used to be written into `metadata`, so renames reverted.)
-    const { title } = JSON.parse(event.body || "{}");
-    if (typeof title !== "string" || !title.trim()) {
+    // `showInfo` (series, season, episode…) feeds AEO metadata; either field
+    // may be sent alone.
+    const body = JSON.parse(event.body || "{}") as {
+      title?: unknown;
+      showInfo?: unknown;
+    };
+    const hasTitle = body.title !== undefined;
+    const hasShowInfo = body.showInfo !== undefined;
+    if (
+      (!hasTitle && !hasShowInfo) ||
+      (hasTitle && (typeof body.title !== "string" || !body.title.trim())) ||
+      (hasShowInfo &&
+        (body.showInfo === null || typeof body.showInfo !== "object"))
+    ) {
       return {
         statusCode: 400,
         headers: {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",
         },
-        body: JSON.stringify({ error: "A non-empty title is required" }),
+        body: JSON.stringify({
+          error: "Send a non-empty title, a showInfo object, or both",
+        }),
       };
+    }
+
+    const sets = ["updatedAt = :u"];
+    const names: Record<string, string> = {};
+    const values: Record<string, unknown> = { ":u": new Date().toISOString() };
+    if (hasTitle) {
+      sets.push("#title = :t");
+      names["#title"] = "title";
+      values[":t"] = (body.title as string).trim();
+    }
+    const showInfo = hasShowInfo ? normalizeShowInfo(body.showInfo) : undefined;
+    if (showInfo) {
+      sets.push("showInfo = :s");
+      values[":s"] = showInfo;
     }
 
     await docClient.send(
       new UpdateCommand({
         TableName: TABLE_NAME,
         Key: { assetId },
-        UpdateExpression: "SET #title = :t, updatedAt = :u",
+        UpdateExpression: `SET ${sets.join(", ")}`,
         ConditionExpression: "attribute_exists(assetId)",
-        ExpressionAttributeNames: { "#title": "title" },
-        ExpressionAttributeValues: {
-          ":t": title.trim(),
-          ":u": new Date().toISOString(),
-        },
+        ...(Object.keys(names).length ? { ExpressionAttributeNames: names } : {}),
+        ExpressionAttributeValues: values,
       }),
     );
 
@@ -60,7 +86,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
       },
-      body: JSON.stringify({ success: true }),
+      body: JSON.stringify({ success: true, ...(showInfo ? { showInfo } : {}) }),
     };
   } catch (error) {
     console.error("Error updating asset:", error);

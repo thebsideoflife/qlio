@@ -24,6 +24,28 @@ import {
   sceneVideoFilename,
 } from "../utils/exportPackageLayout";
 import { computeExportPackageFingerprint } from "../utils/exportPackageFingerprint";
+import {
+  aeoReadme,
+  buildSceneJsonLd,
+  buildVideoSitemap,
+  formatSrt,
+  formatTranscript,
+  formatVtt,
+  sceneCaptionCues,
+  type AeoExportScene,
+} from "../utils/aeo-export-files";
+import {
+  captionsFromParsedTranscript,
+  parseTranscriptJson,
+  type CaptionLine,
+} from "../utils/transcript-format";
+import { captionGroupingOptions } from "../utils/caption-grouping";
+import {
+  DEFAULT_CAPTION_SETTINGS,
+  mergeCaptionSettings,
+} from "../utils/caption-settings";
+import { resolveRenderTranscriptCandidates } from "../utils/transcript-source";
+import { presignS3Uri } from "../utils/s3";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -32,6 +54,7 @@ const s3 = new S3Client({});
 const lambdaClient = new LambdaClient({});
 
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
+const ASSETS_TABLE = process.env.ASSETS_TABLE;
 const MEDIA_BUCKET = process.env.BUCKET_NAME!;
 const RENDERS_BUCKET = process.env.RENDERS_BUCKET!;
 const SELF_FUNCTION_NAME = process.env.AWS_LAMBDA_FUNCTION_NAME!;
@@ -68,8 +91,104 @@ interface RequestBody {
   metadataDocument?: {
     projectThumbnailUrl?: string | null;
     scenes: Array<{ segmentId: string; thumbnailUrl?: string | null }>;
+    /** Producer show info, when Series & Episode is switched on. */
+    show?: unknown;
     [key: string]: unknown;
   } | null;
+  /** Search, targeting & AEO files to add to the zip. */
+  aeoFiles?: AeoFileOptions;
+}
+
+interface AeoFileOptions {
+  transcript?: boolean;
+  captions?: boolean;
+  schemaOrg?: boolean;
+  videoSitemap?: boolean;
+}
+
+function wantsAeoFiles(options: AeoFileOptions | undefined): boolean {
+  return Boolean(
+    options &&
+      (options.transcript || options.captions || options.schemaOrg || options.videoSitemap),
+  );
+}
+
+function wantsCaptionText(options: AeoFileOptions | undefined): boolean {
+  return Boolean(options?.transcript || options?.captions || options?.schemaOrg);
+}
+
+async function readAsset(assetId: unknown): Promise<Record<string, unknown> | null> {
+  if (!ASSETS_TABLE || typeof assetId !== "string" || !assetId) return null;
+  const result = await dynamo.send(
+    new GetCommand({ TableName: ASSETS_TABLE, Key: { assetId } }),
+  );
+  return (result.Item as Record<string, unknown> | undefined) ?? null;
+}
+
+/** Inputs that change exported caption text, so the package fingerprint sees edits. */
+function captionRevision(
+  project: Record<string, unknown>,
+  asset: Record<string, unknown> | null,
+): string {
+  const settings = mergeCaptionSettings(
+    DEFAULT_CAPTION_SETTINGS,
+    project.captionSettings as Parameters<typeof mergeCaptionSettings>[1],
+  );
+  const framing = project.globalFraming as { aspectRatio?: string } | undefined;
+  return JSON.stringify({
+    wordEdits: settings.wordEdits ?? null,
+    language: settings.activeLanguage ?? null,
+    style: settings.style ?? null,
+    aspect: framing?.aspectRatio ?? null,
+    transcriptionVersion: asset?.transcriptionVersion ?? null,
+    transcriptionUrl: asset?.transcriptionUrl ?? null,
+    translations: asset?.translations ?? null,
+  });
+}
+
+/**
+ * Caption lines for the whole source, built exactly as the renderer builds
+ * the burned-in captions: same transcript choice, word edits and grouping.
+ */
+async function loadCaptionLines(
+  project: Record<string, unknown>,
+  asset: Record<string, unknown> | null,
+): Promise<CaptionLine[] | null> {
+  if (!asset) return null;
+  const settings = mergeCaptionSettings(
+    DEFAULT_CAPTION_SETTINGS,
+    project.captionSettings as Parameters<typeof mergeCaptionSettings>[1],
+  );
+  const framing = project.globalFraming as { aspectRatio?: string } | undefined;
+  const uris = resolveRenderTranscriptCandidates({
+    assetId: typeof asset.assetId === "string" ? asset.assetId : String(project.assetId ?? ""),
+    activeLanguage: settings.activeLanguage,
+    originalLanguage: typeof asset.originalLanguage === "string" ? asset.originalLanguage : undefined,
+    transcriptionVersion:
+      typeof asset.transcriptionVersion === "string" ? asset.transcriptionVersion : undefined,
+    translations:
+      asset.translations && typeof asset.translations === "object"
+        ? (asset.translations as Record<string, string>)
+        : {},
+    transcriptionUrl: typeof asset.transcriptionUrl === "string" ? asset.transcriptionUrl : null,
+  });
+  for (const uri of uris) {
+    try {
+      const url = await presignS3Uri(uri);
+      if (!url) continue;
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const parsed = parseTranscriptJson(await response.json());
+      return captionsFromParsedTranscript(
+        parsed,
+        parsed.kind === "original" ? settings.wordEdits : undefined,
+        captionGroupingOptions(settings.style, framing?.aspectRatio ?? "9:16"),
+      );
+    } catch (err) {
+      console.warn(`[packageExport] transcript ${uri} unusable:`, err);
+    }
+  }
+  return null;
 }
 
 interface AsyncJobPayload {
@@ -240,7 +359,17 @@ async function handleStart(
   };
   const renderSnapshot = (project.segmentRenders || []) as StoredSegmentRender[];
   const fingerprint = computeExportPackageFingerprint(
-    effectiveBody,
+    {
+      ...effectiveBody,
+      ...(wantsAeoFiles(body.aeoFiles)
+        ? {
+            aeoFiles: body.aeoFiles,
+            captionRevision: wantsCaptionText(body.aeoFiles)
+              ? captionRevision(project, await readAsset(project.assetId))
+              : undefined,
+          }
+        : {}),
+    },
     renderSnapshot,
   );
   const existing = project.exportPackageJob as ExportPackageJob | undefined;
@@ -308,6 +437,97 @@ async function appendS3Object(
   });
 }
 
+/**
+ * Adds "<Project> AEO/": per-scene captions, transcript and JSON-LD, a video
+ * sitemap and a README. Missing inputs become warnings, never a failed zip:
+ * the videos are the deliverable.
+ */
+async function appendAeoFiles(params: {
+  archive: archiver.Archiver;
+  project: Record<string, unknown>;
+  body: RequestBody;
+  layout: ReturnType<typeof buildExportPackageLayout>;
+  selected: Array<{ id: string; startTime: number; endTime: number }>;
+  includedThumbs: Set<string>;
+  warnings: string[];
+}): Promise<void> {
+  const { archive, project, body, layout, selected, includedThumbs, warnings } = params;
+  const options = body.aeoFiles ?? {};
+  const folder = `${layout.rootFolder}/${layout.rootFolder} AEO`;
+  const show = body.metadataDocument?.show;
+  const docScenes = new Map(
+    ((body.metadataDocument?.scenes ?? []) as Array<AeoExportScene & { segmentId: string }>).map(
+      (scene) => [scene.segmentId, scene],
+    ),
+  );
+
+  let captions: CaptionLine[] | null = null;
+  if (wantsCaptionText(options)) {
+    captions = await loadCaptionLines(project, await readAsset(project.assetId));
+    if (!captions && (options.captions || options.transcript)) {
+      warnings.push("Skipped captions and transcripts: no transcript is available for this video.");
+    }
+  }
+
+  const sitemapEntries: Parameters<typeof buildVideoSitemap>[0] = [];
+  for (const scene of layout.scenes) {
+    const segment = selected.find((s) => s.id === scene.segmentId);
+    if (!segment) continue;
+    const base = scene.videoFilename.replace(/\.mp4$/, "");
+    const cues = captions
+      ? sceneCaptionCues(captions, segment.startTime, segment.endTime)
+      : [];
+    if (captions && options.captions) {
+      archive.append(formatSrt(cues), { name: `${folder}/${base}.srt` });
+      archive.append(formatVtt(cues), { name: `${folder}/${base}.vtt` });
+    }
+    if (captions && options.transcript) {
+      archive.append(formatTranscript(cues), { name: `${folder}/${base}.txt` });
+    }
+
+    const docScene = docScenes.get(scene.segmentId);
+    if (!docScene) continue;
+    const files = {
+      video: scene.videoFilename,
+      ...(includedThumbs.has(scene.segmentId) ? { thumbnail: scene.thumbnailFilename } : {}),
+    };
+    if (options.schemaOrg) {
+      const jsonLd = buildSceneJsonLd({
+        scene: docScene,
+        show,
+        files,
+        transcript: options.transcript && cues.length ? formatTranscript(cues) : undefined,
+      });
+      archive.append(JSON.stringify(jsonLd, null, 2), { name: `${folder}/${base}.jsonld` });
+    }
+    sitemapEntries.push({ scene: docScene, files });
+  }
+
+  if (options.videoSitemap) {
+    if (sitemapEntries.length) {
+      archive.append(buildVideoSitemap(sitemapEntries), { name: `${folder}/video-sitemap.xml` });
+    } else {
+      warnings.push("Skipped the video sitemap: turn on metadata to include scene details.");
+    }
+  }
+  if (options.schemaOrg && docScenes.size === 0) {
+    warnings.push("Skipped Schema.org files: turn on metadata to include scene details.");
+  }
+
+  archive.append(
+    aeoReadme({
+      show,
+      files: {
+        captions: Boolean(options.captions && captions),
+        transcript: Boolean(options.transcript && captions),
+        schemaOrg: Boolean(options.schemaOrg && docScenes.size),
+        videoSitemap: Boolean(options.videoSitemap && sitemapEntries.length),
+      },
+    }),
+    { name: `${folder}/README.txt` },
+  );
+}
+
 async function runWorker(event: AsyncJobPayload): Promise<void> {
   const { projectId, jobId, body, fingerprint, renderSnapshot } = event;
   const warnings: string[] = [];
@@ -353,7 +573,12 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
     // Chronological order = project scene numbers (older projects may be
     // stored unsorted).
     const segments = [
-      ...((project.segments || []) as Array<{ id: string; title?: string; startTime: number }>),
+      ...((project.segments || []) as Array<{
+        id: string;
+        title?: string;
+        startTime: number;
+        endTime: number;
+      }>),
     ].sort((a, b) => a.startTime - b.startTime);
     const requested = new Set(
       (body.segmentIds?.length ? body.segmentIds : segments.map((s) => s.id)),
@@ -476,6 +701,18 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
           );
         }
       }
+    }
+
+    if (wantsAeoFiles(body.aeoFiles)) {
+      await appendAeoFiles({
+        archive,
+        project,
+        body,
+        layout,
+        selected,
+        includedThumbs,
+        warnings,
+      });
     }
 
     if (body.metadataDocument) {

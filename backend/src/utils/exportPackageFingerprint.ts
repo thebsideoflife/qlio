@@ -4,6 +4,10 @@ export interface ExportPackageFingerprintInput {
   includePoster?: boolean;
   projectTitle?: string;
   metadataDocument?: unknown;
+  /** Search & AEO files; absent keeps older fingerprints unchanged. */
+  aeoFiles?: unknown;
+  /** Caption inputs (word edits, language…) when captions are exported. */
+  captionRevision?: string;
 }
 
 export interface ExportPackageRenderRevision {
@@ -79,6 +83,9 @@ export function computeExportPackageFingerprint(
       ? hashString(JSON.stringify(stableMetadata(input.metadataDocument)))
       : null,
     revisions,
+    ...(input.aeoFiles
+      ? { aeoFiles: input.aeoFiles, captionRevision: input.captionRevision ?? null }
+      : {}),
   });
   return `v4-${hashString(payload)}`;
 }

@@ -6,6 +6,8 @@
   "scripts": {
     "build": "esbuild src/handlers/*.ts --bundle --platform=node --target=node18 --outdir=dist --external:@remotion/lambda --external:@remotion/renderer",
     "jockey:eval": "tsx src/scripts/jockey-eval.ts",
+    "test:aeo-export-files": "npx tsx src/scripts/test-aeo-export-files.ts",
+    "test:aeo-metadata": "npx tsx src/scripts/test-aeo-metadata.ts",
     "test:export-metadata": "tsx src/scripts/test-export-metadata-fingerprint.ts",
     "test:agent-metadata": "tsx src/scripts/test-agent-metadata.ts",
     "test:jockey-coverage": "tsx src/scripts/test-jockey-coverage.ts",
@@ -32,7 +34,7 @@
     "test:render-job-progress": "tsx src/utils/renderJobProgress.test.ts",
     "test:cut-segments-guard": "tsx src/tests/cutSegmentsGuard.test.ts",
     "test:thread-item-size": "tsx src/tests/threadItemSize.test.ts",
-    "test": "npm run test:export-metadata && npm run test:agent-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates && npm run test:iq-agent && npm run test:transcription-sanitize && npm run test:transcript-format && npm run test:word-edit-migration && npm run test:caption-grouping && npm run test:caption-settings && npm run test:video-clip && npm run test:clip-upload && npm run test:segment-frame-bounds && npm run test:render-downloads && npm run test:export-cache && npm run test:export-package-layout && npm run test:render-reuse && npm run test:export-slot && npm run test:render-job-progress && npm run test:cut-segments-guard && npm run test:thread-item-size && npm run test:sporelabs && npm run test:sporelabs-reframe && npm run test:sporelabs-transcribe && npm run test:shot-hold-framing && npm run test:translate-captions",
+    "test": "npm run test:export-metadata && npm run test:aeo-metadata && npm run test:aeo-export-files && npm run test:agent-metadata && npm run test:jockey-coverage && npm run test:jockey-v3-gates && npm run test:iq-agent && npm run test:transcription-sanitize && npm run test:transcript-format && npm run test:word-edit-migration && npm run test:caption-grouping && npm run test:caption-settings && npm run test:video-clip && npm run test:clip-upload && npm run test:segment-frame-bounds && npm run test:render-downloads && npm run test:export-cache && npm run test:export-package-layout && npm run test:render-reuse && npm run test:export-slot && npm run test:render-job-progress && npm run test:cut-segments-guard && npm run test:thread-item-size && npm run test:sporelabs && npm run test:sporelabs-reframe && npm run test:sporelabs-transcribe && npm run test:shot-hold-framing && npm run test:translate-captions",
     "test:sporelabs": "tsx src/services/sporelabs.test.ts",
     "test:translate-captions": "tsx src/services/translate-captions.test.ts"
   },

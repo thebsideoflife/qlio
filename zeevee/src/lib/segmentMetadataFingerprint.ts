@@ -4,6 +4,7 @@ import {
   filterIabTagsForFields,
   iabHasFormFactor,
   iabHasGenre,
+  iabHasTopic,
   type IabFieldOptions,
 } from "./iabContentTaxonomy";
 
@@ -22,6 +23,94 @@ export interface ExportMetadataFingerprintOptions {
   includeIab?: boolean;
   iabFields?: IabFieldOptions;
   includeThumbnails?: boolean;
+  aeo?: AeoOptions;
+}
+
+export type AeoPlatform =
+  | "youtube"
+  | "youtube_shorts"
+  | "tiktok"
+  | "instagram_reels";
+
+export const AEO_PLATFORMS: readonly AeoPlatform[] = [
+  "youtube",
+  "youtube_shorts",
+  "tiktok",
+  "instagram_reels",
+];
+
+/** Mirrors backend `AeoOptions` (services/export-metadata.ts). */
+export interface AeoOptions {
+  characters?: boolean;
+  cast?: boolean;
+  locations?: boolean;
+  searchTitle?: boolean;
+  entityDescription?: boolean;
+  fanAliases?: boolean;
+  questions?: boolean;
+  keyQuotes?: boolean;
+  contentRating?: boolean;
+  platforms?: AeoPlatform[];
+  /** computeShowInfoHash() of the asset's show info. */
+  showInfoHash?: string;
+}
+
+export interface AeoChapter {
+  startSec: number;
+  title: string;
+}
+
+export interface AeoPlatformPackage {
+  title?: string;
+  description?: string;
+  hashtags?: string[];
+  tags?: string[];
+  chapters?: AeoChapter[];
+}
+
+/** Mirrors backend `StoredAeoMetadata` (types/segment-metadata.ts). */
+export interface AeoMetadata {
+  showInfoHash: string;
+  entities?: { characters?: string[]; cast?: string[]; locations?: string[] };
+  search?: {
+    title?: string;
+    entityDescription?: string;
+    fanAliases?: string[];
+    questions?: string[];
+  };
+  keyQuotes?: string[];
+  contentRating?: string;
+  platforms?: Partial<Record<AeoPlatform, AeoPlatformPackage>>;
+}
+
+/**
+ * True when a requested AEO field is missing. MUST match backend
+ * `computeMissingAeoOptions`: empty strings/arrays count as generated.
+ */
+export function isAeoStale(
+  cached: AeoMetadata | undefined,
+  options: AeoOptions | undefined,
+): boolean {
+  if (!options) return false;
+  const platforms = (options.platforms ?? []).filter((p) =>
+    AEO_PLATFORMS.includes(p),
+  );
+  const flags: Array<[boolean | undefined, () => boolean]> = [
+    [options.characters, () => cached?.entities?.characters === undefined],
+    [options.cast, () => cached?.entities?.cast === undefined],
+    [options.locations, () => cached?.entities?.locations === undefined],
+    [options.searchTitle, () => cached?.search?.title === undefined],
+    [options.entityDescription, () => cached?.search?.entityDescription === undefined],
+    [options.fanAliases, () => cached?.search?.fanAliases === undefined],
+    [options.questions, () => cached?.search?.questions === undefined],
+    [options.keyQuotes, () => cached?.keyQuotes === undefined],
+    [options.contentRating, () => cached?.contentRating === undefined],
+  ];
+  const anyWanted = platforms.length > 0 || flags.some(([want]) => want);
+  if (!anyWanted) return false;
+  if (!cached || cached.showInfoHash !== (options.showInfoHash ?? "")) return true;
+  if (flags.some(([want, missing]) => want && missing())) return true;
+  return platforms.some((p) => !cached.platforms?.[p]);
 }
 
 export interface IabTaxonomyTags {
@@ -90,6 +179,7 @@ export interface SegmentMetadataCache {
   };
   thumbnailUrl?: string | null;
   thumbnailKey?: string;
+  aeo?: AeoMetadata;
   generatedAt?: string;
 }
 
@@ -134,11 +224,16 @@ export function isSegmentMetadataStale(
   if (options?.includeIab) {
     const wantForm = options.iabFields?.formFactor !== false;
     const wantGenres = options.iabFields?.genres !== false;
+    // Opt-in, matching the backend: unset means "don't need topics".
+    const wantTopics = options.iabFields?.topics === true;
     const cat = cached.tags?.iab?.cat;
     if (!cat?.length) return true;
     if (wantForm && !iabHasFormFactor(cat)) return true;
     if (wantGenres && !iabHasGenre(cat)) return true;
+    if (wantTopics && !iabHasTopic(cat)) return true;
   }
+
+  if (isAeoStale(cached.aeo, options?.aeo)) return true;
 
   if (
     options?.includeThumbnails !== false &&

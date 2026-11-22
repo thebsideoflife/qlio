@@ -15,6 +15,7 @@ import { randomUUID } from "crypto";
 import { checkAuth } from "../utils/auth";
 import { createTwelveLabsWrapper } from "../services/twelvelabs";
 import {
+  aeoWantsIabTopics,
   computeMissingMetadataOptions,
   computeSegmentMetadataFingerprint,
   generateSegmentMetadata,
@@ -23,10 +24,21 @@ import {
   pruneSegmentMetadata,
   resolveClipForSegment,
   segmentSpansMultipleChunks,
+  pegasusOptionsFor,
   segmentThumbnailTimestamp,
   type ExportMetadataOptions,
   type ParsedSegmentMetadata,
 } from "../services/export-metadata";
+import {
+  aeoHasModelWork,
+  generateSegmentAeo,
+} from "../services/aeo-metadata";
+import {
+  computeShowInfoHash,
+  normalizeShowInfo,
+  type ShowInfo,
+} from "../services/show-info";
+import type { IabTaxonomyTags } from "../services/iab-content-taxonomy";
 import type { StoredSegmentMetadata } from "../types/segment-metadata";
 import { mapWithConcurrency } from "../utils/concurrency";
 import { extractFrameToS3 } from "../utils/thumbnailExtract";
@@ -99,12 +111,46 @@ interface AsyncJobPayload {
 
 function fingerprintOptions(
   body: RequestBody,
+  showInfoHash: string,
 ): ExportMetadataOptions & { includeThumbnails: boolean } {
   const opts = body.options ?? {};
   return {
     ...opts,
     includeThumbnails: opts.includeThumbnails !== false,
+    // The stored show info decides staleness, never the client's copy.
+    ...(opts.aeo ? { aeo: { ...opts.aeo, showInfoHash } } : {}),
   };
+}
+
+async function readShowInfo(assetId: string | undefined): Promise<ShowInfo> {
+  if (!assetId) return {};
+  const result = await docClient.send(
+    new GetCommand({
+      TableName: ASSETS_TABLE,
+      Key: { assetId },
+      ProjectionExpression: "showInfo",
+    }),
+  );
+  return normalizeShowInfo(result.Item?.showInfo);
+}
+
+/** Union of two IAB tag sets, keeping labels aligned with ids. */
+function unionIab(
+  a: IabTaxonomyTags | undefined,
+  b: IabTaxonomyTags | undefined,
+): IabTaxonomyTags | undefined {
+  if (!a?.cat?.length) return b;
+  if (!b?.cat?.length) return a;
+  const cat: string[] = [];
+  const labels: string[] = [];
+  for (const source of [a, b]) {
+    source.cat.forEach((id, i) => {
+      if (cat.includes(id)) return;
+      cat.push(id);
+      labels.push(source.labels?.[i] ?? id);
+    });
+  }
+  return { cattax: a.cattax, cat, labels };
 }
 
 /** Just the metadata list, for use as a merge base right before a write. */
@@ -339,9 +385,6 @@ async function executeExportMetadataJob(
     });
     if (!updated) return;
 
-    const fpOptions = fingerprintOptions(body);
-    const includeThumbnails = fpOptions.includeThumbnails;
-
     const projectRes = await docClient.send(
       new GetCommand({
         TableName: PROJECTS_TABLE,
@@ -359,6 +402,10 @@ async function executeExportMetadataJob(
     if (!assetId) {
       throw new Error("Project has no assetId");
     }
+
+    const showInfo = await readShowInfo(assetId);
+    const fpOptions = fingerprintOptions(body, computeShowInfoHash(showInfo));
+    const includeThumbnails = fpOptions.includeThumbnails;
 
     const validIds = new Set(segments.map((s) => s.id));
     const requestedIds = body.segmentIds?.length
@@ -450,7 +497,6 @@ async function executeExportMetadataJob(
           });
         }
 
-        const clip = resolveClipForSegment(asset, seg.startTime, seg.endTime);
         const existing = cacheById.get(seg.id);
         const missingOptions = computeMissingMetadataOptions(
           existing,
@@ -460,31 +506,81 @@ async function executeExportMetadataJob(
         );
         if (!missingOptions) return;
 
-        let parsed: ParsedSegmentMetadata = await generateSegmentMetadata(
-          client,
-          clip,
-          missingOptions,
-        );
+        // Pegasus only for what needs eyes on the clip. A scene missing just
+        // its AEO fields (or thumbnail) never re-watches the video.
+        let parsed: ParsedSegmentMetadata = {};
+        const pegasusOptions = pegasusOptionsFor(missingOptions);
+        if (pegasusOptions) {
+          const clip = resolveClipForSegment(asset, seg.startTime, seg.endTime);
+          parsed = await generateSegmentMetadata(client, clip, pegasusOptions);
 
-        if (
-          transcript.length > 0 &&
-          parsed.descriptions &&
-          missingOptions.includeDescriptions !== false
-        ) {
-          parsed = await enrichSegmentDescriptions({
-            pegasus: parsed,
-            transcript,
-            segmentStart: seg.startTime,
-            segmentEnd: seg.endTime,
-            videoTitle,
-            options: missingOptions,
-          });
+          if (
+            transcript.length > 0 &&
+            parsed.descriptions &&
+            pegasusOptions.includeDescriptions !== false
+          ) {
+            parsed = await enrichSegmentDescriptions({
+              pegasus: parsed,
+              transcript,
+              segmentStart: seg.startTime,
+              segmentEnd: seg.endTime,
+              videoTitle,
+              options: pegasusOptions,
+            });
+          }
         }
 
         const contentHash = computeSegmentMetadataFingerprint(
           seg.startTime,
           seg.endTime,
         );
+        const sameBounds = existing?.contentHash === contentHash;
+
+        // AEO reads the scene's descriptions, so it runs after them. A failure
+        // here is reported but does not discard the descriptions just made.
+        const wantTopics = aeoWantsIabTopics(missingOptions);
+        let aeoUpdate: StoredSegmentMetadata["aeo"];
+        if (aeoHasModelWork(missingOptions.aeo, wantTopics)) {
+          try {
+            const result = await generateSegmentAeo({
+              options: missingOptions.aeo ?? {},
+              wantIabTopics: wantTopics,
+              show: showInfo,
+              videoTitle,
+              sceneTitle: seg.title,
+              transcript,
+              segmentStart: seg.startTime,
+              segmentEnd: seg.endTime,
+              descriptions: {
+                ...(sameBounds ? existing?.descriptions : undefined),
+                ...parsed.descriptions,
+              },
+              tags: {
+                ...(sameBounds ? existing?.tags : undefined),
+                ...parsed.tags,
+              },
+            });
+            if (missingOptions.aeo) {
+              aeoUpdate = {
+                ...result.aeo,
+                showInfoHash: missingOptions.aeo.showInfoHash ?? "",
+              };
+            }
+            if (result.iab) {
+              parsed.tags = {
+                ...parsed.tags,
+                iab: unionIab(parsed.tags?.iab, result.iab),
+              };
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[ExportMetadata] AEO for segment ${seg.id} failed:`, msg);
+            errors.push({
+              segmentId: seg.id,
+              error: `Search & AEO metadata failed: ${msg}`,
+            });
+          }
+        }
 
         const entry: StoredSegmentMetadata = mergeSegmentMetadataEntry(
           existing,
@@ -493,6 +589,7 @@ async function executeExportMetadataJob(
             contentHash,
             descriptions: parsed.descriptions,
             tags: parsed.tags,
+            aeo: aeoUpdate,
             generatedAt: new Date().toISOString(),
           },
         );
@@ -672,7 +769,10 @@ const handleApiRequest: APIGatewayProxyHandler = async (event) => {
 
     const project = projectRes.Item;
     const segments: ProjectSegment[] = project.segments || [];
-    const fpOptions = fingerprintOptions(body);
+    const showInfo = body.options?.aeo
+      ? await readShowInfo(project.assetId as string | undefined)
+      : {};
+    const fpOptions = fingerprintOptions(body, computeShowInfoHash(showInfo));
     const validIds = new Set(segments.map((s) => s.id));
 
     const requestedIds = body.segmentIds?.length

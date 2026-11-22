@@ -1,7 +1,11 @@
 import type {
+  AeoMetadata,
+  AeoPlatform,
   ExportMetadataFingerprintOptions,
   SegmentMetadataCache,
 } from "./segmentMetadataFingerprint";
+import { AEO_PLATFORMS } from "./segmentMetadataFingerprint";
+import { formatEpisodeLabel, hasShowInfo, type ShowInfo } from "./showInfo";
 import {
   filterIabTagsForFields,
   normalizeContentAdvisory,
@@ -36,6 +40,8 @@ export interface ExportSceneMetadata {
     };
   };
   thumbnailUrl?: string | null;
+  /** Search, targeting & AEO fields switched on in the Export panel. */
+  aeo?: Omit<AeoMetadata, "showInfoHash">;
 }
 
 export interface ExportMetadataDocument {
@@ -45,6 +51,8 @@ export interface ExportMetadataDocument {
   exportedAt: string;
   options: ExportMetadataFingerprintOptions;
   projectThumbnailUrl?: string | null;
+  /** Producer show info (Series & Episode); also feeds Schema.org files. */
+  show?: ShowInfo & { episodeLabel?: string };
   scenes: ExportSceneMetadata[];
 }
 
@@ -61,6 +69,50 @@ interface BuildParams {
   selectedSegmentIds: Set<string>;
   metadataBySegmentId: Map<string, SegmentMetadataCache>;
   options: ExportMetadataFingerprintOptions;
+  /** Included as `show` when given and non-empty. */
+  showInfo?: ShowInfo;
+}
+
+/** Only the AEO fields the producer switched on, and only non-empty ones. */
+export function pickAeo(
+  meta: SegmentMetadataCache | undefined,
+  options: ExportMetadataFingerprintOptions,
+): ExportSceneMetadata["aeo"] | undefined {
+  const o = options.aeo;
+  const a = meta?.aeo;
+  if (!o || !a) return undefined;
+  const list = (want: boolean | undefined, value: string[] | undefined) =>
+    want && value?.length ? value : undefined;
+  const text = (want: boolean | undefined, value: string | undefined) =>
+    want && value?.trim() ? value : undefined;
+
+  const entities = {
+    characters: list(o.characters, a.entities?.characters),
+    cast: list(o.cast, a.entities?.cast),
+    locations: list(o.locations, a.entities?.locations),
+  };
+  const search = {
+    title: text(o.searchTitle, a.search?.title),
+    entityDescription: text(o.entityDescription, a.search?.entityDescription),
+    fanAliases: list(o.fanAliases, a.search?.fanAliases),
+    questions: list(o.questions, a.search?.questions),
+  };
+  const platforms: Partial<Record<AeoPlatform, NonNullable<AeoMetadata["platforms"]>[AeoPlatform]>> = {};
+  for (const p of AEO_PLATFORMS) {
+    const pkg = a.platforms?.[p];
+    if (o.platforms?.includes(p) && pkg && Object.keys(pkg).length) platforms[p] = pkg;
+  }
+  const compact = <T extends object>(obj: T): T | undefined => {
+    const entries = Object.entries(obj).filter(([, v]) => v !== undefined);
+    return entries.length ? (Object.fromEntries(entries) as T) : undefined;
+  };
+  return compact({
+    entities: compact(entities),
+    search: compact(search),
+    keyQuotes: list(o.keyQuotes, a.keyQuotes),
+    contentRating: text(o.contentRating, a.contentRating),
+    platforms: Object.keys(platforms).length ? platforms : undefined,
+  });
 }
 
 function pickDescriptions(
@@ -168,6 +220,9 @@ export function buildExportMetadataDocument(
       scene.thumbnailUrl = meta.thumbnailUrl;
     }
 
+    const aeo = pickAeo(meta, options);
+    if (aeo) scene.aeo = aeo;
+
     return scene;
   });
 
@@ -179,6 +234,16 @@ export function buildExportMetadataDocument(
     options,
     projectThumbnailUrl:
       options.includeThumbnails !== false ? projectThumbnailUrl : undefined,
+    ...(params.showInfo && hasShowInfo(params.showInfo)
+      ? {
+          show: {
+            ...params.showInfo,
+            ...(formatEpisodeLabel(params.showInfo)
+              ? { episodeLabel: formatEpisodeLabel(params.showInfo) }
+              : {}),
+          },
+        }
+      : {}),
     scenes,
   };
 }

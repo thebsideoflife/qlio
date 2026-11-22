@@ -18,6 +18,7 @@ resource "aws_lambda_function" "package_export" {
   environment {
     variables = {
       PROJECTS_TABLE          = aws_dynamodb_table.projects.name
+      ASSETS_TABLE            = aws_dynamodb_table.assets.name
       BUCKET_NAME             = aws_s3_bucket.media.bucket
       RENDERS_BUCKET          = aws_s3_bucket.renders.id
       API_PASSWORD_SECRET_ARN = aws_secretsmanager_secret.api_password.arn
