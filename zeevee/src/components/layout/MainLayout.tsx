@@ -36,6 +36,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { EditableTitle } from "@/components/ui/editable-title";
+import { UndoRedoButtons } from "@/components/editor/UndoRedoButtons";
 import { cn } from "@/lib/utils";
 
 interface MainLayoutProps {
@@ -168,15 +169,18 @@ export function MainLayout({ children }: MainLayoutProps) {
                 </Button>
               ) : (
                 projectIdFromPath && (
-                  <Button
-                    size="sm"
-                    onClick={() =>
-                      navigate(`/editor/${projectIdFromPath}/export`)
-                    }
-                  >
-                    <Film className="h-4 w-4 mr-2" />
-                    Export Video
-                  </Button>
+                  <>
+                    <UndoRedoButtons />
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        navigate(`/editor/${projectIdFromPath}/export`)
+                      }
+                    >
+                      <Film className="h-4 w-4 mr-2" />
+                      Export Video
+                    </Button>
+                  </>
                 )
               )}
             </div>

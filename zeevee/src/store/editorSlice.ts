@@ -100,6 +100,18 @@ interface EditorState {
   projectThumbnailUrl: string | null;
   /** IQ panel inputs — `project.metadata` generation fields. */
   generationMetadata: GenerationMetadata | null;
+  /** Whether Undo / Redo have a step to apply (history lives in historyMiddleware). */
+  history: { canUndo: boolean; canRedo: boolean };
+}
+
+/** The editable state one undo step restores. */
+export interface EditorSnapshot {
+  segments: Segment[];
+  captionSettings: CaptionSettings;
+  globalFraming: GlobalFramingSettings;
+  captions: CaptionLine[];
+  transcriptWords: TranscriptWord[];
+  selectedSegmentId: string | null;
 }
 
 /** Panel inputs stored on `project.metadata`. */
@@ -168,6 +180,7 @@ const initialState: EditorState = {
   segmentMetadata: null,
   projectThumbnailUrl: null,
   generationMetadata: null,
+  history: { canUndo: false, canRedo: false },
 };
 
 /** A transcript word as the editor shows it; `key` addresses its word edit. */
@@ -1266,6 +1279,34 @@ export const editorSlice = createSlice({
     // Reset state when leaving editor
     resetEditor: () => initialState,
 
+    /**
+     * Put back an earlier editable state (undo / redo). Counts as an edit so
+     * autosave sends the restored cut to the server.
+     */
+    restoreEditorSnapshot: (state, action: PayloadAction<EditorSnapshot>) => {
+      const snap = action.payload;
+      state.segments = [...snap.segments].sort(byStartTime);
+      state.captionSettings = snap.captionSettings;
+      state.globalFraming = snap.globalFraming;
+      state.captions = snap.captions;
+      state.transcriptWords = snap.transcriptWords;
+      // Rebuild from the current transcript in case it reloaded since.
+      if (showingOriginalCaptions(state)) regroupOriginalCaptions(state);
+      state.selectedSegmentId =
+        snap.selectedSegmentId &&
+        state.segments.some((seg) => seg.id === snap.selectedSegmentId)
+          ? snap.selectedSegmentId
+          : null;
+      state.selectedKeyframeId = null;
+      markEdited(state);
+    },
+    setHistoryAvailability: (
+      state,
+      action: PayloadAction<{ canUndo: boolean; canRedo: boolean }>,
+    ) => {
+      state.history = action.payload;
+    },
+
     // Render tracking - per-segment renders
     setLastSegmentRenders: (
       state,
@@ -1371,6 +1412,8 @@ export const {
   updateFramingKeyframe,
   removeFramingKeyframe,
   resetEditor,
+  restoreEditorSnapshot,
+  setHistoryAvailability,
   // Render tracking
   setLastSegmentRenders,
   clearLastSegmentRenders,

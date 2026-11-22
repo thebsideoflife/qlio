@@ -2,6 +2,7 @@ import { configureStore } from "@reduxjs/toolkit";
 import assetsReducer from "./assetsSlice";
 import editorReducer from "./editorSlice";
 import { syncMiddleware } from "./syncMiddleware";
+import { editorHistory } from "./historyMiddleware";
 
 export const store = configureStore({
   reducer: {
@@ -9,7 +10,7 @@ export const store = configureStore({
     editor: editorReducer,
   },
   middleware: (getDefaultMiddleware) =>
-    getDefaultMiddleware().concat(syncMiddleware),
+    getDefaultMiddleware().concat(editorHistory.middleware, syncMiddleware),
 });
 
 export type RootState = ReturnType<typeof store.getState>;
