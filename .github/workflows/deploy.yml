@@ -2,6 +2,9 @@ name: Deploy backend
 
 # main deploys production; dev deploys the dev environment.
 on:
+  # "Run workflow" on the Actions tab redeploys the chosen branch
+  # (main = prod, dev = dev) without needing a code change.
+  workflow_dispatch:
   push:
     branches: [main, dev]
     paths:

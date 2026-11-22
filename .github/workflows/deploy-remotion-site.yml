@@ -2,6 +2,9 @@ name: Deploy Remotion site
 
 # main publishes prod's site (zeevee-renderer); dev publishes qlio-dev-renderer.
 on:
+  # "Run workflow" on the Actions tab redeploys the chosen branch
+  # (main = prod, dev = dev) without needing a code change.
+  workflow_dispatch:
   push:
     branches: [main, dev]
     paths:
