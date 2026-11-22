@@ -148,6 +148,8 @@ infrastructure/layers/
 *.tfstate
 *.tfstate.backup
 *.tfvars
+# Per-environment settings (no secrets) are committed
+!infrastructure/envs/*.tfvars
 *.tfvars.json
 .terraform.lock.hcl
 .terraform.tfstate.lock.info
