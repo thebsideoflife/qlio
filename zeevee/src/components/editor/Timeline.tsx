@@ -31,6 +31,15 @@ import {
   storedTimeToClipFrame,
 } from "@/remotion/segmentFrameBounds";
 import { cn, formatSegmentLabel } from "@/lib/utils";
+import {
+  edgeDisplayTime,
+  edgeTimeAtPlayhead,
+  nudgeEdge,
+  setEdgeTime,
+  type TrimEdge,
+} from "@/lib/trimMath";
+import { TrimLens } from "./TrimLens";
+import { TimelineOverview, type OverviewSegment } from "./TimelineOverview";
 import { EditableTitle } from "@/components/ui/editable-title";
 import { Button } from "@/components/ui/button";
 import {
@@ -52,6 +61,7 @@ import {
   Focus,
   ScanLine,
   Loader2,
+  Crosshair,
 } from "lucide-react";
 import {
   getProject,
@@ -165,6 +175,16 @@ export function Timeline({
     cleanupEarlyMouseUp: () => void;
   } | null>(null);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
+  // Precision trim: which segment edge the lens is open on
+  const [trimTarget, setTrimTarget] = useState<{
+    segmentId: string;
+    edge: TrimEdge;
+  } | null>(null);
+  const [lensWindow, setLensWindow] = useState<{ from: number; to: number } | null>(null);
+  const [scrollLeft, setScrollLeft] = useState(0);
+  const transcriptWords = useSelector(
+    (state: RootState) => state.editor.transcriptWords,
+  );
   // "segment" = blue bar was clicked directly; "keyframe" = a framing block was clicked
   const [selectionMode, setSelectionMode] = useState<"segment" | "keyframe">(
     "segment",
@@ -461,6 +481,120 @@ export function Timeline({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [videoRef, selectedId, dispatch, currentTime, clampTime, fps]);
 
+  // Show a time in the viewer without playing (trim feedback)
+  const showTime = useCallback(
+    (time: number) => {
+      const video = videoRef.current;
+      if (video) {
+        if (!video.paused) video.pause();
+        video.currentTime = time;
+      }
+      dispatch(setCurrentTime(time));
+    },
+    [videoRef, dispatch],
+  );
+
+  // Apply a trim to one segment and put the edge's inside frame on screen
+  const applyTrim = useCallback(
+    (segmentId: string, start: number, end: number, edge: TrimEdge) => {
+      flushSync(() => {
+        dispatch(updateSegmentTime({ id: segmentId, start, end }));
+      });
+      showTime(edgeDisplayTime({ startTime: start, endTime: end }, edge, fps));
+    },
+    [dispatch, showTime, fps],
+  );
+
+  // Trim lens target must still exist and be editable
+  const trimSegment = trimTarget
+    ? segments.find((s) => s.id === trimTarget.segmentId) ?? null
+    : null;
+  useEffect(() => {
+    if (trimTarget && (!trimSegment || previewMode)) setTrimTarget(null);
+  }, [trimTarget, trimSegment, previewMode]);
+  useEffect(() => {
+    if (!trimTarget) setLensWindow(null);
+  }, [trimTarget]);
+
+  // Precision trim keys: , . nudge the lens edge by a frame (Shift = 10),
+  // [ ] set in/out to the frame on screen, Esc closes the lens.
+  useEffect(() => {
+    if (previewMode) return;
+    const handleTrimKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === "Escape" && trimTarget) {
+        e.preventDefault();
+        setTrimTarget(null);
+        return;
+      }
+
+      if ((e.code === "Comma" || e.code === "Period") && trimTarget && trimSegment) {
+        e.preventDefault();
+        const frames = (e.code === "Period" ? 1 : -1) * (e.shiftKey ? 10 : 1);
+        const next = nudgeEdge(trimSegment, trimTarget.edge, frames, fps, totalDuration);
+        applyTrim(trimSegment.id, next.start, next.end, trimTarget.edge);
+        dispatch(finalizeSegmentEdit());
+        return;
+      }
+
+      if (e.code === "BracketLeft" || e.code === "BracketRight") {
+        const id = trimTarget?.segmentId ?? selectedId;
+        const seg = id ? segments.find((s) => s.id === id) : null;
+        if (!seg) return;
+        e.preventDefault();
+        const edge: TrimEdge = e.code === "BracketLeft" ? "start" : "end";
+        const next = setEdgeTime(
+          seg,
+          edge,
+          edgeTimeAtPlayhead(currentTime, edge, fps),
+          fps,
+          totalDuration,
+        );
+        applyTrim(seg.id, next.start, next.end, edge);
+        dispatch(finalizeSegmentEdit());
+        setTrimTarget({ segmentId: seg.id, edge });
+      }
+    };
+    document.addEventListener("keydown", handleTrimKey);
+    return () => document.removeEventListener("keydown", handleTrimKey);
+  }, [
+    previewMode,
+    trimTarget,
+    trimSegment,
+    segments,
+    selectedId,
+    currentTime,
+    fps,
+    totalDuration,
+    applyTrim,
+    dispatch,
+  ]);
+
+  // Track scroll position for the overview strip
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    let frame = 0;
+    const onScroll = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => setScrollLeft(el.scrollLeft));
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
   // Auto-scroll to keep playhead visible when playing (suppressed while user scrolls manually)
   useEffect(() => {
     if (!scrollRef.current || !isPlaying || userScrollingRef.current) return;
@@ -558,6 +692,11 @@ export function Timeline({
     if (!segment) return;
 
     dispatch(selectSegment(segmentId));
+    setSelectionMode("segment");
+    // Grabbing an edge opens the trim lens on it and shows that frame
+    const edge: TrimEdge = mode === "left" ? "start" : "end";
+    setTrimTarget({ segmentId, edge });
+    showTime(edgeDisplayTime(segment, edge, fps));
 
     dragRef.current = {
       mode,
@@ -703,6 +842,7 @@ export function Timeline({
     // Deselect segment when clicking on empty track
     setSelectionMode("segment");
     dispatch(selectSegment(null));
+    setTrimTarget(null);
   };
 
   // Mouse move handler for dragging - direct Redux updates with flushSync
@@ -749,37 +889,21 @@ export function Timeline({
           videoRef.current.currentTime = newTime;
         }
         dispatch(setCurrentTime(newTime));
-      } else if (drag.mode === "left" && drag.segmentId) {
-        const newStart = clampTime(
-          drag.initialStart + deltaTime,
-          0,
-          drag.initialEnd - 0.1,
-        );
-        // Direct Redux update - flushSync ensures immediate DOM update
-        flushSync(() => {
-          dispatch(
-            updateSegmentTime({
-              id: drag.segmentId!,
-              start: newStart,
-              end: drag.initialEnd,
-            }),
-          );
-        });
-      } else if (drag.mode === "right" && drag.segmentId) {
-        const newEnd = clampTime(
-          drag.initialEnd + deltaTime,
-          drag.initialStart + 0.1,
+      } else if (
+        (drag.mode === "left" || drag.mode === "right") &&
+        drag.segmentId
+      ) {
+        // Frame-snapped trim; the viewer follows the edge being dragged
+        const edge: TrimEdge = drag.mode === "left" ? "start" : "end";
+        const from = edge === "start" ? drag.initialStart : drag.initialEnd;
+        const next = setEdgeTime(
+          { startTime: drag.initialStart, endTime: drag.initialEnd },
+          edge,
+          from + deltaTime,
+          fps,
           totalDuration,
         );
-        flushSync(() => {
-          dispatch(
-            updateSegmentTime({
-              id: drag.segmentId!,
-              start: drag.initialStart,
-              end: newEnd,
-            }),
-          );
-        });
+        applyTrim(drag.segmentId, next.start, next.end, edge);
       } else if (drag.mode === "move" && drag.segmentId) {
         const duration = drag.initialEnd - drag.initialStart;
         let newStart = drag.initialStart + deltaTime;
@@ -870,6 +994,7 @@ export function Timeline({
     snapToSegmentEdge,
     segments,
     fps,
+    applyTrim,
   ]);
 
   // Toolbar handlers
@@ -1358,6 +1483,49 @@ export function Timeline({
     return markers;
   }, [previewMode, previewDuration, totalDuration, zoom, timeToPx]);
 
+  // Overview strip: segments and the visible part of the track, as fractions
+  const overviewSegments = useMemo<OverviewSegment[]>(() => {
+    if (effectiveDuration <= 0) return [];
+    return segments.map((seg) => {
+      const start = previewMode
+        ? segmentPreviewOffsets.get(seg.id) || 0
+        : seg.startTime;
+      const length = seg.endTime - seg.startTime;
+      return {
+        id: seg.id,
+        from: start / effectiveDuration,
+        to: (start + length) / effectiveDuration,
+        selected: seg.id === selectedId,
+      };
+    });
+  }, [segments, previewMode, segmentPreviewOffsets, effectiveDuration, selectedId]);
+
+  const overviewViewport = useMemo(() => {
+    if (effectiveDuration <= 0 || pixelsPerSecond <= 0) return { from: 0, to: 1 };
+    const fromTime = Math.max(0, (scrollLeft - TRACK_LEFT_MARGIN) / pixelsPerSecond);
+    const span = containerWidth / pixelsPerSecond;
+    return {
+      from: fromTime / effectiveDuration,
+      to: Math.min(1, (fromTime + span) / effectiveDuration),
+    };
+  }, [scrollLeft, pixelsPerSecond, containerWidth, effectiveDuration]);
+
+  const handleOverviewChange = useCallback(
+    (from: number) => {
+      const el = scrollRef.current;
+      if (!el) return;
+      el.scrollLeft =
+        from <= 0 ? 0 : from * effectiveDuration * pixelsPerSecond + TRACK_LEFT_MARGIN;
+    },
+    [effectiveDuration, pixelsPerSecond],
+  );
+
+  const handleLensWindow = useCallback((from: number, to: number) => {
+    setLensWindow((prev) =>
+      prev && prev.from === from && prev.to === to ? prev : { from, to },
+    );
+  }, []);
+
   const zoomLabel =
     zoom >= 10 ? `${Math.round(zoom)}×` : `${parseFloat(zoom.toFixed(1))}×`;
 
@@ -1455,6 +1623,30 @@ export function Timeline({
         >
           <ZoomIn />
         </ToolbarIconButton>
+        {!previewMode && (
+          <ToolbarIconButton
+            variant={trimTarget ? "default" : "outline"}
+            onClick={() => {
+              if (trimTarget) {
+                setTrimTarget(null);
+                return;
+              }
+              const seg = segments.find((s) => s.id === selectedId);
+              if (!seg) return;
+              setSelectionMode("segment");
+              setTrimTarget({ segmentId: seg.id, edge: "start" });
+              showTime(edgeDisplayTime(seg, "start", fps));
+            }}
+            disabled={!trimTarget && !selectedId}
+            tooltip={
+              trimTarget
+                ? "Close precision trim (Esc)"
+                : "Precision trim — or grab a segment edge"
+            }
+          >
+            <Crosshair />
+          </ToolbarIconButton>
+        )}
 
         {/* Centered playback controls */}
         <div className="flex-1 flex items-center justify-center gap-3">
@@ -1514,6 +1706,19 @@ export function Timeline({
           <Trash2 />
         </ToolbarIconButton>
       </div>
+
+      {/* Whole-video overview */}
+      <TimelineOverview
+        segments={overviewSegments}
+        playhead={effectiveDuration > 0 ? effectiveCurrentTime / effectiveDuration : 0}
+        viewport={overviewViewport}
+        lens={
+          lensWindow && totalDuration > 0
+            ? { from: lensWindow.from / totalDuration, to: lensWindow.to / totalDuration }
+            : null
+        }
+        onViewportChange={handleOverviewChange}
+      />
 
       {/* Timeline track */}
       <div
@@ -1919,6 +2124,14 @@ export function Timeline({
                   style={{ left: `${left}px`, width: `${width}px` }}
                   onClick={(e) => handleSegmentClick(e, segment.id)}
                 >
+                  {!previewMode && trimTarget?.segmentId === segment.id && (
+                    <div
+                      className={cn(
+                        "absolute top-0 bottom-0 w-1 bg-amber-400 z-30 pointer-events-none",
+                        trimTarget.edge === "start" ? "left-0 rounded-l" : "right-0 rounded-r",
+                      )}
+                    />
+                  )}
                   {!previewMode && (
                     <>
                       <div
@@ -1999,6 +2212,29 @@ export function Timeline({
           </div>
         </div>
       </div>
+
+      {/* Precision trim lens */}
+      {trimTarget && trimSegment && !previewMode && (
+        <TrimLens
+          segment={trimSegment}
+          segments={segments}
+          edge={trimTarget.edge}
+          fps={fps}
+          totalDuration={totalDuration}
+          currentTime={currentTime}
+          videoSrc={videoRef.current?.currentSrc || videoRef.current?.src || null}
+          words={transcriptWords}
+          onEdgeChange={(edge) => {
+            setTrimTarget({ segmentId: trimSegment.id, edge });
+            showTime(edgeDisplayTime(trimSegment, edge, fps));
+          }}
+          onTrim={(start, end, edge) => applyTrim(trimSegment.id, start, end, edge)}
+          onTrimCommit={() => dispatch(finalizeSegmentEdit())}
+          onSeek={showTime}
+          onClose={() => setTrimTarget(null)}
+          onWindowChange={handleLensWindow}
+        />
+      )}
       </div>
     </>
   );
