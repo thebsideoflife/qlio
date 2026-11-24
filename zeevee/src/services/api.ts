@@ -164,6 +164,22 @@ export const updateAsset = async (
   return response.data;
 };
 
+/** Human review: use another scored frame (usually the runner-up) as a scene's thumbnail. */
+export const chooseThumbnail = async (
+  projectId: string,
+  segmentId: string,
+  candidate: number,
+) => {
+  const response = await axios.post(
+    `${API_URL}/projects/${projectId}/thumbnail-choice`,
+    { segmentId, candidate },
+    { headers: getAuthHeaders(), timeout: 120_000 },
+  );
+  return response.data as {
+    segment: import("@/lib/segmentMetadataFingerprint").SegmentMetadataCache;
+  };
+};
+
 export const createProject = async (
   assetId: string,
   metadata: Record<string, unknown>,

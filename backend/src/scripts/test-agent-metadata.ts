@@ -18,6 +18,7 @@ import { join } from "node:path";
 import {
   computeSegmentMetadataFingerprint,
   isSegmentMetadataIncomplete,
+  computeMissingMetadataOptions,
   mergeSegmentMetadataEntry,
   type ExportMetadataOptions,
 } from "../services/export-metadata";
@@ -77,6 +78,7 @@ function entry(overrides: Record<string, unknown> = {}) {
       },
     },
     thumbnailKey: "thumbnails/projects/p1/seg-1.jpg",
+    thumbnailVersion: 2,
     generatedAt: "2026-07-28T00:00:00.000Z",
     ...overrides,
   };
@@ -203,6 +205,21 @@ check(
   ),
   'an empty content advisory means "checked, nothing applies" and must not read as missing',
 );
+
+// A thumbnail from before the Thumbnail Runbook picker (no version) is
+// upgraded on the next export: only the thumbnail is missing, not the text.
+{
+  const legacy = computeMissingMetadataOptions(
+    entry({ thumbnailVersion: undefined }),
+    { ...AGENT_METADATA_OPTIONS, includeThumbnails: true },
+    BOUNDS.startTime,
+    BOUNDS.endTime,
+  );
+  check(
+    legacy?.includeThumbnails === true && legacy.includeDescriptions === false,
+    "a legacy thumbnail is re-picked without re-describing the scene",
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Merge

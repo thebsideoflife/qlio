@@ -1,4 +1,6 @@
-const ILLEGAL_FS_CHARS = new Set('<>:"/\\|?*');
+
+
+import { thumbnailFilename as runbookThumbnailFilename } from "../services/thumbnails/frameMath";const ILLEGAL_FS_CHARS = new Set('<>:"/\\|?*');
 
 export function sanitizeFolderName(name: string): string {
   let cleaned = "";
@@ -80,6 +82,8 @@ function uniqueSlug(base: string, used: Set<string>): string {
 
 export interface ExportPackageLayout {
   rootFolder: string;
+  /** Set when scenes are named by the Thumbnail Runbook (`[root]/thumbnails/`). */
+  thumbnailFolder: string | null;
   posterFolder: string;
   posterFilename: string;
   posterPath: string;
@@ -103,7 +107,12 @@ export function buildExportPackageLayout(params: {
    * sceneNumber is the scene's position in the full project (1-based), so a
    * partial export keeps Qlio's numbering. Falls back to export order.
    */
-  scenes: Array<{ segmentId: string; title: string; sceneNumber?: number }>;
+  scenes: Array<{ segmentId: string; title: string; sceneNumber?: number; startTime?: number }>;
+  /**
+   * Show name for Thumbnail Runbook filenames. With it (and each scene's
+   * startTime) thumbnails are `[root]/thumbnails/[show]_scene_##_MMmSSs.jpg`.
+   */
+  showName?: string;
   /** When set, the zip (only) is named "<Project> 2026-09-27 1542.zip". */
   exportedAt?: Date;
   timeZone?: string;
@@ -114,18 +123,25 @@ export function buildExportPackageLayout(params: {
   const videoFolder = `${rootFolder} Video Scenes`;
   const metadataFilename = `${safeExportFilenameBase(params.projectTitle)}-metadata.json`;
   const usedSlugs = new Set<string>();
+  const runbookNames = params.showName !== undefined;
+  const thumbnailFolder = runbookNames ? "thumbnails" : null;
 
   const scenes = params.scenes.map((scene, index) => {
     const sceneNumber = scene.sceneNumber ?? index + 1;
     const slug = uniqueSlug(sceneAssetSlug(scene.title), usedSlugs);
-    const thumbnailFilename = `scene_${padSceneNumber(sceneNumber)}_${slug}.jpg`;
+    const thumbnailFilename =
+      runbookNames && scene.startTime !== undefined
+        ? runbookThumbnailFilename(params.showName!, sceneNumber, scene.startTime)
+        : `scene_${padSceneNumber(sceneNumber)}_${slug}.jpg`;
     const videoFilename = `scene_${padSceneNumber(sceneNumber)}_${slug}.mp4`;
     return {
       segmentId: scene.segmentId,
       sceneNumber,
       slug,
       thumbnailFilename,
-      thumbnailPath: `${rootFolder}/${thumbnailFilename}`,
+      thumbnailPath: thumbnailFolder
+        ? `${rootFolder}/${thumbnailFolder}/${thumbnailFilename}`
+        : `${rootFolder}/${thumbnailFilename}`,
       videoFilename,
       videoPath: `${rootFolder}/${videoFolder}/${videoFilename}`,
     };
@@ -133,6 +149,7 @@ export function buildExportPackageLayout(params: {
 
   return {
     rootFolder,
+    thumbnailFolder,
     posterFolder,
     posterFilename,
     posterPath: `${rootFolder}/${posterFolder}/${posterFilename}`,
@@ -178,7 +195,10 @@ export function localizeExportMetadataDocument(
       }
       const entry = byId.get(scene.segmentId);
       if (!entry) return scene;
-      return { ...scene, thumbnailUrl: entry.thumbnailFilename };
+      const relative = layout.thumbnailFolder
+        ? `${layout.thumbnailFolder}/${entry.thumbnailFilename}`
+        : entry.thumbnailFilename;
+      return { ...scene, thumbnailUrl: relative };
     });
   }
 

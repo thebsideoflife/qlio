@@ -179,9 +179,26 @@ export interface SegmentMetadataCache {
   };
   thumbnailUrl?: string | null;
   thumbnailKey?: string;
+  /** 1 (or absent): legacy frame 1 s in. 2+: chosen by the Thumbnail Runbook picker. */
+  thumbnailVersion?: number;
+  /** Flags and runner-up from the picker, for human review. */
+  thumbnailReview?: ThumbnailReview;
   aeo?: AeoMetadata;
   generatedAt?: string;
 }
+
+export interface ThumbnailReview {
+  flags: string[];
+  chosenTime: number | null;
+  subject: string | null;
+  emotion: string | null;
+  rationale: string;
+  spoilerSensitivity: string;
+  runnerUp: { index: number; time: number; url: string | null } | null;
+}
+
+/** Mirrors THUMBNAIL_PICK_VERSION in backend/src/services/thumbnails/frameMath.ts. */
+export const THUMBNAIL_PICK_VERSION = 2;
 
 function requestedDescriptionLengths(
   options?: ExportMetadataFingerprintOptions,
@@ -237,8 +254,8 @@ export function isSegmentMetadataStale(
 
   if (
     options?.includeThumbnails !== false &&
-    !cached.thumbnailKey &&
-    !cached.thumbnailUrl
+    ((!cached.thumbnailKey && !cached.thumbnailUrl) ||
+      (cached.thumbnailVersion ?? 1) < THUMBNAIL_PICK_VERSION)
   ) {
     return true;
   }

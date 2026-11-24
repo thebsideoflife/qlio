@@ -39,6 +39,7 @@ import {
   getSceneVideoDownload,
   getAsset,
   updateAsset,
+  chooseThumbnail,
   type GenerateExportMetadataResponse,
   type SegmentDownload,
 } from "@/services/api";
@@ -1803,6 +1804,8 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
                         ({ segment, meta, index, stale }) => (
                           <MetadataSceneCard
                             key={segment.id}
+                            projectId={projectId}
+                            segmentId={segment.id}
                             index={index}
                             segmentTitle={segment.title}
                             meta={meta}
@@ -2299,7 +2302,108 @@ export function ExportPanel({ projectId, onDone }: ExportPanelProps) {
   );
 }
 
+/**
+ * Scene thumbnail with its Thumbnail Runbook review: flags, the runner-up,
+ * and "Use runner-up" (runbook Step 8: a human signs off).
+ */
+function SceneThumbnail({
+  projectId,
+  segmentId,
+  meta,
+  isGenerating,
+}: {
+  projectId: string;
+  segmentId: string;
+  meta: SegmentMetadataCache | undefined;
+  isGenerating: boolean;
+}) {
+  const dispatch = useDispatch();
+  const allMetadata = useSelector((state: RootState) => state.editor.segmentMetadata);
+  const [swapping, setSwapping] = useState(false);
+  const [swapError, setSwapError] = useState<string | null>(null);
+  const review = meta?.thumbnailReview;
+  const runnerUp = review?.runnerUp;
+  const flags = review?.flags ?? [];
+
+  const useRunnerUp = async () => {
+    if (!runnerUp) return;
+    setSwapping(true);
+    setSwapError(null);
+    try {
+      const { segment } = await chooseThumbnail(projectId, segmentId, runnerUp.index);
+      // Same S3 key: bust the browser cache so the new frame shows.
+      const fresh = {
+        ...segment,
+        thumbnailUrl: segment.thumbnailUrl
+          ? `${segment.thumbnailUrl}${segment.thumbnailUrl.includes("?") ? "&" : "?"}v=${Date.now()}`
+          : segment.thumbnailUrl,
+      };
+      dispatch(
+        setSegmentMetadata(
+          (allMetadata ?? []).map((m) => (m.segmentId === segmentId ? { ...m, ...fresh } : m)),
+        ),
+      );
+    } catch (err) {
+      setSwapError(err instanceof Error ? err.message : "Swap failed");
+    } finally {
+      setSwapping(false);
+    }
+  };
+
+  return (
+    <div className="w-[128px] shrink-0 self-start space-y-1">
+      <div className="relative w-[128px] h-[72px] rounded-md overflow-hidden bg-muted">
+        {meta?.thumbnailUrl ? (
+          <img src={meta.thumbnailUrl} alt="" className="size-full object-cover" />
+        ) : (
+          <div className="size-full flex items-center justify-center">
+            {isGenerating ? (
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            ) : (
+              <span className="text-[10px] text-muted-foreground">No thumbnail</span>
+            )}
+          </div>
+        )}
+        {flags.length > 0 && (
+          <span
+            className="absolute top-1 right-1 rounded bg-amber-400 px-1 text-[9px] font-bold text-zinc-900"
+            title={flags.join("\n")}
+          >
+            {flags.length} flag{flags.length > 1 ? "s" : ""}
+          </span>
+        )}
+      </div>
+      {review && (
+        <p className="text-[10px] leading-tight text-muted-foreground" title={review.rationale}>
+          {[review.emotion, review.spoilerSensitivity !== "Low" ? `${review.spoilerSensitivity} spoiler risk` : null]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
+      )}
+      {runnerUp && (
+        <button
+          type="button"
+          onClick={useRunnerUp}
+          disabled={swapping}
+          className="group flex w-full items-center gap-1.5 rounded-md border border-border p-1 text-left hover:bg-muted disabled:opacity-60"
+          title="Use the runner-up frame as this scene's thumbnail"
+        >
+          {runnerUp.url ? (
+            <img src={runnerUp.url} alt="" className="h-[27px] w-12 rounded-sm object-cover" />
+          ) : null}
+          <span className="text-[10px] font-semibold leading-tight">
+            {swapping ? "Swapping…" : "Use runner-up"}
+          </span>
+        </button>
+      )}
+      {swapError && <p className="text-[10px] text-red-500">{swapError}</p>}
+    </div>
+  );
+}
+
 function MetadataSceneCard({
+  projectId,
+  segmentId,
   index,
   segmentTitle,
   meta,
@@ -2324,6 +2428,8 @@ function MetadataSceneCard({
   error,
   warning,
 }: {
+  projectId: string;
+  segmentId: string;
   index: number;
   segmentTitle: string;
   meta: SegmentMetadataCache | undefined;
@@ -2437,25 +2543,12 @@ function MetadataSceneCard({
     >
       <div className="flex gap-3">
         {includeThumbnails && (
-          <div className="size-[72px] self-start rounded-md overflow-hidden shrink-0 bg-muted">
-            {meta?.thumbnailUrl ? (
-              <img
-                src={meta.thumbnailUrl}
-                alt=""
-                className="size-full object-cover"
-              />
-            ) : (
-              <div className="size-full flex items-center justify-center">
-                {isGenerating ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                ) : (
-                  <span className="text-[10px] text-muted-foreground">
-                    No thumbnail
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
+          <SceneThumbnail
+            projectId={projectId}
+            segmentId={segmentId}
+            meta={meta}
+            isGenerating={isGenerating}
+          />
         )}
 
         <div className="min-w-0 flex-1 space-y-1.5">

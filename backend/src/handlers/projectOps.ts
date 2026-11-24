@@ -1,3 +1,4 @@
+import { toThumbnailReview } from "../utils/thumbnail-review";
 import { APIGatewayProxyHandler } from "aws-lambda";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
@@ -239,10 +240,12 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     if (storedMetadata.length > 0) {
       segmentMetadataPublic = await Promise.all(
         storedMetadata.map(async (meta) => {
-          const { thumbnailKey: _tk, ...rest } = meta;
+          const { thumbnailKey: _tk, thumbnailPick, ...rest } = meta;
+          const thumbnailReview = await toThumbnailReview(thumbnailPick, signMediaKey);
           return {
             ...rest,
             thumbnailUrl: await signMediaKey(meta.thumbnailKey),
+            ...(thumbnailReview ? { thumbnailReview } : {}),
           };
         }),
       );

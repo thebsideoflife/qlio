@@ -42,6 +42,18 @@ import type { IabTaxonomyTags } from "../services/iab-content-taxonomy";
 import type { StoredSegmentMetadata } from "../types/segment-metadata";
 import { mapWithConcurrency } from "../utils/concurrency";
 import { extractFrameToS3 } from "../utils/thumbnailExtract";
+import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  exportFlags,
+  exportThumbnail,
+  pickSceneThumbnail,
+  probeSource,
+  THUMBNAIL_PICK_VERSION,
+  type SourceInfo,
+} from "../services/thumbnails/pick";
+import { runSetPass, setFingerprint, type SetPassScene, type StoredThumbnailSet } from "../services/thumbnails/setPass";
+import { proxyKeyForAsset } from "../services/reframe-proxy";
+import { toThumbnailReview } from "../utils/thumbnail-review";
 import { presignS3Uri } from "../utils/s3";
 import {
   computeProjectThumbnailFingerprint,
@@ -58,6 +70,7 @@ const docClient = DynamoDBDocumentClient.from(dynamoClient, {
 });
 const secretsClient = new SecretsManagerClient({});
 const lambdaClient = new LambdaClient({});
+const s3Client = new S3Client({});
 
 const PROJECTS_TABLE = process.env.PROJECTS_TABLE!;
 const ASSETS_TABLE = process.env.ASSETS_TABLE!;
@@ -298,10 +311,12 @@ async function buildMetadataResponse(
       const stored = cacheById.get(seg.id);
       if (!stored) return null;
       const thumbnailUrl = await signThumbnailKey(stored.thumbnailKey);
-      const { thumbnailKey: _tk, ...rest } = stored;
+      const { thumbnailKey: _tk, thumbnailPick, ...rest } = stored;
+      const thumbnailReview = await toThumbnailReview(thumbnailPick, signThumbnailKey);
       return {
         ...rest,
         thumbnailUrl,
+        ...(thumbnailReview ? { thumbnailReview } : {}),
       };
     }),
   );
@@ -478,6 +493,42 @@ async function executeExportMetadataJob(
       (typeof project.title === "string" && project.title.trim()) ||
       undefined;
 
+    // Thumbnail Runbook picker: one presigned source and probe per invocation.
+    // Candidates are pulled from the 360p reframe proxy when it exists (same
+    // frame grid, much less to decode); the final frame comes from the source.
+    const sceneNumberById = new Map(
+      [...segments]
+        .sort((a, b) => a.startTime - b.startTime)
+        .map((s, i) => [s.id, i + 1] as const),
+    );
+    let sourceUrlPromise: Promise<string | null> | null = null;
+    const getSourceUrl = () =>
+      (sourceUrlPromise ??= sourceKey
+        ? presignS3Uri(`s3://${BUCKET_NAME}/${sourceKey}`, 3600)
+        : Promise.resolve(null));
+    let sourceInfoPromise: Promise<SourceInfo> | null = null;
+    const getSourceInfo = async () => {
+      const url = await getSourceUrl();
+      if (!url) throw new Error("Source video not found");
+      return (sourceInfoPromise ??= probeSource(url));
+    };
+    let analysisUrlPromise: Promise<string | null> | null = null;
+    const getAnalysisUrl = () =>
+      (analysisUrlPromise ??= (async () => {
+        const key = proxyKeyForAsset(assetId);
+        try {
+          await s3Client.send(new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: key }));
+          return await presignS3Uri(`s3://${BUCKET_NAME}/${key}`, 3600);
+        } catch {
+          return getSourceUrl();
+        }
+      })());
+    const transcriptWords = transcript.map((t) => ({
+      start: t.startTime,
+      end: t.endTime,
+      text: t.text,
+    }));
+
     const generatedUpdates: StoredSegmentMetadata[] = [];
     const errors: Array<{ segmentId: string; error: string }> = [];
     const warnings: Array<{
@@ -594,16 +645,70 @@ async function executeExportMetadataJob(
           },
         );
 
-        if (includeThumbnails && sourceKey) {
+        if (missingOptions.includeThumbnails && sourceKey) {
           const thumbKey = `thumbnails/projects/${projectId}/${seg.id}.jpg`;
-          await extractFrameToS3({
-            sourceBucket: BUCKET_NAME,
-            sourceKey,
-            timestampSec: segmentThumbnailTimestamp(seg.startTime),
-            destBucket: BUCKET_NAME,
-            destKey: thumbKey,
-          });
-          entry.thumbnailKey = thumbKey;
+          const legacyFrame = () =>
+            extractFrameToS3({
+              sourceBucket: BUCKET_NAME,
+              sourceKey,
+              timestampSec: segmentThumbnailTimestamp(seg.startTime),
+              destBucket: BUCKET_NAME,
+              destKey: thumbKey,
+            });
+          try {
+            const sourceUrl = await getSourceUrl();
+            const analysisUrl = await getAnalysisUrl();
+            if (!sourceUrl || !analysisUrl) throw new Error("Source video not found");
+            const desc = { ...(sameBounds ? existing?.descriptions : undefined), ...parsed.descriptions };
+            const pick = await pickSceneThumbnail({
+              analysisUrl,
+              bucket: BUCKET_NAME,
+              projectId,
+              segmentId: seg.id,
+              contentHash,
+              sceneNumber: sceneNumberById.get(seg.id) ?? 0,
+              sceneTitle: seg.title ?? "",
+              sceneStart: seg.startTime,
+              sceneEnd: seg.endTime,
+              showTitle: showInfo.series || videoTitle || null,
+              descriptions: [desc.paragraph || desc.two_sentences || desc.short || ""].filter(Boolean),
+              transcriptWords,
+            });
+            const best = pick.candidates[pick.chosen];
+            if (best) {
+              pick.exported = await exportThumbnail({
+                sourceUrl,
+                source: await getSourceInfo(),
+                time: best.time,
+                face: best.face,
+                bucket: BUCKET_NAME,
+                key: thumbKey,
+              });
+              pick.flags.push(...exportFlags(pick.exported));
+            } else {
+              await legacyFrame();
+              warnings.push({
+                segmentId: seg.id,
+                code: "THUMBNAIL_NEEDS_PICK",
+                message: "No frame in this scene passed the thumbnail rules; it shows the frame 1 s in until someone picks one.",
+              });
+            }
+            entry.thumbnailPick = pick;
+            entry.thumbnailVersion = THUMBNAIL_PICK_VERSION;
+            entry.thumbnailKey = thumbKey;
+          } catch (err) {
+            // Keep the scene exportable; version 1 means the picker retries next time.
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[ExportMetadata] Thumbnail pick for ${seg.id} failed:`, msg);
+            await legacyFrame();
+            entry.thumbnailKey = thumbKey;
+            entry.thumbnailVersion = 1;
+            warnings.push({
+              segmentId: seg.id,
+              code: "THUMBNAIL_PICK_FAILED",
+              message: `Thumbnail selection failed (${msg}); used the frame 1 s in.`,
+            });
+          }
         }
 
         generatedUpdates.push(entry);
@@ -651,6 +756,45 @@ async function executeExportMetadataJob(
     );
     const mergedMetadata = mergeStoredMetadata(mergeBase, generatedUpdates);
 
+    // Thumbnail Runbook Step 6b/6c: balance the whole set once every scene has
+    // its candidates, and only when they changed since the last pass.
+    let thumbnailSet: StoredThumbnailSet | undefined;
+    if (remaining.length === 0 && includeThumbnails && sourceKey) {
+      const setScenes: SetPassScene[] = [];
+      for (const seg of segments) {
+        const m = mergedMetadata.find((x) => x.segmentId === seg.id);
+        const pick = m?.thumbnailPick;
+        if (!m || !pick || !m.thumbnailKey || pick.contentHash !== m.contentHash || pick.candidates.length === 0) continue;
+        setScenes.push({ segmentId: seg.id, sceneNumber: sceneNumberById.get(seg.id) ?? 0, pick, thumbnailKey: m.thumbnailKey });
+      }
+      const previous = project.thumbnailSet as StoredThumbnailSet | undefined;
+      if (setScenes.length >= 2 && previous?.fingerprint !== setFingerprint(setScenes)) {
+        try {
+          const sourceUrl = await getSourceUrl();
+          if (!sourceUrl) throw new Error("Source video not found");
+          const result = await runSetPass({
+            scenes: setScenes,
+            bucket: BUCKET_NAME,
+            sourceUrl,
+            source: await getSourceInfo(),
+          });
+          for (let i = 0; i < mergedMetadata.length; i++) {
+            const updated = result.picks.get(mergedMetadata[i].segmentId);
+            if (updated) mergedMetadata[i] = { ...mergedMetadata[i], thumbnailPick: updated };
+          }
+          thumbnailSet = result.set;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error("[ExportMetadata] Thumbnail set pass failed:", msg);
+          warnings.push({
+            segmentId: setScenes[0].segmentId,
+            code: "THUMBNAIL_SET_FAILED",
+            message: `Balancing the thumbnail set failed (${msg}); each scene keeps its own best frame.`,
+          });
+        }
+      }
+    }
+
     const updateParts = ["segmentMetadata = :meta", "updatedAt = :updatedAt"];
     const exprValues: Record<string, unknown> = {
       ":meta": mergedMetadata,
@@ -667,7 +811,12 @@ async function executeExportMetadataJob(
       }
     }
 
-    if (generatedUpdates.length > 0 || projectThumbnailKey) {
+    if (thumbnailSet) {
+      updateParts.push("thumbnailSet = :thumbSet");
+      exprValues[":thumbSet"] = thumbnailSet;
+    }
+
+    if (generatedUpdates.length > 0 || projectThumbnailKey || thumbnailSet) {
       const wrote = await writeProjectMetadataIfJobActive(
         projectId,
         jobId,
@@ -736,9 +885,107 @@ async function executeExportMetadataJob(
   }
 }
 
+/**
+ * POST /projects/{projectId}/thumbnail-choice {segmentId, candidate}
+ * Human review (runbook Step 8): use another scored candidate, usually the
+ * runner-up, as the scene's thumbnail. Re-exports the 1920×1080 image.
+ */
+async function handleThumbnailChoice(
+  projectId: string,
+  body: { segmentId?: string; candidate?: number },
+) {
+  const respond = (statusCode: number, payload: unknown) => ({
+    statusCode,
+    headers: CORS_HEADERS,
+    body: JSON.stringify(payload),
+  });
+  const projectRes = await docClient.send(
+    new GetCommand({ TableName: PROJECTS_TABLE, Key: { projectId }, ConsistentRead: true }),
+  );
+  const project = projectRes.Item;
+  if (!project) return respond(404, { error: "Project not found" });
+  const list = (project.segmentMetadata || []) as StoredSegmentMetadata[];
+  const index = list.findIndex((m) => m.segmentId === body.segmentId);
+  const entry = list[index];
+  const pick = entry?.thumbnailPick;
+  const k = Number(body.candidate);
+  if (!entry || !pick || !entry.thumbnailKey || !(k >= 0 && k < pick.candidates.length)) {
+    return respond(400, { error: "No such thumbnail candidate" });
+  }
+  if (k !== pick.chosen) {
+    const assetRes = await docClient.send(
+      new GetCommand({ TableName: ASSETS_TABLE, Key: { assetId: project.assetId } }),
+    );
+    const asset = assetRes.Item ?? {};
+    const sourceKey =
+      (typeof asset.s3Key === "string" && asset.s3Key) ||
+      (typeof asset.s3VideoUrl === "string" && asset.s3VideoUrl.startsWith("s3://")
+        ? asset.s3VideoUrl.replace("s3://", "").split("/").slice(1).join("/")
+        : "");
+    if (!sourceKey) return respond(400, { error: "Source video not found" });
+    const sourceUrl = await presignS3Uri(`s3://${BUCKET_NAME}/${sourceKey}`, 3600);
+    if (!sourceUrl) return respond(400, { error: "Source video not found" });
+    const candidate = pick.candidates[k];
+    const previous = pick.chosen;
+    pick.exported = await exportThumbnail({
+      sourceUrl,
+      source: await probeSource(sourceUrl),
+      time: candidate.time,
+      face: candidate.face,
+      bucket: BUCKET_NAME,
+      key: entry.thumbnailKey,
+    });
+    pick.chosen = k;
+    pick.runnerUp = previous;
+    pick.flags = [
+      ...pick.flags.filter((f) => !f.startsWith("human review:")),
+      `human review: swapped to the frame at ${candidate.time.toFixed(2)}s`,
+    ];
+    await docClient.send(
+      new UpdateCommand({
+        TableName: PROJECTS_TABLE,
+        Key: { projectId },
+        UpdateExpression: `SET segmentMetadata[${index}].thumbnailPick = :pick, updatedAt = :now`,
+        ConditionExpression: `segmentMetadata[${index}].segmentId = :sid`,
+        ExpressionAttributeValues: {
+          ":pick": pick,
+          ":now": new Date().toISOString(),
+          ":sid": entry.segmentId,
+        },
+      }),
+    );
+  }
+  const { thumbnailKey: _tk, thumbnailPick: _tp, ...rest } = entry;
+  return respond(200, {
+    segment: {
+      ...rest,
+      thumbnailUrl: await signThumbnailKey(entry.thumbnailKey),
+      thumbnailReview: await toThumbnailReview(pick, signThumbnailKey),
+    },
+  });
+}
+
 const handleApiRequest: APIGatewayProxyHandler = async (event) => {
   const authResult = await checkAuth(event);
   if (authResult) return authResult;
+
+  const rawPath = String((event as { rawPath?: string }).rawPath ?? event.path ?? "");
+  if (rawPath.endsWith("/thumbnail-choice")) {
+    const projectId = event.pathParameters?.projectId;
+    if (!projectId) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: "Missing projectId" }) };
+    }
+    try {
+      return await handleThumbnailChoice(projectId, JSON.parse(event.body || "{}"));
+    } catch (err) {
+      console.error("[ExportMetadata] thumbnail choice failed", err);
+      return {
+        statusCode: 500,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: err instanceof Error ? err.message : "Thumbnail swap failed" }),
+      };
+    }
+  }
 
   try {
     const projectId = event.pathParameters?.projectId;

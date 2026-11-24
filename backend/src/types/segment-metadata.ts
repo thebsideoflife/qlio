@@ -1,3 +1,4 @@
+import type { StoredThumbnailPick } from "../services/thumbnails/pick";
 export interface IabTaxonomyTags {
   /** OpenRTB cattax — 7 = IAB Content Taxonomy 3.0 */
   cattax: 7;
@@ -24,6 +25,10 @@ export interface StoredSegmentMetadata {
     iab?: IabTaxonomyTags;
   };
   thumbnailKey?: string;
+  /** 1 (or absent): legacy frame 1 s in. 2+: chosen by the Thumbnail Runbook picker. */
+  thumbnailVersion?: number;
+  /** Candidates, scores and choice behind thumbnailKey (services/thumbnails). */
+  thumbnailPick?: StoredThumbnailPick;
   /** Search, targeting & AEO fields (see services/aeo-metadata.ts). */
   aeo?: StoredAeoMetadata;
   generatedAt: string;
@@ -81,5 +86,8 @@ export interface StoredAeoMetadata {
 /** Client-safe metadata row (no internal S3 keys). */
 export type SegmentMetadataResponse = Omit<
   StoredSegmentMetadata,
-  "thumbnailKey"
-> & { thumbnailUrl?: string | null };
+  "thumbnailKey" | "thumbnailPick"
+> & {
+  thumbnailUrl?: string | null;
+  thumbnailReview?: import("../utils/thumbnail-review").ThumbnailReview;
+};

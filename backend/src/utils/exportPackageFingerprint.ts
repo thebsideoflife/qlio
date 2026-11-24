@@ -8,6 +8,8 @@ export interface ExportPackageFingerprintInput {
   aeoFiles?: unknown;
   /** Caption inputs (word edits, language…) when captions are exported. */
   captionRevision?: string;
+  /** Which frame each scene thumbnail is (picks, swaps); absent keeps older fingerprints. */
+  thumbnailRevision?: string;
 }
 
 export interface ExportPackageRenderRevision {
@@ -86,6 +88,7 @@ export function computeExportPackageFingerprint(
     ...(input.aeoFiles
       ? { aeoFiles: input.aeoFiles, captionRevision: input.captionRevision ?? null }
       : {}),
+    ...(input.thumbnailRevision ? { thumbnailRevision: input.thumbnailRevision } : {}),
   });
   return `v4-${hashString(payload)}`;
 }

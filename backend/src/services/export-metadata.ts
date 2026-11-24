@@ -4,6 +4,7 @@
  */
 
 import type { TwelveLabs, TwelvelabsApi } from "twelvelabs-js";
+import { THUMBNAIL_PICK_VERSION } from "./thumbnails/frameMath";
 import {
   pegasusIndexedVideoDurationSec,
   type AssetInfo,
@@ -214,6 +215,7 @@ type CachedSegmentFields = {
   descriptions?: ParsedSegmentMetadata["descriptions"];
   tags?: ParsedSegmentMetadata["tags"];
   thumbnailKey?: string;
+  thumbnailVersion?: number;
   aeo?: StoredAeoMetadata;
 };
 
@@ -322,7 +324,10 @@ export function computeMissingMetadataOptions(
     }
   }
 
-  if (options.includeThumbnails !== false && !cached?.thumbnailKey) {
+  if (
+    options.includeThumbnails !== false &&
+    (!cached?.thumbnailKey || (cached.thumbnailVersion ?? 1) < THUMBNAIL_PICK_VERSION)
+  ) {
     missing.includeThumbnails = true;
     hasMissing = true;
   }
@@ -425,6 +430,7 @@ export function mergeSegmentMetadataEntry<
     },
     tags: mergedTags,
     thumbnailKey: update.thumbnailKey ?? existing?.thumbnailKey,
+    thumbnailVersion: update.thumbnailVersion ?? existing?.thumbnailVersion,
     aeo: mergeAeoMetadata(
       existing?.aeo,
       update.aeo,

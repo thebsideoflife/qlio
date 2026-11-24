@@ -20,3 +20,18 @@ resource "aws_lambda_permission" "api_gw_generate_export_metadata" {
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/projects/*/export-metadata"
 }
+
+# Human review of scene thumbnails (Thumbnail Runbook Step 8): use the runner-up.
+resource "aws_apigatewayv2_route" "thumbnail_choice" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "POST /projects/{projectId}/thumbnail-choice"
+  target    = "integrations/${aws_apigatewayv2_integration.generate_export_metadata.id}"
+}
+
+resource "aws_lambda_permission" "api_gw_thumbnail_choice" {
+  statement_id  = "AllowExecutionFromAPIGatewayThumbnailChoice"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.generate_export_metadata.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*/projects/*/thumbnail-choice"
+}

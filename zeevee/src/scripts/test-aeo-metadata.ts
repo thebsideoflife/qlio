@@ -22,6 +22,7 @@ const cached = {
   contentHash,
   descriptions: { short: "Short" },
   thumbnailUrl: "https://x/t.jpg",
+  thumbnailVersion: 2,
   tags: { iab: { cattax: 7 as const, cat: ["1028", "325"] } },
   aeo: {
     showInfoHash: hash,

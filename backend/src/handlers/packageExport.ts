@@ -46,6 +46,15 @@ import {
 } from "../utils/caption-settings";
 import { resolveRenderTranscriptCandidates } from "../utils/transcript-source";
 import { presignS3Uri } from "../utils/s3";
+import {
+  buildContactSheetHtml,
+  buildSelectionLog,
+  compactThumbnail,
+  thumbnailNotes,
+  type ThumbnailSceneInput,
+} from "../utils/thumbnail-export-files";
+import { showSlug } from "../services/thumbnails/frameMath";
+import type { StoredThumbnailSet } from "../services/thumbnails/setPass";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}), {
   marshallOptions: { removeUndefinedValues: true },
@@ -123,6 +132,25 @@ async function readAsset(assetId: unknown): Promise<Record<string, unknown> | nu
     new GetCommand({ TableName: ASSETS_TABLE, Key: { assetId } }),
   );
   return (result.Item as Record<string, unknown> | undefined) ?? null;
+}
+
+/** Which frame each scene's thumbnail is, so a new pick or swap rebuilds the zip. */
+function thumbnailRevision(project: Record<string, unknown>): string {
+  const meta = (project.segmentMetadata || []) as StoredSegmentMetadata[];
+  return JSON.stringify(
+    meta.map((m) => [
+      m.segmentId,
+      m.thumbnailVersion ?? 1,
+      m.thumbnailPick?.exported?.time ?? null,
+      m.thumbnailPick?.runnerUp ?? null,
+    ]),
+  );
+}
+
+/** Show name for runbook thumbnail filenames: the series, else the project title. */
+function showNameFor(asset: Record<string, unknown> | null, projectTitle: string): string {
+  const series = (asset?.showInfo as { series?: unknown } | undefined)?.series;
+  return typeof series === "string" && series.trim() ? series.trim() : projectTitle;
 }
 
 /** Inputs that change exported caption text, so the package fingerprint sees edits. */
@@ -211,10 +239,10 @@ interface StoredSegmentRender {
   sourceKey?: string;
 }
 
-interface StoredSegmentMetadata {
-  segmentId: string;
-  thumbnailKey?: string;
-}
+type StoredSegmentMetadata = Pick<
+  import("../types/segment-metadata").StoredSegmentMetadata,
+  "segmentId" | "thumbnailKey" | "thumbnailVersion" | "thumbnailPick"
+>;
 
 function json(statusCode: number, body: unknown): APIGatewayProxyResult {
   return {
@@ -361,6 +389,9 @@ async function handleStart(
   const fingerprint = computeExportPackageFingerprint(
     {
       ...effectiveBody,
+      ...(body.includeThumbnails !== false
+        ? { thumbnailRevision: thumbnailRevision(project) }
+        : {}),
       ...(wantsAeoFiles(body.aeoFiles)
         ? {
             aeoFiles: body.aeoFiles,
@@ -605,12 +636,15 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
     const includeThumbnails = body.includeThumbnails !== false;
     const includePoster = body.includePoster !== false;
     const sceneNumbers = new Map(segments.map((s, i) => [s.id, i + 1]));
+    const showName = showNameFor(await readAsset(project.assetId), projectTitle);
     const layout = buildExportPackageLayout({
       projectTitle,
+      showName,
       scenes: selected.map((s) => ({
         segmentId: s.id,
         title: s.title || "scene",
         sceneNumber: sceneNumbers.get(s.id),
+        startTime: s.startTime,
       })),
       exportedAt: new Date(),
       timeZone: body.timeZone,
@@ -664,6 +698,7 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
     }
 
     const includedThumbs = new Set<string>();
+    let thumbnailSceneInputs: ThumbnailSceneInput[] = [];
     if (includeThumbnails) {
       for (const scene of layout.scenes) {
         const key = metadata.get(scene.segmentId)?.thumbnailKey;
@@ -683,6 +718,42 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
           );
         }
       }
+
+      // Thumbnail Runbook review files: runner-up previews, selection log,
+      // contact sheet (Steps 7–8)
+      const thumbScenes: ThumbnailSceneInput[] = [];
+      for (const scene of layout.scenes) {
+        const pick = metadata.get(scene.segmentId)?.thumbnailPick;
+        const input: ThumbnailSceneInput = {
+          sceneNumber: scene.sceneNumber,
+          title: selected.find((s) => s.id === scene.segmentId)?.title || `Scene ${scene.sceneNumber}`,
+          filename: scene.thumbnailFilename,
+          pick,
+        };
+        const runner = pick && pick.runnerUp >= 0 ? pick.candidates[pick.runnerUp] : undefined;
+        if (runner && layout.thumbnailFolder) {
+          const file = `review/${scene.thumbnailFilename.replace(/\.jpg$/, "")}_runner_up.jpg`;
+          try {
+            await appendS3Object(archive, MEDIA_BUCKET, runner.previewKey, `${layout.rootFolder}/${layout.thumbnailFolder}/${file}`, false);
+            input.runnerUpFile = file;
+          } catch {
+            // The contact sheet says "no runner-up" for this scene.
+          }
+        }
+        thumbScenes.push(input);
+      }
+      if (layout.thumbnailFolder && includedThumbs.size > 0) {
+        const slug = showSlug(showName);
+        const set = project.thumbnailSet as StoredThumbnailSet | undefined;
+        const folder = `${layout.rootFolder}/${layout.thumbnailFolder}`;
+        archive.append(JSON.stringify(buildSelectionLog(thumbScenes, set), null, 2), {
+          name: `${folder}/${slug}_thumbnail_selection.json`,
+        });
+        archive.append(buildContactSheetHtml({ showName, scenes: thumbScenes, set }), {
+          name: `${folder}/${slug}_thumbnail_contact_sheet.html`,
+        });
+      }
+      thumbnailSceneInputs = thumbScenes;
 
       const posterKey =
         typeof project.thumbnailKey === "string" ? project.thumbnailKey : null;
@@ -725,7 +796,22 @@ async function runWorker(event: AsyncJobPayload): Promise<void> {
           includedThumbnailSegmentIds: includedThumbs,
         },
       );
-      archive.append(JSON.stringify(localized, null, 2), {
+      // Thumbnail Runbook fields: compact_thumbnail on every scene, _notes.thumbnails
+      const byId = new Map(layout.scenes.map((s) => [s.segmentId, s]));
+      const withFields = {
+        ...localized,
+        scenes: localized.scenes.map((scene) => {
+          const entry = byId.get(scene.segmentId);
+          return entry ? { ...scene, compact_thumbnail: compactThumbnail(entry.thumbnailFilename) } : scene;
+        }),
+        _notes: {
+          ...((localized as { _notes?: Record<string, unknown> })._notes ?? {}),
+          thumbnails: includeThumbnails
+            ? thumbnailNotes(thumbnailSceneInputs)
+            : "Fields only: no thumbnail images were included in this package. CDN path not assigned: timestamp_link values are placeholders.",
+        },
+      };
+      archive.append(JSON.stringify(withFields, null, 2), {
         name: `${layout.rootFolder}/${layout.metadataFilename}`,
       });
     }
