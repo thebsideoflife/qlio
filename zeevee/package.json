@@ -21,8 +21,9 @@
     "test:frame-cuts": "npx tsx --tsconfig tsconfig.app.json src/store/editorFrameCuts.test.ts",
     "test:editor-history": "npx tsx --tsconfig tsconfig.app.json src/store/editorHistory.test.ts",
     "test:trim-math": "npx tsx --tsconfig tsconfig.app.json src/lib/trimMath.test.ts",
+    "test:script-cuts": "npx tsx --tsconfig tsconfig.app.json src/lib/scriptCuts.test.ts",
     "test:scene-order": "npx tsx --tsconfig tsconfig.app.json src/store/editorSceneOrder.test.ts",
-    "test": "npm run test:fingerprint && npm run test:show-info && npm run test:aeo-metadata && npm run test:agent-thread && npm run test:zoom-math && npm run test:transcript && npm run test:caption-content && npm run test:caption-fonts && npm run test:caption-grouping && npm run test:framing && npm run test:timeline-keyframes && npm run test:frame-cuts && npm run test:scene-order && npm run test:editor-history && npm run test:trim-math",
+    "test": "npm run test:fingerprint && npm run test:show-info && npm run test:aeo-metadata && npm run test:agent-thread && npm run test:zoom-math && npm run test:transcript && npm run test:caption-content && npm run test:caption-fonts && npm run test:caption-grouping && npm run test:framing && npm run test:timeline-keyframes && npm run test:frame-cuts && npm run test:scene-order && npm run test:editor-history && npm run test:trim-math && npm run test:script-cuts",
     "preview": "vite preview",
     "test:timecode": "npx tsx --tsconfig tsconfig.app.json src/lib/timecode.test.ts"
   },

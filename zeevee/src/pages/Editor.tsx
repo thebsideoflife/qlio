@@ -75,6 +75,8 @@ import {
 } from "@/remotion/framingInterpolation";
 import { resolveFramingAtSourceTime } from "@/remotion/segmentFrameBounds";
 import { probeSourceFps } from "@/lib/sourceFps";
+import { CutMarker } from "@/components/editor/ScriptTrim";
+import { useScriptTrim } from "@/components/editor/useScriptTrim";
 import type { AspectRatio } from "@/remotion/types";
 import {
   groupWordsForTranscript,
@@ -1412,6 +1414,19 @@ function TranscriptPanel({
   );
   const hasTranscript = wordCards.length > 0;
 
+  // Clip cuts shown in the script; drag the [ ] markers or select words to trim
+  const scriptWords = React.useMemo(
+    () => filteredTranscription.filter((word) => !isDeletedCaptionWord(word.value)),
+    [filteredTranscription],
+  );
+  const scriptTrim = useScriptTrim({
+    words: scriptWords,
+    segments,
+    enabled: !editMode && !previewMode,
+    onSeek: onWordClick,
+  });
+  const scriptBodyRef = React.useRef<HTMLDivElement>(null);
+
   // Memoize total duration calculation
   const shownDuration = React.useMemo(
     () =>
@@ -1486,7 +1501,14 @@ function TranscriptPanel({
       </div>
 
       {/* Scrollable content */}
-      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+      <div
+        ref={scriptBodyRef}
+        className="relative flex-1 overflow-y-auto px-5 py-4 space-y-4"
+        onMouseUp={() => {
+          if (scriptBodyRef.current) scriptTrim.onSelectEnd(scriptBodyRef.current);
+        }}
+      >
+        {scriptTrim.selectionMenu}
         {previewMode && segments.length === 0 && (
         <div className="text-muted-foreground text-center py-10 text-sm font-medium">
           No segments selected. Add segments to see preview transcript.
@@ -1545,12 +1567,25 @@ function TranscriptPanel({
                       return null;
                     }
 
+                    const isIn = scriptTrim.enabled && scriptTrim.marks.inKey === word.key;
+                    const isOut = scriptTrim.enabled && scriptTrim.marks.outKey === word.key;
                     return (
-                      <span
+                      <React.Fragment
                         // Rebuilt after every save of this word, so what was typed
                         // (e.g. "the big", now split into "the" + "big") can never
                         // linger in the box and be saved again.
                         key={`${word.key}-${savedTimes[word.key] ?? 0}-${wordIdx}`}
+                      >
+                      {isIn && (
+                        <CutMarker
+                          edge="start"
+                          active={scriptTrim.activeEdge === "start"}
+                          dragging={scriptTrim.dragEdge === "start"}
+                          splitsWord={scriptTrim.marks.inSplitsWord}
+                          onPointerDown={(e) => scriptTrim.startMarkerDrag("start", e)}
+                        />
+                      )}
+                      <span
                         onClick={() => !editMode && handleWordClick(word)}
                         onFocus={() => {
                           if (!editMode) return;
@@ -1581,11 +1616,29 @@ function TranscriptPanel({
                           !editMode && isActive && "bg-blue-600 text-white",
                           editMode && "cursor-text border-b border-dashed border-blue-400 focus:border-solid focus:border-blue-500 focus:bg-blue-500/10",
                           editMode && word.key === selectedKey && "border-solid border-blue-500 bg-blue-500/10",
+                          !editMode &&
+                            !isActive &&
+                            scriptTrim.inSelectedClip.has(word.key) &&
+                            "bg-blue-500/15",
+                          !editMode &&
+                            scriptTrim.anyClips &&
+                            !scriptTrim.inAnyClip.has(word.key) &&
+                            "text-muted-foreground",
                           word.estimated && !(editMode && word.key === selectedKey) && "bg-amber-500/25",
                         )}
                       >
                         {captionWordText(word.value)}
                       </span>
+                      {isOut && (
+                        <CutMarker
+                          edge="end"
+                          active={scriptTrim.activeEdge === "end"}
+                          dragging={scriptTrim.dragEdge === "end"}
+                          splitsWord={scriptTrim.marks.outSplitsWord}
+                          onPointerDown={(e) => scriptTrim.startMarkerDrag("end", e)}
+                        />
+                      )}
+                      </React.Fragment>
                     );
                   }).reduce<React.ReactNode[]>((acc, node) => {
                     // Add space between words

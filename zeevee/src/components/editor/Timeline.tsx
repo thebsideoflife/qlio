@@ -14,6 +14,7 @@ import {
   deleteSegment,
   setCurrentTime,
   selectKeyframe,
+  setTrimTarget as setTrimTargetAction,
   toggleShowKeyframes,
   updateFramingKeyframe,
   addFramingKeyframe,
@@ -176,10 +177,12 @@ export function Timeline({
   } | null>(null);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   // Precision trim: which segment edge the lens is open on
-  const [trimTarget, setTrimTarget] = useState<{
-    segmentId: string;
-    edge: TrimEdge;
-  } | null>(null);
+  const trimTarget = useSelector((state: RootState) => state.editor.trimTarget);
+  const setTrimTarget = useCallback(
+    (target: { segmentId: string; edge: TrimEdge } | null) =>
+      dispatch(setTrimTargetAction(target)),
+    [dispatch],
+  );
   const [lensWindow, setLensWindow] = useState<{ from: number; to: number } | null>(null);
   const [scrollLeft, setScrollLeft] = useState(0);
   const transcriptWords = useSelector(
@@ -511,7 +514,7 @@ export function Timeline({
     : null;
   useEffect(() => {
     if (trimTarget && (!trimSegment || previewMode)) setTrimTarget(null);
-  }, [trimTarget, trimSegment, previewMode]);
+  }, [trimTarget, trimSegment, previewMode, setTrimTarget]);
   useEffect(() => {
     if (!trimTarget) setLensWindow(null);
   }, [trimTarget]);
@@ -577,6 +580,7 @@ export function Timeline({
     totalDuration,
     applyTrim,
     dispatch,
+    setTrimTarget,
   ]);
 
   // Track scroll position for the overview strip

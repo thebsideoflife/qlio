@@ -86,6 +86,8 @@ interface EditorState {
   sourceFps: number | null;
   // Keyframe toggle — shows keyframe lane + framing controls
   showKeyframes: boolean;
+  /** Segment edge open in the trim lens (timeline and script both show it). Not undoable. */
+  trimTarget: { segmentId: string; edge: "start" | "end" } | null;
   // Last rendered segments - cached to avoid re-renders
   lastSegmentRenders:
     | {
@@ -175,6 +177,7 @@ const initialState: EditorState = {
   globalFraming: DEFAULT_GLOBAL_FRAMING,
   sourceFps: null,
   showKeyframes: false,
+  trimTarget: null,
   // Last rendered segments
   lastSegmentRenders: null,
   segmentMetadata: null,
@@ -637,11 +640,17 @@ export const editorSlice = createSlice({
         markEdited(state);
       }
     },
-    addSegment: (state, action: PayloadAction<{ atTime: number }>) => {
+    addSegment: (
+      state,
+      action: PayloadAction<{ atTime: number; endTime?: number }>,
+    ) => {
       const { atTime } = action.payload;
       const defaultDuration = 60;
       const startTime = atTime;
-      const endTime = Math.min(atTime + defaultDuration, state.duration);
+      const endTime = Math.min(
+        action.payload.endTime ?? atTime + defaultDuration,
+        state.duration,
+      );
 
       // Don't add if it would be zero-length
       if (endTime <= startTime) return;
@@ -1104,6 +1113,12 @@ export const editorSlice = createSlice({
     selectKeyframe: (state, action: PayloadAction<string | null>) => {
       state.selectedKeyframeId = action.payload;
     },
+    setTrimTarget: (
+      state,
+      action: PayloadAction<{ segmentId: string; edge: "start" | "end" } | null>,
+    ) => {
+      state.trimTarget = action.payload;
+    },
     setSegmentKeyframes: (
       state,
       action: PayloadAction<{
@@ -1407,6 +1422,7 @@ export const {
   // Keyframe actions
   toggleShowKeyframes,
   selectKeyframe,
+  setTrimTarget,
   setSegmentKeyframes,
   addFramingKeyframe,
   updateFramingKeyframe,

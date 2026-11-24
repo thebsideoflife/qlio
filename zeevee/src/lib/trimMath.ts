@@ -37,9 +37,14 @@ export function edgeFrames(
   return { inside: outside - 1, outside };
 }
 
-/** Seek target that displays `frame` (mid-frame avoids boundary rounding). */
+/**
+ * Seek target that displays `frame`: just past its start. The editor publishes
+ * the playhead rounded to the nearest frame, so this reads back as `frame`
+ * (a mid-frame target would round up to the next one).
+ */
+export const FRAME_SEEK_EPSILON = 0.01;
 export function frameDisplayTime(frame: number, fps: number): number {
-  return (Math.max(0, frame) + 0.5) / fps;
+  return (Math.max(0, frame) + FRAME_SEEK_EPSILON) / fps;
 }
 
 /** Where the playhead goes so the viewer shows the inside frame of an edge. */

@@ -8,6 +8,7 @@ import {
   edgeFrames,
   edgeTimeAtPlayhead,
   formatFrameTimecode,
+  frameDisplayTime,
   lensWindowStart,
   minTrimDuration,
   nudgeEdge,
@@ -33,8 +34,8 @@ const seg = { startTime: 10, endTime: 20 };
 // Frames either side of each cut
 assertEqual(edgeFrames(seg, "start", 24), { inside: 240, outside: 239 }, "start edge frames");
 assertEqual(edgeFrames(seg, "end", 24), { inside: 479, outside: 480 }, "end edge frames");
-assertEqual(r6(edgeDisplayTime(seg, "start", 24)), r6(240.5 / 24), "start shows first clip frame");
-assertEqual(r6(edgeDisplayTime(seg, "end", 24)), r6(479.5 / 24), "end shows last clip frame");
+assertEqual(r6(edgeDisplayTime(seg, "start", 24)), r6(240.01 / 24), "start shows first clip frame");
+assertEqual(r6(edgeDisplayTime(seg, "end", 24)), r6(479.01 / 24), "end shows last clip frame");
 assertEqual(edgeDisplayTime(seg, "start", null), 10, "no fps: start time");
 
 // Nudges are whole frames
@@ -83,6 +84,11 @@ assertEqual(roundTrip, true, "29.97 timecode round-trips every frame");
 assertEqual(edgeTimeAtPlayhead(240.5 / 24, "start", 24), 240 / 24, "in point = displayed frame");
 assertEqual(edgeTimeAtPlayhead(240.5 / 24, "end", 24), 241 / 24, "out point keeps displayed frame");
 assertEqual(edgeTimeAtPlayhead(240 / 24, "start", 24), 240 / 24, "frame boundary from arrow keys");
+// The editor publishes the playhead rounded to frames; a seek must read back as the same frame
+for (const f of [0, 1, 239, 240, 86399]) {
+  assertEqual(Math.round(frameDisplayTime(f, 24) * 24), f, `seek target for frame ${f} rounds back to it`);
+  assertEqual(Math.round(frameDisplayTime(f, 30000 / 1001) * (30000 / 1001)), f, `29.97 seek target for frame ${f}`);
+}
 assertEqual(edgeTimeAtPlayhead(12.34, "end", null), 12.34, "no fps: playhead time");
 
 // Cutting on words
