@@ -10,6 +10,8 @@ import {
   nudgeEdge,
   parseFrameTimecode,
   setEdgeTime,
+  snapToWord,
+  wordEdgeTime,
   type TrimEdge,
 } from "@/lib/trimMath";
 
@@ -19,6 +21,8 @@ const DEFAULT_SPAN = 10;
 /** Recenter once the edge leaves the middle of the window. */
 const RECENTER_MARGIN = 0.15;
 const PAN_THRESHOLD_PX = 3;
+/** Edge drags stick to word boundaries within this distance. */
+const WORD_SNAP_PX = 8;
 
 interface LensSegment {
   id: string;
@@ -183,8 +187,8 @@ export function TrimLens({
   const viewEnd = viewStart + span;
   const X = useCallback((t: number) => (t - viewStart) * pps, [viewStart, pps]);
 
-  const latest = useRef({ segment, edge, fps, totalDuration, viewStart, pps });
-  latest.current = { segment, edge, fps, totalDuration, viewStart, pps };
+  const latest = useRef({ segment, edge, fps, totalDuration, viewStart, pps, words });
+  latest.current = { segment, edge, fps, totalDuration, viewStart, pps, words };
 
   const applyTrim = useCallback(
     (next: { start: number; end: number }, which: TrimEdge, commit: boolean) => {
@@ -205,7 +209,13 @@ export function TrimLens({
   // Pointer handling on the strip: handles trim, empty area pans, a click seeks.
   const pointerRef = useRef<
     | { kind: "edge"; edge: TrimEdge; seg: LensSegment }
-    | { kind: "pan"; startX: number; startView: number; moved: boolean }
+    | {
+        kind: "pan";
+        startX: number;
+        startView: number;
+        moved: boolean;
+        word: CaptionWord | null;
+      }
     | null
   >(null);
 
@@ -225,16 +235,27 @@ export function TrimLens({
       pointerRef.current = { kind: "edge", edge: which, seg: { ...segment } };
       draggingRef.current = true;
     } else {
-      pointerRef.current = { kind: "pan", startX: e.clientX, startView: viewStart, moved: false };
+      const wordEl = (e.target as HTMLElement).closest<HTMLElement>("[data-word-index]");
+      const word = wordEl ? visibleWords[Number(wordEl.dataset.wordIndex)] ?? null : null;
+      pointerRef.current = {
+        kind: "pan",
+        startX: e.clientX,
+        startView: viewStart,
+        moved: false,
+        word,
+      };
     }
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const p = pointerRef.current;
     if (!p) return;
-    const { fps: f, totalDuration: total, pps: px } = latest.current;
+    const { fps: f, totalDuration: total, pps: px, words: ws } = latest.current;
     if (p.kind === "edge") {
-      applyTrim(setEdgeTime(p.seg, p.edge, timeAtClientX(e.clientX), f, total), p.edge, false);
+      const raw = timeAtClientX(e.clientX);
+      // Stick to word boundaries; hold Alt to place freely
+      const t = e.altKey ? raw : snapToWord(raw, ws, p.edge, f, WORD_SNAP_PX / px);
+      applyTrim(setEdgeTime(p.seg, p.edge, t, f, total), p.edge, false);
     } else {
       const dx = e.clientX - p.startX;
       if (!p.moved && Math.abs(dx) < PAN_THRESHOLD_PX) return;
@@ -251,6 +272,10 @@ export function TrimLens({
     if (p.kind === "edge") {
       draggingRef.current = false;
       onTrimCommit();
+    } else if (!p.moved && p.word) {
+      // Click a word: cut the active edge on it
+      const { segment: seg, edge: which, fps: f, totalDuration: total } = latest.current;
+      applyTrim(setEdgeTime(seg, which, wordEdgeTime(p.word, which, f), f, total), which, true);
     } else if (!p.moved) {
       const t = Math.max(0, Math.min(totalDuration, timeAtClientX(e.clientX)));
       onSeek(fps && fps > 0 ? frameDisplayTime(Math.floor(t * fps), fps) : t);
@@ -400,7 +425,7 @@ export function TrimLens({
 
         <div className="ml-auto flex items-center gap-2">
           <span className="hidden xl:inline text-[11px] text-muted-foreground">
-            , . nudge · Shift ×10 · [ ] set to playhead · Esc close
+            Click a word to cut on it · , . nudge · [ ] set to playhead · Alt-drag ignores words
           </span>
           <div className="flex rounded-md border border-border overflow-hidden text-[11px]">
             {SPANS.map((s) => (
@@ -476,16 +501,30 @@ export function TrimLens({
           ))}
 
           {/* Words */}
-          {visibleWords.map((w, i) => (
-            <div
-              key={`${w.start}-${i}`}
-              className="absolute top-1 h-[18px] rounded-sm bg-foreground/5 border-l border-foreground/20 px-0.5 text-[10px] leading-[18px] text-muted-foreground overflow-hidden whitespace-nowrap pointer-events-none"
-              style={{ left: X(w.start), width: Math.max(2, (w.end - w.start) * pps) }}
-              title={w.value}
-            >
-              {w.value}
-            </div>
-          ))}
+          {visibleWords.map((w, i) => {
+            const inClip = w.end > segment.startTime && w.start < segment.endTime;
+            return (
+              <div
+                key={`${w.start}-${i}`}
+                data-word-index={i}
+                className={cn(
+                  "absolute top-1 h-[20px] rounded-sm border-l px-0.5 text-[11px] leading-[20px] overflow-hidden whitespace-nowrap cursor-pointer z-10",
+                  "hover:bg-amber-400 hover:text-zinc-900 hover:border-amber-500 hover:overflow-visible hover:z-30",
+                  inClip
+                    ? "bg-blue-500/25 border-blue-300/60 text-foreground"
+                    : "bg-foreground/5 border-foreground/20 text-muted-foreground",
+                )}
+                style={{ left: X(w.start), width: Math.max(2, (w.end - w.start) * pps) }}
+                title={
+                  edge === "start"
+                    ? `Start the clip on “${w.value}”`
+                    : `End the clip after “${w.value}”`
+                }
+              >
+                {w.value}
+              </div>
+            );
+          })}
 
           {/* Segments in view */}
           {visibleSegments.map((s) => {

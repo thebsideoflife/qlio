@@ -13,6 +13,8 @@ import {
   nudgeEdge,
   parseFrameTimecode,
   setEdgeTime,
+  snapToWord,
+  wordEdgeTime,
 } from "./trimMath";
 
 let checks = 0;
@@ -82,6 +84,16 @@ assertEqual(edgeTimeAtPlayhead(240.5 / 24, "start", 24), 240 / 24, "in point = d
 assertEqual(edgeTimeAtPlayhead(240.5 / 24, "end", 24), 241 / 24, "out point keeps displayed frame");
 assertEqual(edgeTimeAtPlayhead(240 / 24, "start", 24), 240 / 24, "frame boundary from arrow keys");
 assertEqual(edgeTimeAtPlayhead(12.34, "end", null), 12.34, "no fps: playhead time");
+
+// Cutting on words
+const word = { start: 10.02, end: 10.51 };
+assertEqual(wordEdgeTime(word, "start", 24), 240 / 24, "in point on the frame the word starts");
+assertEqual(wordEdgeTime(word, "end", 24), 253 / 24, "out point after the word's last frame");
+assertEqual(wordEdgeTime(word, "end", null), 10.51, "no fps: word end");
+const ws = [word, { start: 11, end: 11.4 }];
+assertEqual(snapToWord(10.05, ws, "start", 24, 0.1), 240 / 24, "drag snaps to nearby word start");
+assertEqual(snapToWord(10.6, ws, "end", 24, 0.1), 253 / 24, "drag snaps to nearby word end");
+assertEqual(snapToWord(10.3, ws, "start", 24, 0.1), 10.3, "no word boundary nearby");
 
 // Lens window stays inside the video
 assertEqual(lensWindowStart(50, 10, 100), 45, "centred");

@@ -151,3 +151,49 @@ export function edgeTimeAtPlayhead(
   const shown = Math.floor(playhead * fps + 1e-6);
   return frameToTime(edge === "start" ? shown : shown + 1, fps);
 }
+
+interface TimedWord {
+  start: number;
+  end: number;
+}
+
+/**
+ * Edge time that cuts on a word: the In point lands on the frame where the
+ * word begins, the Out point on the first frame after it ends (rounded
+ * outward so the word is never clipped).
+ */
+export function wordEdgeTime(
+  word: TimedWord,
+  edge: TrimEdge,
+  fps: number | null,
+): number {
+  if (!fps || !(fps > 0)) return edge === "start" ? word.start : word.end;
+  return edge === "start"
+    ? frameToTime(Math.floor(word.start * fps + 1e-6), fps)
+    : frameToTime(Math.ceil(word.end * fps - 1e-6), fps);
+}
+
+/**
+ * Magnet for edge drags: if `time` is within `threshold` seconds of a word
+ * boundary, return that boundary's cut time (see wordEdgeTime); else `time`.
+ * In points stick to word starts, Out points to word ends.
+ */
+export function snapToWord(
+  time: number,
+  words: TimedWord[],
+  edge: TrimEdge,
+  fps: number | null,
+  threshold: number,
+): number {
+  let best = time;
+  let bestDist = threshold;
+  for (const w of words) {
+    const cut = wordEdgeTime(w, edge, fps);
+    const dist = Math.abs(cut - time);
+    if (dist <= bestDist) {
+      bestDist = dist;
+      best = cut;
+    }
+  }
+  return best;
+}
