@@ -13,6 +13,11 @@ interface CaptionTextProps {
   containerHeight: number;
 }
 
+/** The chosen two-line break falls before the word starting at `start`. */
+function breaksBefore(start: number, lineBreakBefore: number | undefined): boolean {
+  return lineBreakBefore != null && Math.abs(start - lineBreakBefore) < 1e-6;
+}
+
 /**
  * One text implementation for the editor and Remotion.
  * Whisper originals retain word timing; translations remain phrase text.
@@ -84,7 +89,11 @@ export function CaptionText({
               }}
             >
               {captionWordText(word.value)}
-              {index < visibleWords.length - 1 ? " " : ""}
+              {index < visibleWords.length - 1
+                ? breaksBefore(visibleWords[index + 1].start, caption.lineBreakBefore)
+                  ? "\n"
+                  : " "
+                : ""}
             </span>
           ))
         )}

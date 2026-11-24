@@ -9,7 +9,7 @@ import type { Segment } from "@/store/editorSlice";
 
 // Keep in lockstep with backend/src/utils/segmentRenderFingerprint.ts. Bump
 // when a Remotion bundle change alters output without changing project inputs.
-export const RENDER_PIPELINE_VERSION = 10;
+export const RENDER_PIPELINE_VERSION = 11;
 
 function stableStringify(value: unknown): string {
   return JSON.stringify(value, (_key, val) =>

@@ -15,6 +15,8 @@ export interface CaptionLine {
   text: string;
   /** Present on Whisper originals. Translations are line text only. */
   words?: CaptionWord[];
+  /** Start time of the first word on the second line, for two-line captions. */
+  lineBreakBefore?: number;
 }
 
 export interface CaptionStyle {

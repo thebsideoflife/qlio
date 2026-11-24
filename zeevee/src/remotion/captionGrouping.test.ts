@@ -2,8 +2,14 @@ import {
   addedWords,
   applyWordEdits,
   separateTypedWords,
+  CAPTION_BRIDGE_GAP,
   CAPTION_HOLD_SECONDS,
+  CAPTION_MIN_DISPLAY,
+  CAPTION_READING_CPS,
   captionCharsPerLine,
+  captionReadingTime,
+  checkCaptions,
+  chooseLineBreak,
   captionGroupingOptions,
   captionLineCount,
   captionTextFromWords,
@@ -96,23 +102,92 @@ assert(paused.length === 2, "0.6s pause splits a line");
 const long = groupWordsIntoCaptions([w("a", 0), w("b", 1), w("c", 2), w("d", 3.5)], { minPauseBetweenLines: Number.POSITIVE_INFINITY });
 assert(long.length === 2, "3s max duration splits");
 
-// --- hold: 3.5s after the last word, or until the next caption starts
+// --- hold: a short linger, reading time, no flicker, never into the next caption
 const held = groupWordsIntoCaptions([w("a", 0), w("b", 0.3), w("c", 2.0), w("d", 20)]);
 assert(held.length === 3, "three captions");
-assert(close(held[0].speechEndTime!, 0.5) && close(held[0].endTime, 2.0), "held until next caption starts");
-assert(close(held[1].speechEndTime!, 2.2) && close(held[1].endTime, 2.2 + CAPTION_HOLD_SECONDS), "held 3.5s when the gap is long");
-assert(close(held[2].endTime, 20.2 + CAPTION_HOLD_SECONDS), "last caption holds 3.5s");
-assert(activeCaptionAt(held, 1.9)?.id === held[0].id, "caption stays visible during the hold");
-assert(activeCaptionAt(held, 5.6)?.id === held[1].id, "still visible 3.4s after speech");
-assert(activeCaptionAt(held, 5.8) === undefined, "gone after 3.5s");
+assert(close(held[0].speechEndTime!, 0.5) && close(held[0].endTime, 1.0), `held 0.5s past speech (${held[0].endTime})`);
+assert(close(held[1].speechEndTime!, 2.2) && close(held[1].endTime, 2.0 + CAPTION_MIN_DISPLAY), "a short caption is held to its minimum display time");
+assert(close(held[2].endTime, 20.0 + CAPTION_MIN_DISPLAY), "a one-word caption still stays up its minimum time");
+assert(activeCaptionAt(held, 0.9)?.id === held[0].id, "caption stays visible during the hold");
+assert(activeCaptionAt(held, 1.5) === undefined, "gone soon after speech ends");
 assert(activeWordIndexAt(held[1].words!, 2.1, held[1].endTime) === 0, "last word highlighted while spoken");
-assert(activeWordIndexAt(held[1].words!, 5.6, held[1].endTime) === 0, "last word stays highlighted through the hold");
-assert(activeWordIndexAt(held[1].words!, 5.8, held[1].endTime) === -1, "no highlight once the hold ends");
-assert(activeWordIndexAt(held[0].words!, 1.9, held[0].endTime) === 1, "last word highlighted until the next caption starts");
-assert(activeCaptionAt(held, 1.9, 1.0) === undefined, "a held caption never carries into a segment that starts after its speech");
+assert(activeWordIndexAt(held[1].words!, 2.7, held[1].endTime) === 0, "last word stays highlighted through the hold");
+assert(activeWordIndexAt(held[1].words!, 2.9, held[1].endTime) === -1, "no highlight once the hold ends");
+assert(activeCaptionAt(held, 0.9, 0.7) === undefined, "a held caption never carries into a segment that starts after its speech");
 assert(activeCaptionAt(held, 0.4, 0.2)?.id === held[0].id, "a caption still speaking at the segment start shows");
 const twice = holdCaptions(holdCaptions([{ id: "t", startTime: 1, endTime: 2, text: "x" }]));
 assert(close(twice[0].endTime, 2 + CAPTION_HOLD_SECONDS) && close(twice[0].speechEndTime!, 2), "hold is idempotent on translation lines");
+// A short gap is bridged so captions don't flicker off and on
+const bridged = holdCaptions([
+  { id: "p", startTime: 0, endTime: 1, text: "one two" },
+  { id: "q", startTime: 1.9, endTime: 3, text: "three" },
+]);
+assert(close(bridged[0].endTime, 1.9), `gap under ${CAPTION_BRIDGE_GAP}s is closed (${bridged[0].endTime})`);
+// Long text earns reading time, but never covers the next caption
+const reading = holdCaptions([
+  { id: "r", startTime: 0, endTime: 0.5, text: "a".repeat(51) },
+  { id: "s", startTime: 10, endTime: 11, text: "b" },
+]);
+assert(close(reading[0].endTime, 51 / CAPTION_READING_CPS), "51 characters get 3 s to read");
+const squeezed = holdCaptions([
+  { id: "r", startTime: 0, endTime: 0.5, text: "a".repeat(51) },
+  { id: "s", startTime: 1.2, endTime: 2, text: "b" },
+]);
+assert(close(squeezed[0].endTime, 1.2), "reading time stops at the next caption");
+assert(close(captionReadingTime("hi"), CAPTION_MIN_DISPLAY), "minimum display time");
+
+// --- line breaks at phrase boundaries (runbook step 4)
+const words2 = (text: string) => text.split(" ").map((value, i) => w(value, i * 0.3));
+const lineBreak = (text: string, max: number) => {
+  const ws = words2(text);
+  const k = chooseLineBreak(ws, max);
+  return k == null ? null : `${ws.slice(0, k).map((x) => x.value).join(" ")} / ${ws.slice(k).map((x) => x.value).join(" ")}`;
+};
+// The runbook's "avoid" breaks are never chosen
+for (const [text, max, avoid] of [
+  ["I went to the store yesterday.", 23, "I went to the / store yesterday."],
+  ["This is the biggest problem we've had.", 28, "This is the biggest / problem we've had."],
+  ["I can't believe you actually did that.", 26, "I can't believe you / actually did that."],
+  ["I don't know what you're talking about.", 32, "I don't know what you're talking / about."],
+  ["I don't know what you're talking about.", 26, "I don't know what you're / talking about."],
+] as const) {
+  const got = lineBreak(text, max);
+  assert(got !== null && got !== avoid, `"${text}" avoids "${avoid}" (got "${got}")`);
+  const lastOfTop = got!.split(" / ")[0].split(" ").pop()!.toLowerCase();
+  assert(!["the", "a", "to", "you", "is", "and"].includes(lastOfTop), `"${got}" doesn't end a line on "${lastOfTop}"`);
+}
+assert(lineBreak("I don't know what you're talking about.", 26) === "I don't know / what you're talking about.", `${lineBreak("I don't know what you're talking about.", 26)}`);
+assert(lineBreak("Well, I can't believe you actually did that.", 30)!.startsWith("Well, I can't believe /"), `${lineBreak("Well, I can't believe you actually did that.", 30)}`);
+assert(lineBreak("He told me John Smith was here", 22) !== "He told me John / Smith was here", "first and last names stay together");
+assert(lineBreak("short line", 30) === null, "fits on one line: no break");
+const grouped = groupWordsIntoCaptions(words2("I don't know what you're talking about."), { maxCharsPerLine: 26 });
+assert(grouped.length === 1 && grouped[0].lineBreakBefore === grouped[0].words![3].start, "grouping records the chosen break");
+assert(groupWordsIntoCaptions(words2("all on one line"), { maxCharsPerLine: 40 })[0].lineBreakBefore === undefined, "one-line captions carry no break");
+
+// --- reveals: a sentence-ending word after a beat gets its own caption
+const reveal = [
+  { start: 0, end: 0.2, value: "And" },
+  { start: 0.25, end: 0.45, value: "the" },
+  { start: 0.5, end: 0.8, value: "killer" },
+  { start: 0.85, end: 1.0, value: "was" },
+  { start: 1.25, end: 1.7, value: "Michael." },
+];
+const revealed = groupWordsIntoCaptions(reveal);
+assert(revealed.map((c) => c.text).join(" | ") === "And the killer was | Michael.", `reveal held back: ${revealed.map((c) => c.text).join(" | ")}`);
+const noBeat = groupWordsIntoCaptions(reveal.map((x, i) => i === 4 ? { ...x, start: 1.05 } : x));
+assert(noBeat.length === 1, "without a beat the sentence stays together");
+
+// --- automatic checks (runbook step 8)
+const checked = checkCaptions([
+  { id: "ok", startTime: 0, endTime: 2, text: "a fine caption", words: words2("a fine caption") },
+  { id: "fast", startTime: 0, endTime: 1, text: "x".repeat(30) },
+  { id: "brief", startTime: 0, endTime: 0.5, text: "hi" },
+  { id: "strand", startTime: 0, endTime: 5, text: "So what are you doing", words: words2("So what are you doing"), lineBreakBefore: 0.3 },
+]);
+assert(!checked.some((c) => c.id === "ok"), "a good caption passes");
+assert(checked.find((c) => c.id === "fast")!.issues.includes("too_fast"), "30 chars in 1s is too fast");
+assert(checked.find((c) => c.id === "brief")!.issues.includes("too_brief"), "0.5s is too brief");
+assert(checked.find((c) => c.id === "strand")!.issues.includes("stranded_word"), "one word on a line is flagged");
 
 // --- renderer content: deleted words hidden, legacy markers ignored
 const content = resolveCaptionContent({ text: "", words: [w("a\n"), w("\n"), w("b")] });

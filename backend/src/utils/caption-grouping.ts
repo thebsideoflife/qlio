@@ -12,14 +12,30 @@
  *      prefer sentence and clause endings, balanced groups, and no lone word.
  *      Each group is limited by `maxWords`, `maxDuration`, and the estimated
  *      `maxLines` / `maxCharsPerLine` caption box fit.
- *   3. A caption stays on screen after its last word ends for `holdSeconds`,
- *      or until the next caption's first word starts, whichever comes first.
+ *   3. A caption stays on screen for `holdSeconds` after its last word ends,
+ *      and at least long enough to read (CAPTION_MIN_DISPLAY seconds, and
+ *      CAPTION_READING_CPS characters a second), never past the next caption.
+ *      A gap shorter than CAPTION_BRIDGE_GAP is closed so captions don't flicker.
  *      `speechEndTime` records when the last word actually ended.
+ *   4. Two-line captions break at a phrase boundary, not mid-phrase: never
+ *      after an article, preposition, auxiliary or subject pronoun, never
+ *      between two capitalised names, preferring punctuation and balanced
+ *      lines (Qlio Caption Runbook, step 4). `lineBreakBefore` is the start
+ *      time of the first word on the second line.
  *
  * Deleted words (empty text) are dropped and never count toward any limit.
  */
 
-export const CAPTION_HOLD_SECONDS = 3.5;
+/** Linger after the last word is spoken (runbook: don't stay up long after speech). */
+export const CAPTION_HOLD_SECONDS = 0.5;
+/** Shortest time a caption is shown, when the next caption leaves room. */
+export const CAPTION_MIN_DISPLAY = 0.8;
+/** Reading speed used to give longer captions more time on screen. */
+export const CAPTION_READING_CPS = 17;
+/** Above this many characters a second a caption is too fast to read. */
+export const CAPTION_MAX_CPS = 20;
+/** Gaps shorter than this between captions are closed to avoid flicker. */
+export const CAPTION_BRIDGE_GAP = 0.5;
 export const CAPTION_MAX_LINES = 2;
 export const CAPTION_MAX_WORDS = 8;
 export const CAPTION_MAX_DURATION = 3;
@@ -44,6 +60,8 @@ export interface GroupedCaption<W extends GroupableWord = GroupableWord> {
   speechEndTime?: number;
   text: string;
   words?: W[];
+  /** Start time of the first word on the second line, for two-line captions. */
+  lineBreakBefore?: number;
 }
 
 export interface CaptionGroupingOptions {
@@ -306,16 +324,28 @@ function groupPhrase<W extends GroupableWord>(
       )) break;
 
       const size = end - start;
-      // Make a singleton very expensive, even at a sentence boundary.
-      const orphanCost = size === 1 && words.length > 1 ? 40 : size === 2 ? 5 : 0;
-      const shortCost = size < 4 ? 4 - size : 0;
-      const balanceCost = Math.pow(Math.max(0, Math.min(maxWords, 8) - size), 2) / 4;
+      // A lone word is very expensive, except a sentence-ending word after a
+      // beat: that is a reveal, held until it is spoken.
+      const gapBefore = start > 0 ? words[start].start - words[start - 1].end : 0;
+      const isBeat =
+        size === 1 && start > 0 && gapBefore >= 0.2 && boundaryScore(words[start].value) === -10;
+      const orphanCost = isBeat ? -10 : size === 1 && words.length > 1 ? 40 : size === 2 ? 5 : 0;
+      // A short pause inside the phrase is a natural place to change caption.
+      const gapAfter = end < words.length ? words[end].start - words[end - 1].end : 0;
+      const pauseCost = gapAfter >= 0.12 ? -Math.min(6, gapAfter * 30) : 0;
+      // Too many characters for the time the caption is up reads too fast.
+      const shownUntil = end < words.length ? words[end].start : group[group.length - 1].end + CAPTION_HOLD_SECONDS;
+      const cps = captionTextFromWords(group).length / Math.max(0.1, shownUntil - group[0].start);
+      const rateCost = cps > CAPTION_MAX_CPS ? (cps - CAPTION_MAX_CPS) * 2 : 0;
+      const shortCost = size < 4 && !isBeat ? 4 - size : 0;
+      const balanceCost = isBeat ? 0 : Math.pow(Math.max(0, Math.min(maxWords, 8) - size), 2) / 4;
       const endsPhrase = end === words.length;
       const punctuation = endsPhrase ? 0 : boundaryScore(words[end - 1].value);
       const crossesSentence = group.slice(0, -1).some(
         (word) => boundaryScore(word.value) === -10,
       ) ? 20 : 0;
-      const cost = 12 + orphanCost + shortCost + balanceCost + punctuation + crossesSentence + best[end];
+      const cost = 12 + orphanCost + shortCost + balanceCost + punctuation + crossesSentence +
+        pauseCost + rateCost + best[end];
       // Stable tie-break: prefer the earlier boundary.
       if (cost < best[start]) {
         best[start] = cost;
@@ -331,9 +361,17 @@ function groupPhrase<W extends GroupableWord>(
   return groups;
 }
 
+/** Seconds a caption of this text needs on screen to be read. */
+export function captionReadingTime(text: string): number {
+  const chars = String(text ?? "").replace(/\s+/g, " ").trim().length;
+  return Math.max(CAPTION_MIN_DISPLAY, chars / CAPTION_READING_CPS);
+}
+
 /**
- * Keep each caption on screen after its last word for `holdSeconds`, or until
- * the next caption starts. Idempotent: re-applying to held captions is a no-op.
+ * Set how long each caption stays up: `holdSeconds` past its last word, at
+ * least its reading time, never into the next caption, and up to the next
+ * caption when the gap is under CAPTION_BRIDGE_GAP. Idempotent: re-applying
+ * to held captions is a no-op.
  */
 export function holdCaptions<C extends GroupedCaption>(
   captions: readonly C[],
@@ -342,13 +380,121 @@ export function holdCaptions<C extends GroupedCaption>(
   return captions.map((caption, index) => {
     const speechEndTime = caption.speechEndTime ?? caption.endTime;
     const next = captions[index + 1];
-    const heldEnd = speechEndTime + Math.max(0, holdSeconds);
-    const endTime = Math.max(
-      speechEndTime,
-      next ? Math.min(heldEnd, next.startTime) : heldEnd,
+    let endTime = Math.max(
+      speechEndTime + Math.max(0, holdSeconds),
+      caption.startTime + captionReadingTime(caption.text),
     );
-    return { ...caption, speechEndTime, endTime };
+    if (next) {
+      if (next.startTime - endTime < CAPTION_BRIDGE_GAP) endTime = next.startTime;
+      endTime = Math.min(endTime, next.startTime);
+    }
+    return { ...caption, speechEndTime, endTime: Math.max(speechEndTime, endTime) };
   });
+}
+
+/* ---- Line breaks ------------------------------------------------------- */
+
+// Words that bind to the word after them: a line should not end on one.
+const BINDS_FORWARD = new Set([
+  // articles and determiners
+  "a", "an", "the", "this", "that", "these", "those", "my", "your", "his", "her",
+  "its", "our", "their", "some", "any", "no", "every", "each", "another", "such",
+  // prepositions
+  "in", "on", "at", "to", "of", "for", "with", "from", "by", "about", "into",
+  "onto", "over", "under", "after", "before", "through", "between", "without",
+  "around", "against", "during", "toward", "towards", "upon", "within", "like",
+  // auxiliaries and modals
+  "am", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+  "do", "does", "did", "will", "would", "can", "could", "should", "may", "might",
+  "must", "shall", "i'm", "you're", "we're", "they're", "he's", "she's", "it's",
+  "i've", "you've", "we've", "they've", "i'll", "you'll", "we'll", "they'll",
+  "i'd", "you'd", "we'd", "they'd", "don't", "doesn't", "didn't", "can't",
+  "won't", "wouldn't", "couldn't", "shouldn't", "isn't", "aren't", "wasn't",
+  "weren't", "haven't", "hasn't", "hadn't",
+  // subject pronouns and negation
+  "i", "you", "he", "she", "we", "they", "it", "not", "never",
+  // conjunctions belong with the phrase they introduce
+  "and", "but", "or", "nor", "so", "yet", "because", "if", "when", "while",
+  "although", "though", "unless", "until", "since", "than", "whether",
+  "who", "whom", "whose", "which", "where", "what", "how", "why",
+]);
+
+const DETERMINERS = new Set([
+  "a", "an", "the", "this", "that", "these", "those", "my", "your", "his", "her",
+  "its", "our", "their", "some", "any", "no", "every", "each", "another", "such",
+]);
+
+// Words that make a good start for a second line.
+const STARTS_LINE = new Set([
+  "and", "but", "or", "so", "because", "if", "when", "while", "that", "which",
+  "who", "where", "what", "how", "why", "to", "in", "on", "at", "with", "for",
+  "from", "about",
+]);
+
+function bareWord(value: string): string {
+  return captionWordText(value).toLowerCase().replace(/[^a-z'’]/g, "").replace(/’/g, "'");
+}
+
+function isCapitalised(value: string): boolean {
+  return /^["'(]*[A-Z][a-z]/.test(captionWordText(value));
+}
+
+function lineLength(words: readonly GroupableWord[]): number {
+  return captionTextFromWords(words).length;
+}
+
+/**
+ * Where to break a caption onto two lines: the index of the first word on
+ * the second line, or null when it fits on one line or cannot be split.
+ */
+export function chooseLineBreak(
+  words: readonly GroupableWord[],
+  maxCharsPerLine: number,
+): number | null {
+  const visible = words.filter((word) => !isDeletedCaptionWord(word.value));
+  if (visible.length < 2) return null;
+  if (!Number.isFinite(maxCharsPerLine) || lineLength(visible) <= maxCharsPerLine) return null;
+
+  let bestIndex: number | null = null;
+  let bestCost = Number.POSITIVE_INFINITY;
+  for (let k = 1; k < visible.length; k++) {
+    const top = visible.slice(0, k);
+    const bottom = visible.slice(k);
+    const topLen = lineLength(top);
+    const bottomLen = lineLength(bottom);
+    const overflow =
+      Math.max(0, topLen - maxCharsPerLine) + Math.max(0, bottomLen - maxCharsPerLine);
+
+    const last = top[top.length - 1].value;
+    const first = bottom[0].value;
+    let cost = overflow * 100;
+    // Balanced lines; a slightly longer second line reads more naturally.
+    cost += (Math.abs(topLen - bottomLen) / Math.max(1, maxCharsPerLine)) * 12;
+    if (topLen > bottomLen) cost += 1;
+    // Punctuation is the best place to break.
+    const punct = boundaryScore(last);
+    if (punct === -10) cost -= 12;
+    else if (punct === -4) cost -= 7;
+    else if (BINDS_FORWARD.has(bareWord(last))) cost += 10;
+    // "the biggest / problem": a determiner then one word is usually an
+    // adjective waiting for its noun.
+    else if (top.length >= 2 && DETERMINERS.has(bareWord(top[top.length - 2].value))) cost += 8;
+    // Keep first + last names together.
+    if (punct === 0 && k > 1 && isCapitalised(last) && isCapitalised(first) && bareWord(last) !== "i") cost += 10;
+    if (STARTS_LINE.has(bareWord(first))) cost -= 2;
+    // No stranded word on either line.
+    if (top.length === 1 || bottom.length === 1) cost += 8;
+
+    if (cost < bestCost) {
+      bestCost = cost;
+      bestIndex = k;
+    }
+  }
+  if (bestIndex == null) return null;
+  // Translate back to an index in `words` (deleted words keep their places).
+  const target = visible[bestIndex];
+  const index = words.indexOf(target);
+  return index > 0 ? index : null;
 }
 
 /**
@@ -374,6 +520,7 @@ export function groupWordsIntoCaptions<W extends GroupableWord>(
   const flush = () => {
     for (const current of groupPhrase(phrase, maxWords, maxDuration, maxCharsPerLine, maxLines)) {
       const last = current[current.length - 1];
+      const breakAt = maxLines >= 2 ? chooseLineBreak(current, maxCharsPerLine) : null;
       captions.push({
         id: `caption-${captions.length}`,
         startTime: current[0].start,
@@ -381,6 +528,7 @@ export function groupWordsIntoCaptions<W extends GroupableWord>(
         speechEndTime: last.end,
         text: captionTextFromWords(current),
         words: [...current],
+        ...(breakAt != null ? { lineBreakBefore: current[breakAt].start } : {}),
       });
     }
     phrase = [];
@@ -395,4 +543,63 @@ export function groupWordsIntoCaptions<W extends GroupableWord>(
   flush();
 
   return holdCaptions(captions, holdSeconds);
+}
+
+/* ---- Automatic checks (Qlio Caption Runbook, step 8) ------------------- */
+
+export type CaptionIssue =
+  | "too_fast" // over CAPTION_MAX_CPS characters a second
+  | "too_brief" // shown for less than CAPTION_MIN_DISPLAY seconds
+  | "too_many_lines" // more than two lines
+  | "too_many_words" // more than 14 words
+  | "stranded_word" // one word alone on a line beside a longer one
+  | "unbalanced"; // one line under 40% of the other's length
+
+export interface CaptionCheck {
+  id: string;
+  startTime: number;
+  issues: CaptionIssue[];
+}
+
+/**
+ * The runbook's code-checkable questions for each caption: reading rate,
+ * minimum duration, line count, words per caption and line shape. Captions
+ * without word timing (translations) are checked on rate and duration only.
+ */
+export function checkCaptions(
+  captions: readonly GroupedCaption[],
+  maxCharsPerLine: number = Number.POSITIVE_INFINITY,
+): CaptionCheck[] {
+  const out: CaptionCheck[] = [];
+  for (const caption of captions) {
+    const issues: CaptionIssue[] = [];
+    const shown = caption.endTime - caption.startTime;
+    const chars = String(caption.text ?? "").replace(/\s+/g, " ").trim().length;
+    if (chars / Math.max(0.05, shown) > CAPTION_MAX_CPS + 1e-9) issues.push("too_fast");
+    if (shown < CAPTION_MIN_DISPLAY - 1e-9) issues.push("too_brief");
+    const words = (caption.words ?? []).filter((word) => !isDeletedCaptionWord(word.value));
+    if (words.length > 14) issues.push("too_many_words");
+    if (words.length > 0) {
+      const breakIndex = caption.lineBreakBefore == null
+        ? -1
+        : words.findIndex((word) => Math.abs(word.start - caption.lineBreakBefore!) < 1e-6);
+      if (breakIndex > 0) {
+        const top = words.slice(0, breakIndex);
+        const bottom = words.slice(breakIndex);
+        const overflow =
+          captionLineCount(top, maxCharsPerLine) + captionLineCount(bottom, maxCharsPerLine) > 2;
+        if (overflow) issues.push("too_many_lines");
+        if ((top.length === 1 && bottom.length >= 3) || (bottom.length === 1 && top.length >= 3)) {
+          issues.push("stranded_word");
+        }
+        const a = lineLength(top);
+        const b = lineLength(bottom);
+        if (Math.min(a, b) < 0.4 * Math.max(a, b)) issues.push("unbalanced");
+      } else if (captionLineCount(words, maxCharsPerLine) > 2) {
+        issues.push("too_many_lines");
+      }
+    }
+    if (issues.length > 0) out.push({ id: caption.id, startTime: caption.startTime, issues });
+  }
+  return out;
 }

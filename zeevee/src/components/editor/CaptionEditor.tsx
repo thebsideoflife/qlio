@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useMemo } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "@/store/store";
 import {
@@ -22,6 +22,26 @@ import { cn } from "@/lib/utils";
 import { Upload, Palette, X, Loader2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CAPTION_FONT_OPTIONS } from "@/remotion/loadCaptionFonts";
+import {
+  captionGroupingOptions,
+  checkCaptions,
+  type CaptionIssue,
+} from "@/remotion/captionGrouping";
+
+const ISSUE_LABELS: Record<CaptionIssue, string> = {
+  too_fast: "read too fast",
+  too_brief: "flash by",
+  too_many_lines: "run past two lines",
+  too_many_words: "have over 14 words",
+  stranded_word: "strand a word",
+  unbalanced: "have lopsided lines",
+};
+
+/** Seconds as m:ss for the check list. */
+function clock(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
+}
 import { getAsset, retryAssetTranscription } from "@/services/api";
 import { CaptionLanguageToggle } from "@/components/editor/CaptionLanguageToggle";
 
@@ -54,6 +74,24 @@ export function CaptionEditor() {
   const translations = useSelector(
     (state: RootState) => state.editor.translations,
   );
+  const captions = useSelector((state: RootState) => state.editor.captions);
+  const segments = useSelector((state: RootState) => state.editor.segments);
+  const aspectRatio = useSelector(
+    (state: RootState) => state.editor.globalFraming.aspectRatio,
+  );
+
+  // Caption runbook checks, on the captions that appear in the clips
+  const captionCheck = useMemo(() => {
+    const inClips = captions.filter((c) =>
+      segments.some((s) => c.startTime < s.endTime && c.endTime > s.startTime),
+    );
+    const maxChars =
+      captionGroupingOptions(style, aspectRatio).maxCharsPerLine ?? Number.POSITIVE_INFINITY;
+    const flagged = checkCaptions(inClips, maxChars);
+    const counts = new Map<CaptionIssue, number>();
+    for (const f of flagged) for (const i of f.issues) counts.set(i, (counts.get(i) ?? 0) + 1);
+    return { total: inClips.length, flagged, counts };
+  }, [captions, segments, style, aspectRatio]);
 
   const textColor = style.color || "#ffffff";
   const highlightColor = style.highlightColor || "#fbbf24";
@@ -177,6 +215,38 @@ export function CaptionEditor() {
           onCheckedChange={(v) => dispatch(setCaptionsEnabled(v))}
         />
       </div>
+
+      {enabled && captionCheck.total > 0 && (
+        <div
+          className={cn(
+            "rounded-xl border-2 p-3 text-xs",
+            captionCheck.flagged.length === 0
+              ? "border-emerald-500/30 bg-emerald-500/5"
+              : "border-amber-500/30 bg-amber-500/5",
+          )}
+        >
+          {captionCheck.flagged.length === 0 ? (
+            <p className="font-semibold">
+              All {captionCheck.total} captions in your clips pass the caption checks.
+            </p>
+          ) : (
+            <>
+              <p className="font-semibold">
+                {captionCheck.flagged.length} of {captionCheck.total} captions need a look
+              </p>
+              <p className="text-muted-foreground mt-1">
+                {[...captionCheck.counts.entries()]
+                  .map(([issue, n]) => `${n} ${ISSUE_LABELS[issue]}`)
+                  .join(" · ")}
+              </p>
+              <p className="text-muted-foreground mt-1 font-mono">
+                At {captionCheck.flagged.slice(0, 8).map((f) => clock(f.startTime)).join(", ")}
+                {captionCheck.flagged.length > 8 ? "…" : ""}
+              </p>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="space-y-3">
         <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground">

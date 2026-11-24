@@ -30,13 +30,13 @@ assert(
 const w = (value: string, start: number) => ({ start, end: start + 0.2, value });
 const captions = groupWordsIntoCaptions([w("a", 0), w("b", 0.3), w("c", 2.0), w("d", 20)]);
 assert(captions.length === 3, "three captions");
-assert(captions[0].endTime === 2.0 && captions[0].speechEndTime === 0.5, "held until the next caption");
+assert(captions[0].endTime === 1.0 && captions[0].speechEndTime === 0.5, "held 0.5 s past speech");
 
 // A segment starting after the speech but inside the hold must not include it.
-assert(captionsOverlappingRange(captions, 1.0, 1.9).length === 0, "hold does not pull a caption into a later segment");
+assert(captionsOverlappingRange(captions, 0.7, 1.9).length === 0, "hold does not pull a caption into a later segment");
 assert(captionsOverlappingRange(captions, 0.4, 1.9).length === 1, "a caption still speaking at the segment start is included");
 const shifted = shiftCaptionsBy(captionsOverlappingRange(captions, 0.4, 1.9), -0.4);
-assert(Math.abs(shifted[0].speechEndTime! - 0.1) < 1e-9 && Math.abs(shifted[0].endTime - 1.6) < 1e-9, "shift keeps speechEndTime");
+assert(Math.abs(shifted[0].speechEndTime! - 0.1) < 1e-9 && Math.abs(shifted[0].endTime - 0.6) < 1e-9, "shift keeps speechEndTime");
 
 // Translation lines get the hold too; originals use the style-derived fit.
 const translated = captionsFromParsedTranscript({
@@ -48,7 +48,7 @@ const translated = captionsFromParsedTranscript({
     { id: "l1", startTime: 10, endTime: 11, text: "Adiós" },
   ],
 } as any);
-assert(translated[0].endTime === 4.5 && translated[0].speechEndTime === 1, "translation line held 3.5s");
+assert(translated[0].endTime === 1.5 && translated[0].speechEndTime === 1, "translation line held 0.5 s");
 
 const longWords = "extraordinary photographs demonstrate sophisticated cinematography during celebrations".split(" ").map((value, i) => w(value, i * 0.3));
 const original = { kind: "original", language: "en", words: longWords } as any;

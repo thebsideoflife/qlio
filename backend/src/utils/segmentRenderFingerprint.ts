@@ -4,7 +4,7 @@ import type { WordEdit } from "./caption-grouping";
 
 // Bump whenever the Remotion bundle changes rendered pixels without changing
 // project inputs. This invalidates MP4s made by an older renderer.
-export const RENDER_PIPELINE_VERSION = 10;
+export const RENDER_PIPELINE_VERSION = 11;
 
 interface FramingKeyframe {
   time: number;
